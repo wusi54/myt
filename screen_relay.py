@@ -8,6 +8,10 @@ ADB_PATH = r"C:\Users\wusi0\AppData\Local\Android\Sdk\platform-tools\adb.exe"
 active_streams = {}
 
 async def stream_worker(ws, adb_addr):
+    # 先唤醒设备
+    subprocess.run([ADB_PATH, '-s', adb_addr, 'shell', 'input', 'keyevent', '26'], capture_output=True, timeout=5)
+    subprocess.run([ADB_PATH, '-s', adb_addr, 'shell', 'input', 'keyevent', '82'], capture_output=True, timeout=5)
+    
     proc = await asyncio.create_subprocess_exec(
         ADB_PATH, '-s', adb_addr, 'exec-out',
         'screenrecord', '--output-format=h264',
@@ -33,7 +37,8 @@ async def stream_worker(ws, adb_addr):
 
 async def handler(ws):
     from urllib.parse import urlparse, parse_qs
-    qs = parse_qs(urlparse(ws.path).query)
+    path = ws.request.path if ws.request else '/'
+    qs = parse_qs(urlparse(path).query)
     adb_addr = (qs.get('adb_addr') or [''])[0]
     if not adb_addr:
         await ws.close(4000, 'missing adb_addr')
