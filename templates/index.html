@@ -215,6 +215,8 @@ tr:hover td{background:#1e2e3e}
 <div class="flex mt-8">
 <select id="proxyPoolSelect" style="flex:1"><option value="">-- 选择代理 --</option></select>
 <button class="btn btn-success" onclick="applyProxyFromPool()">应用代理</button>
+<button class="btn btn-danger" onclick="stopProxy()">关闭代理</button>
+<button class="btn btn-outline" onclick="queryProxy()">查询代理</button>
 </div>
 </div>
 <div id="proxyResult" class="json-view mt-8" style="display:none"></div>
@@ -977,6 +979,7 @@ class ScreenPlayer {
 }
 
 function startScreen(name, ip) {
+  console.log('startScreen called', name, ip);
   if (!ip) { toast('容器 IP 为空，无法投屏', 'error'); return; }
   if (screenSessions.length >= MAX_SCREENS) {
     toast('最多同时投屏 ' + MAX_SCREENS + ' 路，请先停止一路', 'error');
@@ -1051,6 +1054,12 @@ switchPage = function(pageId, el) {
 
 // Init
 loadDevices()
+
+// 手动测试入口
+window.testScreen = function(name, ip) {
+  if (!name || !ip) { toast('用法: testScreen("容器名","容器IP")', 'error'); return; }
+  startScreen(name, ip);
+};
 </script>
 </body>
 </html>
