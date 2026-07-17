@@ -953,25 +953,20 @@ def proxy_container_counts():
             pass
     return jsonify({"code": 200, "data": counts})
 
-SCRCPY_PATH = r"C:\Users\wusi0\AppData\Local\Microsoft\WinGet\Packages\Genymobile.scrcpy_Microsoft.Winget.Source_8wekyb3d8bbwe\scrcpy-win64-v4.0\scrcpy.exe"
-
-@app.route('/api/scrcpy/launch', methods=['POST'])
-def scrcpy_launch():
-    adb_addr = ''
-    if request.is_json:
-        adb_addr = request.json.get('adb_addr', '').strip()
-    else:
-        adb_addr = request.form.get('adb_addr', '').strip()
+@app.route('/screen/')
+@app.route('/screen/<path:adb_addr>')
+def screen_page(adb_addr=''):
     if not adb_addr:
-        return jsonify({"code": 400, "msg": "adb_addr required"})
-    try:
-        subprocess.Popen([SCRCPY_PATH, '--max-size', '720', '-b', '2M',
-                          '--max-fps', '30', '--serial', adb_addr])
-        if request.is_json:
-            return jsonify({"code": 200, "msg": f"scrcpy launched for {adb_addr}"})
         return redirect('/')
-    except Exception as e:
-        return jsonify({"code": 500, "msg": str(e)})
+    name = request.args.get('name', adb_addr)
+    return render_template('screen.html', adb_addr=adb_addr, name=name)
+
+@app.route('/api/screen/config')
+def screen_config():
+    return jsonify({
+        "code": 200,
+        "ws_url": f"ws://{request.host.split(':')[0]}:9000"
+    })
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=True)

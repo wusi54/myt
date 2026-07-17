@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>投屏 - {{ name }}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;justify-content:center;align-items:center;min-height:100vh;flex-direction:column;color:#fff;font-family:sans-serif}
+#screen{width:100%;max-width:480px;border-radius:4px}
+#status{padding:12px;font-size:14px;color:#8899aa}
+canvas{width:100%;border-radius:4px;background:#111}
+.controls{position:fixed;top:12px;right:12px;z-index:10}
+.btn{padding:8px 16px;background:#c42b1c;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px}
+.btn:hover{background:#d83b2f}
+</style>
+</head>
+<body>
+<div class="controls"><button class="btn" onclick="window.close()">关闭</button></div>
+<canvas id="screen"></canvas>
+<div id="status">连接中...</div>
+<script>
+const adbAddr = '{{ adb_addr }}';
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const wsUrl = 'ws://' + window.location.hostname + ':9000/stream?adb_addr=' + encodeURIComponent(adbAddr);
+
+let decoder = null;
+let buffer = new Uint8Array(0);
+let lastStart = -1;
+let nalCache = [];
+
+function initDecoder() {
+  if (typeof VideoDecoder === 'undefined') {
+    statusEl.textContent = '浏览器不支持 WebCodecs，请使用 Chrome/Edge';
+    return false;
+  }
+  try {
+    decoder = new VideoDecoder({
+      output: (frame) => {
+        try {
+          canvas.width = frame.displayWidth;
+          canvas.height = frame.displayHeight;
+          ctx.drawImage(frame, 0, 0);
+        } catch(e) {}
+        frame.close();
+      },
+      error: (e) => console.error('decode error:', e)
+    });
+    decoder.configure({ codec: 'avc1.42C01E', optimizeForLatency: true });
+    return true;
+  } catch(e) {
+    statusEl.textContent = '解码器初始化失败';
+    return false;
+  }
+}
+
+function feedH264(data) {
+  buffer = concat(buffer, new Uint8Array(data));
+  parseStream();
+}
+
+function parseStream() {
+  let pos = 0;
+  while (pos < buffer.length - 3) {
+    let startLen = 0;
+    if (buffer[pos] === 0 && buffer[pos+1] === 0 && buffer[pos+2] === 1) startLen = 3;
+    else if (pos < buffer.length - 4 && buffer[pos] === 0 && buffer[pos+1] === 0 && buffer[pos+2] === 0 && buffer[pos+3] === 1) startLen = 4;
+    if (startLen > 0) {
+      if (lastStart >= 0) {
+        const nalData = buffer.slice(lastStart, pos);
+        const nalType = nalData[startLen] & 0x1F;
+        nalCache.push(nalData);
+        if (nalType === 5 || nalType === 1) flushFrame();
+      }
+      lastStart = pos;
+      pos += startLen;
+    } else { pos++; }
+  }
+  if (lastStart >= 0) { buffer = buffer.slice(lastStart); lastStart = 0; }
+}
+
+function flushFrame() {
+  if (nalCache.length === 0 || !decoder) return;
+  const total = nalCache.reduce((s, u) => s + u.length, 0);
+  const frame = new Uint8Array(total);
+  let off = 0;
+  for (const nal of nalCache) { frame.set(nal, off); off += nal.length; }
+  nalCache = [];
+  try { decoder.decode(new EncodedVideoChunk({ type: 'key', timestamp: 0, duration: 100_000, data: frame })); } catch(e) {}
+}
+
+function concat(a, b) {
+  const c = new Uint8Array(a.length + b.length);
+  c.set(a); c.set(b, a.length);
+  return c;
+}
+
+// Start
+if (!initDecoder()) {
+  // fallback: no WebCodecs
+  statusEl.textContent = '浏览器不支持 WebCodecs';
+} else {
+  const ws = new WebSocket(wsUrl);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => { statusEl.textContent = '已连接'; };
+  ws.onmessage = (e) => feedH264(e.data);
+  ws.onclose = (e) => { statusEl.textContent = '已断开 (' + e.code + ')'; };
+  ws.onerror = () => { statusEl.textContent = '连接失败，请确认 screen_relay.py 已启动'; };
+}
+</script>
+</body>
+</html>
