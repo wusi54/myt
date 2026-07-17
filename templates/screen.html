@@ -24,7 +24,9 @@ const adbAddr = '{{ adb_addr }}';
 const canvas = document.getElementById('screen');
 const ctx = canvas.getContext('2d');
 const statusEl = document.getElementById('status');
-const wsUrl = 'ws://' + window.location.hostname + ':9000/stream?adb_addr=' + encodeURIComponent(adbAddr);
+const host = window.location.hostname || 'localhost';
+const wsUrl = 'ws://' + host + ':9000/stream?adb_addr=' + encodeURIComponent(adbAddr);
+console.log('Connecting to:', wsUrl);
 
 let decoder = null;
 let buffer = new Uint8Array(0);
@@ -105,10 +107,16 @@ if (!initDecoder()) {
   const ws = new WebSocket(wsUrl);
   ws.binaryType = 'arraybuffer';
 
-  ws.onopen = () => { statusEl.textContent = '已连接'; };
+  ws.onopen = () => { statusEl.textContent = '已连接'; console.log('WS connected'); };
   ws.onmessage = (e) => feedH264(e.data);
-  ws.onclose = (e) => { statusEl.textContent = '已断开 (' + e.code + ')'; };
-  ws.onerror = () => { statusEl.textContent = '连接失败，请确认 screen_relay.py 已启动'; };
+  ws.onclose = (e) => {
+    statusEl.textContent = '已断开 (code=' + e.code + ' reason=' + e.reason + ')';
+    console.log('WS closed:', e.code, e.reason);
+  };
+  ws.onerror = (e) => {
+    statusEl.textContent = '连接失败';
+    console.log('WS error:', e);
+  };
 }
 </script>
 </body>
