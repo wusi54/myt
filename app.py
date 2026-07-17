@@ -58,6 +58,12 @@ def init_db():
         filesize INTEGER DEFAULT 0, pkg TEXT DEFAULT '',
         created TEXT DEFAULT ''
     )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS install_logs (
+        id TEXT PRIMARY KEY, app_id TEXT NOT NULL, app_name TEXT DEFAULT '',
+        device_ip TEXT NOT NULL, container_name TEXT NOT NULL,
+        status TEXT DEFAULT 'pending', message TEXT DEFAULT '',
+        created TEXT DEFAULT ''
+    )''')
     conn.commit()
     conn.close()
 
@@ -198,6 +204,24 @@ def delete_app_from_db(aid):
     conn.execute('DELETE FROM app_library WHERE id = ?', (aid,))
     conn.commit()
     conn.close()
+
+# ========== DB helpers: install_logs ==========
+def save_install_log(log):
+    conn = get_db()
+    conn.execute('INSERT OR REPLACE INTO install_logs (id,app_id,app_name,device_ip,container_name,status,message,created) VALUES (?,?,?,?,?,?,?,?)',
+                 (log['id'], log['app_id'], log.get('app_name',''), log['device_ip'], log['container_name'],
+                  log['status'], log.get('message',''), log.get('created',time.strftime('%Y-%m-%d %H:%M:%S'))))
+    conn.commit()
+    conn.close()
+
+def load_install_logs(app_id=None):
+    conn = get_db()
+    if app_id:
+        rows = conn.execute('SELECT * FROM install_logs WHERE app_id=? ORDER BY created DESC', (app_id,)).fetchall()
+    else:
+        rows = conn.execute('SELECT * FROM install_logs ORDER BY created DESC').fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 # ========== DB helpers: container configs ==========
 def set_container_config(device_ip, container_name, config_type, config_id, config_name):
@@ -618,21 +642,70 @@ def delete_app(app_id):
     delete_app_from_db(app_id)
     return jsonify({"code": 200, "msg": "deleted"})
 
+def _install_apk_to_container(api_base, ip, name, apk_path, filename, timeout=300):
+    """Upload APK to container via upload_file_android, then pm install"""
+    try:
+        # Step 1: upload APK file to container
+        with open(apk_path, 'rb') as f:
+            r = requests.post(f"{api_base}/and_api/v1/upload_file_android/{ip}/{name}",
+                              files={'file': (filename, f, 'application/octet-stream')},
+                              timeout=timeout)
+        upload_resp = r.json() if r.text else {}
+        if upload_resp.get('code') != 200:
+            return 'failed', f'upload failed: {json.dumps(upload_resp, ensure_ascii=False)}'
+
+        # File is saved to /data/media/0/Download/<filename>
+        src = f'/data/media/0/Download/{filename}'
+        dst = f'/data/local/tmp/{filename}'
+
+        # Step 2: copy to /data/local/tmp/ (pm install requires files here)
+        r2 = requests.post(f"{api_base}/and_api/v1/shell/{ip}/{name}",
+                           json={'cmd': f'cp "{src}" "{dst}" && chmod 644 "{dst}" && echo "OK"'},
+                           timeout=60)
+        copy_msg = (r2.json() if r2.text else {}).get('message', '')
+        if 'OK' not in copy_msg:
+            return 'failed', f'copy failed: {copy_msg[:200]}'
+
+        # Step 3: pm install
+        r3 = requests.post(f"{api_base}/and_api/v1/shell/{ip}/{name}",
+                           json={'cmd': f'pm install -r "{dst}" 2>&1'},
+                           timeout=timeout)
+        install_msg = (r3.json() if r3.text else {}).get('message', '')
+        if 'Success' in install_msg or 'success' in install_msg:
+            return 'success', install_msg[:500]
+        else:
+            return 'failed', install_msg[:500]
+    except Exception as e:
+        return 'failed', str(e)
+
 @app.route('/api/apps/<app_id>/install', methods=['POST'])
 def install_app_to_container(app_id):
     data = request.json
-    ip = data.get('ip'); name = data.get('name')
-    if not ip or not name: return jsonify({"code": 400, "msg": "ip and name required"})
+    containers = data.get('containers', [])
+    if not containers: return jsonify({"code": 400, "msg": "containers list required"})
     entry = next((a for a in app_library if a['id'] == app_id), None)
     if not entry: return jsonify({"code": 404, "msg": "app not found"})
-    # serve the APK file via Flask and let SDK server download it
-    download_url = f"http://{request.host}/api/apps/{app_id}/download"
-    try:
-        r = requests.post(f"{API_BASE}/and_api/v1/install_apk_fromurl/{ip}/{name}",
-                          json={"url": download_url, "retry": 1}, timeout=120)
-        return jsonify(r.json() if r.text else {"code": 500, "msg": "empty"})
-    except Exception as e:
-        return jsonify({"code": 500, "msg": str(e)})
+    apk_path = os.path.join(APP_UPLOAD_DIR, entry['filename'])
+    if not os.path.exists(apk_path): return jsonify({"code": 404, "msg": "apk file not found"})
+
+    results = []
+    for item in containers:
+        ip = item.get('ip'); name = item.get('name')
+        if not ip or not name: continue
+        log_id = str(uuid.uuid4())[:8]
+        log_entry = {"id": log_id, "app_id": app_id, "app_name": entry['name'],
+                     "device_ip": ip, "container_name": name,
+                     "status": "installing", "message": "",
+                     "created": time.strftime('%Y-%m-%d %H:%M:%S')}
+        save_install_log(log_entry)
+
+        status, msg = _install_apk_to_container(API_BASE, ip, name, apk_path, entry['filename'])
+        log_entry['status'] = status
+        log_entry['message'] = msg
+        save_install_log(log_entry)
+        results.append(log_entry)
+
+    return jsonify({"code": 200, "msg": "install completed", "data": results})
 
 @app.route('/api/apps/<app_id>/download')
 def download_app(app_id):
@@ -641,6 +714,11 @@ def download_app(app_id):
     fpath = os.path.join(APP_UPLOAD_DIR, entry['filename'])
     if not os.path.exists(fpath): return jsonify({"code": 404, "msg": "file not found"}), 404
     return send_file(fpath, as_attachment=True, download_name=entry['filename'], mimetype='application/vnd.android.package-archive')
+
+@app.route('/api/apps/<app_id>/logs', methods=['GET'])
+def app_install_logs(app_id):
+    logs = load_install_logs(app_id)
+    return jsonify({"code": 200, "data": logs})
 
 # ========== 代理池 ==========
 @app.route('/api/proxy_pool', methods=['GET'])
@@ -807,6 +885,14 @@ def proxy_container_counts():
         except:
             pass
     return jsonify({"code": 200, "data": counts})
+
+@app.route('/api/screen/config')
+def screen_config():
+    return jsonify({
+        "code": 200,
+        "ws_url": "ws://192.168.10.83:9000",
+        "max_screens": 4
+    })
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=True)
