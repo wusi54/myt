@@ -11,20 +11,20 @@ MAX_STREAMS = 10
 
 active_streams = {}
 
-def adb_connect(ip):
+def adb_connect(addr):
     try:
         subprocess.run(
-            ['adb', 'connect', f'{ip}:{ADB_PORT}'],
+            ['adb', 'connect', addr],
             capture_output=True, timeout=10
         )
-        return f'{ip}:{ADB_PORT}'
+        return addr
     except Exception as e:
         return None
 
-async def stream_scrcpy(ws, name, ip):
-    serial = adb_connect(ip)
+async def stream_scrcpy(ws, name, adb_addr):
+    serial = adb_connect(adb_addr)
     if not serial:
-        await ws.close(4001, f'adb connect failed: {ip}:{ADB_PORT}')
+        await ws.close(4001, f'adb connect failed: {adb_addr}')
         return
 
     proc = await asyncio.create_subprocess_exec(
@@ -74,18 +74,18 @@ async def ws_handler(ws, path):
                     query[k] = v
 
         name = query.get('name', '')
-        ip = query.get('ip', '')
+        adb_addr = query.get('adb_addr', '')
 
-        if not name or not ip:
-            await ws.close(4000, 'missing name or ip')
+        if not name or not adb_addr:
+            await ws.close(4000, 'missing name or adb_addr')
             return
 
         if len(active_streams) >= MAX_STREAMS:
             await ws.close(4005, 'max streams reached')
             return
 
-        print(f'[stream] start: {name} ({ip})')
-        await stream_scrcpy(ws, name, ip)
+        print(f'[stream] start: {name} ({adb_addr})')
+        await stream_scrcpy(ws, name, adb_addr)
         print(f'[stream] end: {name}')
     except Exception as e:
         print(f'[stream] error: {e}')
