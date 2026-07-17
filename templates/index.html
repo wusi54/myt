@@ -881,7 +881,7 @@ class ScreenPlayer {
 
     this.ws.onerror = () => {
       this._setStatus('连接失败');
-      toast('投屏连接失败: ws://192.168.10.83:9000 无响应', 'error');
+      toast('投屏连接失败: WebSocket 无响应', 'error');
       this.running = false;
     };
   }
@@ -999,8 +999,9 @@ function startScreen(name, ip) {
   cell.innerHTML = '<div class="sc-label"><span class="sc-name">' + name + '</span><button class="btn btn-sm btn-danger" onclick="stopScreen(' + slot + ')">停止</button></div><canvas></canvas><div class="sc-status">连接中...</div>';
 
   const canvas = cell.querySelector('canvas');
-  const wsUrl = 'ws://192.168.10.83:9000/stream?name=' + encodeURIComponent(name) + '&ip=' + encodeURIComponent(ip);
-  const healthUrl = 'http://192.168.10.83:9001/health';
+  const host = window.location.hostname || 'localhost';
+  const wsUrl = 'ws://' + host + ':9000/stream?name=' + encodeURIComponent(name) + '&ip=' + encodeURIComponent(ip);
+  const healthUrl = 'http://' + host + ':9001/health';
 
   // 先检查 Screen Server 是否在运行
   fetch(healthUrl, { signal: AbortSignal.timeout(3000) }).then(r => r.json()).then(h => {
@@ -1011,7 +1012,7 @@ function startScreen(name, ip) {
     updateScreenCounter();
     toast('正在投屏 ' + name, 'info');
   }).catch(e => {
-    toast('无法连接 Screen Server (192.168.10.83:9001)，请确认已部署并启动', 'error');
+    toast('无法连接 Screen Relay，请确认已启动 screen_relay.py', 'error');
     stopScreen(slot);
   });
 

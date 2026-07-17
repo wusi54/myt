@@ -890,7 +890,8 @@ def proxy_container_counts():
 def screen_config():
     return jsonify({
         "code": 200,
-        "ws_url": "ws://192.168.10.83:9000",
+        "ws_port": 9000,
+        "health_port": 9001,
         "max_screens": 4
     })
 
