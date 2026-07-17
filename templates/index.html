@@ -70,6 +70,19 @@ tr:hover td{background:#1e2e3e}
 .icon-btn:hover{background:#2a3a4a;color:#00d4ff}
 .icon-btn svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .file-list li{padding:2px 0}
+.wall-grid{display:grid;gap:6px;background:#0f1923;border-radius:4px;padding:6px;min-height:200px}
+.wall-2{grid-template-columns:1fr 1fr}
+.wall-3{grid-template-columns:1fr 1fr 1fr}
+.wall-4{grid-template-columns:1fr 1fr 1fr 1fr}
+.wall-cell{background:#000;border-radius:4px;overflow:hidden;position:relative;aspect-ratio:9/16;border:1px solid #2a3a4a}
+.wall-cell canvas{width:100%;height:100%;display:block;object-fit:contain}
+.wall-cell .wc-label{position:absolute;top:0;left:0;right:0;padding:4px 8px;background:linear-gradient(180deg,#000000b3,transparent);font-size:11px;z-index:2;display:flex;justify-content:space-between;align-items:center}
+.wall-cell .wc-label .wc-name{color:#00d4ff;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wall-cell .wc-label .wc-close{color:#ff6b6b;cursor:pointer;font-size:14px;line-height:1;padding:0 4px}
+.wall-cell .wc-placeholder{display:flex;align-items:center;justify-content:center;height:100%;color:#3a4a5a;font-size:12px;flex-direction:column;gap:6px}
+.wall-cell .wc-status{position:absolute;bottom:4px;right:6px;font-size:9px;color:#8899aa;z-index:2}
+@media(max-width:900px){.wall-4{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){.wall-3,.wall-4{grid-template-columns:1fr 1fr}.wall-2{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -77,6 +90,7 @@ tr:hover td{background:#1e2e3e}
 <h1>魔云腾管理平台</h1>
 <div class="nav-tab active" onclick="switchPage('pageDevices',this)">设备管理</div>
 <div class="nav-tab" onclick="switchPage('pageContainers',this)">容器管理</div>
+<div class="nav-tab" onclick="switchPage('pageScreenWall',this)">群控窗</div>
 <div class="nav-tab" onclick="switchPage('pageFingerprints',this)">真机参数库</div>
 <div class="nav-tab" onclick="switchPage('pageRealLib',this)">真机库</div>
 <div class="nav-tab" onclick="switchPage('pageProxyPool',this)">代理池</div>
@@ -115,6 +129,26 @@ tr:hover td{background:#1e2e3e}
 <div class="card">
 <div class="card-header"><h3>全部容器一览</h3><input class="search-box" id="containerSearch" placeholder="搜索容器名称/设备IP/镜像..." oninput="renderAllContainers()"></div>
 <div id="allContainerList"><div style="text-align:center;padding:40px;color:#8899aa">加载中...</div></div>
+</div>
+</div>
+
+<!-- ==================== 群控窗 ==================== -->
+<div id="pageScreenWall" class="page">
+<div class="card">
+<div class="card-header">
+<h3>群控窗</h3>
+<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+<select id="wallGridSize" style="width:80px" onchange="resizeWall()">
+<option value="2">2×2</option>
+<option value="3" selected>3×3</option>
+<option value="4">4×4</option>
+</select>
+<button class="btn btn-sm btn-primary" onclick="showAddToWallModal()">+ 添加容器</button>
+<button class="btn btn-sm btn-outline" onclick="clearWall()">清空</button>
+<span id="wallCounter" style="font-size:12px;color:#8899aa">0 个容器</span>
+</div>
+</div>
+<div id="wallGrid" class="wall-grid wall-3"></div>
 </div>
 </div>
 
@@ -411,6 +445,17 @@ tr:hover td{background:#1e2e3e}
 <div class="modal-actions">
 <button class="btn btn-outline" onclick="closeModal('installAppModal')">取消</button>
 <button class="btn btn-success" onclick="installAppToContainer()">安装到选中容器</button>
+</div>
+</div></div>
+
+<!-- Modal: 添加容器到群控窗 -->
+<div id="addToWallModal" class="modal-overlay"><div class="modal" style="max-width:650px">
+<h2>选择容器添加到群控窗</h2>
+<div class="form-row"><label>搜索容器</label><input id="wallSearch" placeholder="输入容器名称过滤..." oninput="renderWallContainerList()"></div>
+<div id="wallContainerList" style="max-height:300px;overflow-y:auto;border:1px solid #2a3a4a;border-radius:4px;padding:8px;background:#0f1923"></div>
+<div class="modal-actions">
+<button class="btn btn-outline" onclick="closeModal('addToWallModal')">取消</button>
+<button class="btn btn-primary" onclick="addSelectedToWall()">添加到群控窗</button>
 </div>
 </div></div>
 
@@ -798,6 +843,175 @@ if(d.code===200&&d.data){const ips=Object.keys(d.data);if(ips.length){ips.forEac
 loadDevices()
 }).catch(e=>{toast('自动发现失败，请手动添加','error')})
 }
+
+// ==================== 群控窗 ====================
+let wallItems = []; // { name, adbAddr, player, canvas }
+
+class WallPlayer {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.decoder = null;
+    this.buffer = new Uint8Array(0);
+    this.lastStart = -1;
+    this.nalCache = [];
+    this.ws = null;
+    this._initDecoder();
+  }
+  _initDecoder() {
+    if (typeof VideoDecoder === 'undefined') return;
+    try {
+      this.decoder = new VideoDecoder({
+        output: (frame) => {
+          try { this.canvas.width = frame.displayWidth; this.canvas.height = frame.displayHeight; this.ctx.drawImage(frame, 0, 0); } catch(e) {}
+          frame.close();
+        },
+        error: () => {}
+      });
+      this.decoder.configure({ codec: 'avc1.42C01E', optimizeForLatency: true });
+    } catch(e) {}
+  }
+  connect(adbAddr) {
+    if (this.ws) this.disconnect();
+    const host = window.location.hostname || 'localhost';
+    this.ws = new WebSocket('ws://' + host + ':9000/stream?adb_addr=' + encodeURIComponent(adbAddr));
+    this.ws.binaryType = 'arraybuffer';
+    this.ws.onmessage = (e) => { this.buffer = this._concat(this.buffer, new Uint8Array(e.data)); this._parse(); };
+    this.ws.onclose = () => { this.ws = null; };
+    this.ws.onerror = () => { this.ws = null; };
+  }
+  _parse() {
+    let pos = 0;
+    while (pos < this.buffer.length - 3) {
+      let sl = 0;
+      if (this.buffer[pos] === 0 && this.buffer[pos+1] === 0 && this.buffer[pos+2] === 1) sl = 3;
+      else if (pos < this.buffer.length - 4 && this.buffer[pos] === 0 && this.buffer[pos+1] === 0 && this.buffer[pos+2] === 0 && this.buffer[pos+3] === 1) sl = 4;
+      if (sl > 0) {
+        if (this.lastStart >= 0) { this.nalCache.push(this.buffer.slice(this.lastStart, pos)); }
+        this.lastStart = pos; pos += sl;
+      } else { pos++; }
+    }
+    if (this.lastStart >= 0) { this.buffer = this.buffer.slice(this.lastStart); this.lastStart = 0; }
+    this._flush();
+  }
+  _flush() {
+    if (this.nalCache.length === 0 || !this.decoder) return;
+    const total = this.nalCache.reduce((s, u) => s + u.length, 0);
+    const f = new Uint8Array(total); let off = 0;
+    for (const n of this.nalCache) { f.set(n, off); off += n.length; }
+    this.nalCache = [];
+    try { this.decoder.decode(new EncodedVideoChunk({ type: 'key', timestamp: 0, duration: 100_000, data: f })); } catch(e) {}
+  }
+  disconnect() {
+    if (this.ws) { try { this.ws.close(); } catch {} this.ws = null; }
+    this.buffer = new Uint8Array(0); this.nalCache = []; this.lastStart = -1;
+  }
+  destroy() { this.disconnect(); if (this.decoder) { try { this.decoder.close(); } catch {} this.decoder = null; } }
+  _concat(a, b) { const c = new Uint8Array(a.length + b.length); c.set(a); c.set(b, a.length); return c; }
+}
+
+function resizeWall() {
+  const size = document.getElementById('wallGridSize').value;
+  const grid = document.getElementById('wallGrid');
+  grid.className = 'wall-grid wall-' + size;
+  renderWall();
+}
+
+function renderWall() {
+  const grid = document.getElementById('wallGrid');
+  const size = parseInt(document.getElementById('wallGridSize').value);
+  const max = size * size;
+  let html = '';
+  for (let i = 0; i < max; i++) {
+    const item = wallItems[i];
+    if (item) {
+      html += '<div class="wall-cell" id="wc-' + i + '"><div class="wc-label"><span class="wc-name" title="' + item.name + '">' + item.name + '</span><span class="wc-close" onclick="removeFromWall(' + i + ')">×</span></div><canvas></canvas><div class="wc-status">投屏中</div></div>';
+    } else {
+      html += '<div class="wall-cell" id="wc-' + i + '"><div class="wc-placeholder"><span>空位</span></div></div>';
+    }
+  }
+  grid.innerHTML = html;
+  // 为已有内容的格子启动/重连播放器
+  for (let i = 0; i < max; i++) {
+    const item = wallItems[i];
+    if (item) {
+      const cell = document.getElementById('wc-' + i);
+      const canvas = cell.querySelector('canvas');
+      if (canvas && (!item.player || item.player.canvas !== canvas)) {
+        if (item.player) item.player.destroy();
+        const player = new WallPlayer(canvas);
+        player.connect(item.adbAddr);
+        item.player = player;
+        item.canvas = canvas;
+      }
+    }
+  }
+  document.getElementById('wallCounter').textContent = wallItems.length + ' 个容器';
+}
+
+function clearWall() {
+  wallItems.forEach(item => { if (item.player) item.player.destroy(); });
+  wallItems = [];
+  renderWall();
+}
+
+function removeFromWall(idx) {
+  const item = wallItems[idx];
+  if (item && item.player) item.player.destroy();
+  wallItems.splice(idx, 1);
+  renderWall();
+}
+
+function showAddToWallModal() {
+  renderWallContainerList();
+  showModal('addToWallModal');
+}
+
+function renderWallContainerList() {
+  const kw = (document.getElementById('wallSearch').value || '').toLowerCase();
+  const list = allContainers.filter(c => {
+    const name = (c.Name || c.name || '').toLowerCase();
+    return name.includes(kw) && (c.Status || c.status || '').toLowerCase() === 'running';
+  });
+  const el = document.getElementById('wallContainerList');
+  if (!list.length) { el.innerHTML = '<div style="color:#8899aa;padding:12px">没有匹配的容器</div>'; return; }
+  let html = '';
+  list.forEach(c => {
+    const name = c.Name || c.name;
+    const adbPort = c.adb || c.Adb || '';
+    const adbAddr = adbPort ? (c.device_ip || '') + ':' + adbPort : '';
+    if (!adbAddr) return;
+    const checked = wallItems.some(w => w.adbAddr === adbAddr) ? 'checked disabled' : '';
+    html += '<label style="display:flex;align-items:center;gap:10px;padding:6px 8px;cursor:pointer;border-bottom:1px solid #1e2e3e;font-size:13px"><input type="checkbox" class="wall-cb" value="' + name + '" data-adb="' + adbAddr + '" ' + checked + '><span>' + name + '</span><span style="color:#8899aa;font-size:11px;margin-left:auto">' + adbAddr + '</span></label>';
+  });
+  el.innerHTML = html;
+}
+
+function addSelectedToWall() {
+  const size = parseInt(document.getElementById('wallGridSize').value);
+  const max = size * size;
+  const cbs = document.querySelectorAll('#wallContainerList .wall-cb:checked:not(:disabled)');
+  let added = 0;
+  cbs.forEach(cb => {
+    if (wallItems.length >= max) return;
+    wallItems.push({ name: cb.value, adbAddr: cb.dataset.adb, player: null, canvas: null });
+    added++;
+  });
+  closeModal('addToWallModal');
+  renderWall();
+  if (added > 0) toast('已添加 ' + added + ' 个容器', 'success');
+  else if (wallItems.length >= max) toast('群控窗已满（' + max + '）', 'error');
+}
+
+// 切换页面时加载容器列表
+const origSwitchPage = switchPage;
+switchPage = function(pageId, el) {
+  origSwitchPage(pageId, el);
+  if (pageId === 'pageScreenWall') {
+    loadAllContainers();
+    renderWall();
+  }
+};
 
 // Init
 loadDevices()
