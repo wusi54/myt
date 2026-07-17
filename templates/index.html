@@ -70,25 +70,14 @@ tr:hover td{background:#1e2e3e}
 .icon-btn:hover{background:#2a3a4a;color:#00d4ff}
 .icon-btn svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .file-list li{padding:2px 0}
-.screen-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
-.screen-cell{background:#0f1923;border-radius:6px;border:1px solid #2a3a4a;overflow:hidden;position:relative;aspect-ratio:3/4;max-height:320px}
-.screen-cell canvas{width:100%;height:100%;display:block;object-fit:contain}
-.screen-cell .sc-label{position:absolute;top:0;left:0;right:0;padding:6px 10px;background:linear-gradient(180deg,#000000b3,transparent);font-size:12px;z-index:2;display:flex;justify-content:space-between;align-items:center}
-.screen-cell .sc-label .sc-name{color:#00d4ff}
-.screen-cell .sc-placeholder{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:#3a4a5a;font-size:13px;gap:8px}
-.screen-cell .sc-placeholder svg{width:48px;height:48px;opacity:.3}
-.screen-cell .sc-status{position:absolute;bottom:6px;right:8px;font-size:10px;color:#8899aa;z-index:2}
-@media(max-width:1200px){.screen-grid{grid-template-columns:repeat(3,1fr)}}
-@media(max-width:768px){.screen-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
-<script src="/static/socket.io.min.js"></script>
+<script>
 <div class="navbar">
 <h1>魔云腾管理平台</h1>
 <div class="nav-tab active" onclick="switchPage('pageDevices',this)">设备管理</div>
 <div class="nav-tab" onclick="switchPage('pageContainers',this)">容器管理</div>
-<div class="nav-tab" onclick="switchPage('pageScreenControl',this)">群控窗</div>
 <div class="nav-tab" onclick="switchPage('pageFingerprints',this)">真机参数库</div>
 <div class="nav-tab" onclick="switchPage('pageRealLib',this)">真机库</div>
 <div class="nav-tab" onclick="switchPage('pageProxyPool',this)">代理池</div>
@@ -127,31 +116,6 @@ tr:hover td{background:#1e2e3e}
 <div class="card">
 <div class="card-header"><h3>全部容器一览</h3><input class="search-box" id="containerSearch" placeholder="搜索容器名称/设备IP/镜像..." oninput="renderAllContainers()"></div>
 <div id="allContainerList"><div style="text-align:center;padding:40px;color:#8899aa">加载中...</div></div>
-</div>
-</div>
-
-<!-- ==================== 群控窗 ==================== -->
-<div id="pageScreenControl" class="page">
-<div class="card">
-<div class="card-header">
-<h3>群控窗</h3>
-<div style="display:flex;gap:8px;align-items:center">
-<span id="screenCounter" style="font-size:12px;color:#8899aa">已投屏 0 / 10</span>
-<button class="btn btn-sm btn-outline" onclick="clearAllScreens()">全部停止</button>
-</div>
-</div>
-<div class="screen-grid" id="screenGrid">
-<div class="screen-cell" id="sc-0"><div class="sc-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg><span>点击容器旁的"投屏"按钮</span></div></div>
-<div class="screen-cell" id="sc-1"><div class="sc-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg><span>点击容器旁的"投屏"按钮</span></div></div>
-<div class="screen-cell" id="sc-2"><div class="sc-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg><span>点击容器旁的"投屏"按钮</span></div></div>
-<div class="screen-cell" id="sc-3"><div class="sc-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg><span>点击容器旁的"投屏"按钮</span></div></div>
-<div class="screen-cell" id="sc-4"><div class="sc-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg><span>点击容器旁的"投屏"按钮</span></div></div>
-<div class="screen-cell" id="sc-5"><div class="sc-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg><span>点击容器旁的"投屏"按钮</span></div></div>
-<div class="screen-cell" id="sc-6"><div class="sc-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg><span>点击容器旁的"投屏"按钮</span></div></div>
-<div class="screen-cell" id="sc-7"><div class="sc-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg><span>点击容器旁的"投屏"按钮</span></div></div>
-<div class="screen-cell" id="sc-8"><div class="sc-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg><span>点击容器旁的"投屏"按钮</span></div></div>
-<div class="screen-cell" id="sc-9"><div class="sc-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg><span>点击容器旁的"投屏"按钮</span></div></div>
-</div>
 </div>
 </div>
 
@@ -524,8 +488,8 @@ if(d.code!==200){el.innerHTML='<div style="color:#f57f6e">获取失败: '+(d.msg
 const dev=devices.find(x=>x.ip===currentIp);if(dev)dev.container_count=list.length;loadDevices()
 if(!list.length){el.innerHTML='<div style="padding:20px;color:#8899aa">该设备暂无容器</div>';return}
 let html='<table><thead><tr><th>名称</th><th>状态</th><th>Android ID</th><th>容器IP</th><th>操作</th></tr></thead><tbody>'
-list.forEach((c,i)=>{const st=(c.Status||c.status||'unknown').toLowerCase(),badge=st==='running'?'badge-green':st==='stopped'||st==='created'||st==='exited'?'badge-red':'badge-yellow',cip=c.IpAddress||c.ip_address||'',adbPort=c.adb||c.Adb||'',adbAddr=adbPort?currentIp+':'+adbPort:'';html+=`<tr><td><span class="link" onclick="showContainerDetail('${c.Name||c.name}','${currentIp}')">${c.Name||c.name}</span></td><td><span class="badge ${badge}">${st}</span></td><td style="font-size:11px;color:#8899aa">${c.AndroidId||c.android_id||'-'}</td><td>${cip||'-'}</td><td><button class="btn btn-sm btn-outline" onclick="showContainerDetail('${c.Name||c.name}','${currentIp}')">管理</button><button class="btn btn-sm btn-primary sc-btn" data-name="${c.Name||c.name}" data-adb="${adbAddr}" ${st!=='running'||!adbAddr?'disabled':''}>投屏</button></td></tr>`})
-html+='</tbody></table>';el.innerHTML=html;if(typeof bindScreenButtons==='function')bindScreenButtons()
+list.forEach((c,i)=>{const st=(c.Status||c.status||'unknown').toLowerCase(),badge=st==='running'?'badge-green':st==='stopped'||st==='created'||st==='exited'?'badge-red':'badge-yellow',cip=c.IpAddress||c.ip_address||'',adbPort=c.adb||c.Adb||'',adbAddr=adbPort?currentIp+':'+adbPort:'';html+=`<tr><td><span class="link" onclick="showContainerDetail('${c.Name||c.name}','${currentIp}')">${c.Name||c.name}</span></td><td><span class="badge ${badge}">${st}</span></td><td style="font-size:11px;color:#8899aa">${c.AndroidId||c.android_id||'-'}</td><td>${cip||'-'}</td><td><button class="btn btn-sm btn-outline" onclick="showContainerDetail('${c.Name||c.name}','${currentIp}')">管理</button><button class="btn btn-sm btn-primary" onclick="launchScrcpy('${adbAddr}')" ${st!=='running'||!adbAddr?'disabled':''}>投屏</button></td></tr>`})
+html+='</tbody></table>';el.innerHTML=html
 }).catch(e=>{document.getElementById('containerList').innerHTML='<div style="color:#f57f6e">请求失败: '+e.message+'</div>'})
 }
 
@@ -541,8 +505,8 @@ let filtered=kw?allContainers.filter(c=>(c.Name||c.name||'').toLowerCase().inclu
 const el=document.getElementById('allContainerList')
 if(!filtered.length){el.innerHTML='<div style="padding:20px;color:#8899aa">暂无匹配的容器</div>';return}
 let html='<table><thead><tr><th>设备IP</th><th>容器名称</th><th>状态</th><th>已导入配置</th><th>镜像</th><th>容器IP</th><th>ADB端口</th><th>代理地址</th><th>操作</th></tr></thead><tbody>'
-filtered.forEach((c,i)=>{const st=(c.Status||c.status||c.state||'unknown').toLowerCase(),badge=st==='running'?'badge-green':st==='stopped'||st==='created'||st==='exited'?'badge-red':'badge-yellow',proxy=c.s5?(c.s5.addr||(c.s5.status===1?'已启动':'未启动')):'-',adb=c.adb||c.Adb||'-',img=c.image||c.Image||'-',shortImg=img.length>50?img.substring(0,50)+'...':img,cfg=c.config_name||'',cname=c.Name||c.name,encName=encodeURIComponent(cname),cip=c.IpAddress||c.ip_address||'',adbPort=c.adb||c.Adb||'',adbAddr=adbPort?(c.device_ip||'')+':'+adbPort:'';html+=`<tr><td>${c.device_ip||'-'}</td><td><span class="link" onclick="showContainerDetail('${cname}','${c.device_ip}')" title="${cname}">${cname.length>40?cname.substring(0,40)+'...':cname}</span><span class="icon-btn" onclick="copyName(decodeURIComponent('${encName}'))" title="复制名称"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span></td><td><span class="badge ${badge}">${st}</span></td><td>${cfg?'<span class="badge badge-blue" title="'+cfg+'">'+cfg:'<span style="color:#555">-'}</span></td><td class="text-truncate" title="${img}">${shortImg}</td><td>${cip||'-'}</td><td>${adb}</td><td style="max-width:none" title="${proxy}">${proxy}</td><td><button class="btn btn-sm btn-outline" onclick="showContainerDetail('${cname}','${c.device_ip}')">管理</button><button class="btn btn-sm btn-primary sc-btn" data-name="${cname}" data-adb="${adbAddr}" ${st!=='running'||!adbAddr?'disabled':''}>投屏</button></td></tr>`})
-html+='</tbody></table>';el.innerHTML=html;if(typeof bindScreenButtons==='function')bindScreenButtons()
+filtered.forEach((c,i)=>{const st=(c.Status||c.status||c.state||'unknown').toLowerCase(),badge=st==='running'?'badge-green':st==='stopped'||st==='created'||st==='exited'?'badge-red':'badge-yellow',proxy=c.s5?(c.s5.addr||(c.s5.status===1?'已启动':'未启动')):'-',adb=c.adb||c.Adb||'-',img=c.image||c.Image||'-',shortImg=img.length>50?img.substring(0,50)+'...':img,cfg=c.config_name||'',cname=c.Name||c.name,encName=encodeURIComponent(cname),cip=c.IpAddress||c.ip_address||'',adbPort=c.adb||c.Adb||'',adbAddr=adbPort?(c.device_ip||'')+':'+adbPort:'';html+=`<tr><td>${c.device_ip||'-'}</td><td><span class="link" onclick="showContainerDetail('${cname}','${c.device_ip}')" title="${cname}">${cname.length>40?cname.substring(0,40)+'...':cname}</span><span class="icon-btn" onclick="copyName(decodeURIComponent('${encName}'))" title="复制名称"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span></td><td><span class="badge ${badge}">${st}</span></td><td>${cfg?'<span class="badge badge-blue" title="'+cfg+'">'+cfg:'<span style="color:#555">-'}</span></td><td class="text-truncate" title="${img}">${shortImg}</td><td>${cip||'-'}</td><td>${adb}</td><td style="max-width:none" title="${proxy}">${proxy}</td><td><button class="btn btn-sm btn-outline" onclick="showContainerDetail('${cname}','${c.device_ip}')">管理</button><button class="btn btn-sm btn-primary" onclick="launchScrcpy('${adbAddr}')" ${st!=='running'||!adbAddr?'disabled':''}>投屏</button></td></tr>`})
+html+='</tbody></table>';el.innerHTML=html
 }
 
 // ==================== 真机参数库 ====================
@@ -837,244 +801,21 @@ loadDevices()
 }
 
 // ==================== 群控窗 ====================
-const MAX_SCREENS = 4;
-let screenSessions = [];
-let socket = null;
-console.log('screen script loaded');
-
-try { socket = io(window.location.origin, { transports: ['websocket', 'polling'] }); } catch(e) { console.warn('Socket.IO not loaded', e); }
-
-function bindScreenButtons() {
-  console.log('bindScreenButtons called');
-  const btns = document.querySelectorAll('.sc-btn');
-  console.log('found sc-btn count:', btns.length);
-  btns.forEach(btn => {
-    btn.onclick = function() {
-      console.log('sc-btn onclick fired', this.dataset);
-      if (this.disabled) { console.log('sc-btn is disabled'); return; }
-      startScreen(this.dataset.name, this.dataset.adb);
-    };
-  });
+function launchScrcpy(adbAddr) {
+  if (!adbAddr) { toast('ADB 地址为空', 'error'); return; }
+  toast('正在启动 scrcpy: ' + adbAddr, 'info');
+  fetch('/api/scrcpy/launch', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ adb_addr: adbAddr })
+  }).then(r => r.json()).then(d => {
+    if (d.code === 200) toast(d.msg, 'success');
+    else toast(d.msg || '启动失败', 'error');
+  }).catch(e => toast('请求失败: ' + e.message, 'error'));
 }
-
-// 捕获阶段 + 冒泡阶段双重监测，包含 mousedown
-document.addEventListener('mousedown', function(e) {
-  const btn = e.target.closest ? e.target.closest('.sc-btn') : null;
-  if (btn) console.log('MOUSEDOWN on sc-btn', btn.dataset);
-}, true);
-document.addEventListener('click', function(e) {
-  const btn = e.target.closest ? e.target.closest('.sc-btn') : null;
-  if (btn) {
-    console.log('CAPTURE sc-btn', btn.dataset, 'disabled:', btn.disabled);
-    if (!btn.disabled) {
-      e.stopPropagation();
-      startScreen(btn.dataset.name, btn.dataset.adb);
-    }
-    return;
-  }
-  let el = e.target;
-  let info = el.tagName;
-  if (el.className) info += ' .' + (typeof el.className === 'string' ? el.className.split(' ')[0] : '');
-  if (el.getAttribute && el.getAttribute('data-name')) info += ' [name=' + el.getAttribute('data-name') + ']';
-  if (el.closest) {
-    const parentBtn = el.closest('button');
-    if (parentBtn) info += ' (inside button: ' + parentBtn.className + ')';
-  }
-  console.log('CLICK:', info);
-}, true);
-
-if (socket) {
-  socket.on('screen_frame', (data) => {
-    const slot = data.slot || 0;
-    const session = screenSessions.find(s => s.slot === slot);
-    if (session) session.feed(data);
-  });
-
-  socket.on('screen_error', (data) => {
-    toast(data.msg || '投屏错误', 'error');
-  });
-
-  socket.on('screen_end', (data) => {});
-}
-
-class ScreenPlayer {
-  constructor(canvas, slot) {
-    this.canvas = canvas;
-    this.ctx = canvas.getContext('2d');
-    this.slot = slot;
-    this.decoder = null;
-    this.buffer = new Uint8Array(0);
-    this.lastStart = -1;
-    this.nalCache = [];
-    this._initDecoder();
-  }
-
-  _initDecoder() {
-    if (typeof VideoDecoder === 'undefined') {
-      this._setStatus('浏览器不支持 WebCodecs，请使用 Chrome/Edge');
-      return;
-    }
-    try {
-      this.decoder = new VideoDecoder({
-        output: (frame) => {
-          try {
-            this.canvas.width = frame.displayWidth;
-            this.canvas.height = frame.displayHeight;
-            this.ctx.drawImage(frame, 0, 0);
-          } catch(e) {}
-          frame.close();
-        },
-        error: (e) => console.error('解码错误:', e)
-      });
-      this.decoder.configure({ codec: 'avc1.42C01E', optimizeForLatency: true });
-    } catch(e) {
-      this._setStatus('解码器初始化失败');
-    }
-  }
-
-  feed(data) {
-    this.buffer = this._concat(this.buffer, new Uint8Array(data));
-    this._parseStream();
-  }
-
-  _parseStream() {
-    let pos = 0;
-    while (pos < this.buffer.length - 3) {
-      let startLen = 0;
-      if (this.buffer[pos] === 0 && this.buffer[pos+1] === 0 && this.buffer[pos+2] === 1) {
-        startLen = 3;
-      } else if (pos < this.buffer.length - 4 && this.buffer[pos] === 0 && this.buffer[pos+1] === 0 && this.buffer[pos+2] === 0 && this.buffer[pos+3] === 1) {
-        startLen = 4;
-      }
-      if (startLen > 0) {
-        if (this.lastStart >= 0) {
-          const nalData = this.buffer.slice(this.lastStart, pos);
-          const nalType = nalData[startLen] & 0x1F;
-          this.nalCache.push(nalData);
-          if (nalType === 5 || nalType === 1) this._flushFrame();
-        }
-        this.lastStart = pos;
-        pos += startLen;
-      } else { pos++; }
-    }
-    if (this.lastStart >= 0) {
-      this.buffer = this.buffer.slice(this.lastStart);
-      this.lastStart = 0;
-    }
-  }
-
-  _flushFrame() {
-    if (this.nalCache.length === 0 || !this.decoder) return;
-    const totalLen = this.nalCache.reduce((s, u) => s + u.length, 0);
-    const frame = new Uint8Array(totalLen);
-    let offset = 0;
-    for (const nal of this.nalCache) { frame.set(nal, offset); offset += nal.length; }
-    this.nalCache = [];
-    try {
-      this.decoder.decode(new EncodedVideoChunk({ type: 'key', timestamp: 0, duration: 100_000, data: frame }));
-    } catch(e) {}
-  }
-
-  destroy() {
-    if (this.decoder) { try { this.decoder.close(); } catch {} this.decoder = null; }
-    this.buffer = new Uint8Array(0);
-    this.nalCache = [];
-    this.lastStart = -1;
-  }
-
-  _setStatus(text) {
-    const cell = document.getElementById('sc-' + this.slot);
-    if (cell) {
-      const s = cell.querySelector('.sc-status');
-      if (s) s.textContent = text;
-    }
-  }
-
-  _concat(a, b) {
-    const c = new Uint8Array(a.length + b.length);
-    c.set(a); c.set(b, a.length);
-    return c;
-  }
-}
-
-function startScreen(name, adbAddr) {
-  console.log('startScreen called', name, adbAddr);
-  if (!adbAddr) { toast('ADB 地址为空，无法投屏', 'error'); return; }
-  if (screenSessions.length >= MAX_SCREENS) {
-    toast('最多同时投屏 ' + MAX_SCREENS + ' 路', 'error');
-    return;
-  }
-  if (screenSessions.find(s => s.name === name)) {
-    toast('该容器已在投屏中', 'info');
-    return;
-  }
-  let slot = -1;
-  for (let i = 0; i < MAX_SCREENS; i++) {
-    if (!screenSessions.find(s => s.slot === i)) { slot = i; break; }
-  }
-  if (slot < 0) { toast('无可用槽位', 'error'); return; }
-
-  const cell = document.getElementById('sc-' + slot);
-  cell.innerHTML = '<div class="sc-label"><span class="sc-name">' + name + '</span><button class="btn btn-sm btn-danger" onclick="stopScreen(' + slot + ')">停止</button></div><canvas></canvas><div class="sc-status">连接中...</div>';
-
-  const canvas = cell.querySelector('canvas');
-  const player = new ScreenPlayer(canvas, slot);
-
-  if (socket) socket.emit('start_screen', { name, adb_addr: adbAddr });
-  else toast('Socket.IO 未连接，无法投屏', 'error');
-
-  screenSessions.push({ slot, name, adbAddr, player, canvas });
-  updateScreenCounter();
-  toast('正在投屏 ' + name, 'info');
-
-  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.getElementById('pageScreenControl').classList.add('active');
-  document.querySelectorAll('.nav-tab').forEach(t => {
-    if (t.textContent.trim() === '群控窗') t.classList.add('active');
-  });
-}
-
-function stopScreen(slot) {
-  const idx = screenSessions.findIndex(s => s.slot === slot);
-  if (idx < 0) return;
-  const session = screenSessions[idx];
-  session.player.destroy();
-  screenSessions.splice(idx, 1);
-  if (socket) socket.emit('stop_screen');
-
-  const cell = document.getElementById('sc-' + slot);
-  cell.innerHTML = '<div class="sc-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg><span>点击容器旁的"投屏"按钮</span></div>';
-  updateScreenCounter();
-}
-
-function clearAllScreens() {
-  [...screenSessions].forEach(s => stopScreen(s.slot));
-}
-
-function updateScreenCounter() {
-  document.getElementById('screenCounter').textContent = '已投屏 ' + screenSessions.length + ' / ' + MAX_SCREENS;
-}
-
-// 事件委托: 监听 screen-btn 点击
-document.addEventListener('click', function(e) {
-  const btn = e.target.closest('.screen-btn');
-  if (btn) {
-    console.log('screen-btn clicked', btn.dataset.name, btn.dataset.adb, 'disabled:', btn.disabled);
-    if (!btn.disabled) {
-      startScreen(btn.dataset.name, btn.dataset.adb);
-    }
-  }
-});
 
 // Init
 loadDevices()
-
-window.testScreen = function(name, adbAddr) {
-  if (!name || !adbAddr) { toast('用法: testScreen("容器名","ip:port")', 'error'); return; }
-  console.log('testScreen called', name, adbAddr);
-  startScreen(name, adbAddr);
-};
 </script>
 </body>
 </html>

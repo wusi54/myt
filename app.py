@@ -4,17 +4,11 @@ import time
 import uuid
 import os
 import sqlite3
-import threading
 import subprocess
 from flask import Flask, request, jsonify, render_template, send_file
-from flask_socketio import SocketIO, emit
 
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
-socketio = SocketIO(app, cors_allowed_origins="*")
-
-# 活跃的投屏流: { sid: { proc, name, adb_addr } }
-screen_streams = {}
 
 API_BASE = "http://192.168.10.83:83"
 TIMEOUT = 30
@@ -959,68 +953,20 @@ def proxy_container_counts():
             pass
     return jsonify({"code": 200, "data": counts})
 
-@app.route('/api/screen/config')
-def screen_config():
-    return jsonify({
-        "code": 200,
-        "max_screens": 4
-    })
+SCRCPY_PATH = r"C:\Users\wusi0\AppData\Local\Microsoft\WinGet\Packages\Genymobile.scrcpy_Microsoft.Winget.Source_8wekyb3d8bbwe\scrcpy-win64-v4.0\scrcpy.exe"
 
-# ========== Socket.IO 投屏 ==========
-@socketio.on('start_screen')
-def on_start_screen(data):
-    name = data.get('name', '')
-    adb_addr = data.get('adb_addr', '')
-    if not name or not adb_addr:
-        emit('screen_error', {'msg': 'missing name or adb_addr'})
-        return
-
-    sid = request.sid
-
-    def stream_worker():
-        try:
-            proc = subprocess.Popen(
-                ['adb', '-s', adb_addr, 'exec-out',
-                 'screenrecord', '--output-format=h264',
-                 '--size', '480x720',
-                 '--bit-rate', '500000',
-                 '--time-limit', '180', '-'],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL
-            )
-            screen_streams[sid] = {'proc': proc, 'name': name, 'adb_addr': adb_addr}
-
-            while True:
-                chunk = proc.stdout.read(65536)
-                if not chunk:
-                    break
-                socketio.emit('screen_frame', chunk, to=sid)
-
-            proc.wait()
-        except Exception as e:
-            socketio.emit('screen_error', {'msg': str(e)}, to=sid)
-        finally:
-            screen_streams.pop(sid, None)
-            socketio.emit('screen_end', {}, to=sid)
-
-    t = threading.Thread(target=stream_worker, daemon=True)
-    t.start()
-
-@socketio.on('stop_screen')
-def on_stop_screen():
-    sid = request.sid
-    stream = screen_streams.pop(sid, None)
-    if stream:
-        try: stream['proc'].kill()
-        except: pass
-
-@socketio.on('disconnect')
-def on_disconnect():
-    sid = request.sid
-    stream = screen_streams.pop(sid, None)
-    if stream:
-        try: stream['proc'].kill()
-        except: pass
+@app.route('/api/scrcpy/launch', methods=['POST'])
+def scrcpy_launch():
+    data = request.json
+    adb_addr = data.get('adb_addr', '').strip()
+    if not adb_addr:
+        return jsonify({"code": 400, "msg": "adb_addr required"})
+    try:
+        subprocess.Popen([SCRCPY_PATH, '--max-size', '720', '-b', '2M',
+                          '--max-fps', '30', '--serial', adb_addr])
+        return jsonify({"code": 200, "msg": f"scrcpy launched for {adb_addr}"})
+    except Exception as e:
+        return jsonify({"code": 500, "msg": str(e)})
 
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5001, debug=True, allow_unsafe_werkzeug=True)
+    app.run(host='0.0.0.0', port=5001, debug=True)
