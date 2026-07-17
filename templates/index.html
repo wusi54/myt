@@ -845,14 +845,30 @@ console.log('screen script loaded');
 try { socket = io(window.location.origin, { transports: ['websocket', 'polling'] }); } catch(e) { console.warn('Socket.IO not loaded', e); }
 
 function bindScreenButtons() {
-  document.querySelectorAll('.sc-btn').forEach(btn => {
+  console.log('bindScreenButtons called');
+  const btns = document.querySelectorAll('.sc-btn');
+  console.log('found sc-btn count:', btns.length);
+  btns.forEach(btn => {
     btn.onclick = function() {
-      if (this.disabled) return;
-      console.log('sc-btn clicked', this.dataset.name, this.dataset.adb);
+      console.log('sc-btn onclick fired', this.dataset);
+      if (this.disabled) { console.log('sc-btn is disabled'); return; }
       startScreen(this.dataset.name, this.dataset.adb);
     };
   });
 }
+
+// 监听所有点击，排查问题
+document.addEventListener('click', function(e) {
+  let el = e.target;
+  let info = el.tagName;
+  if (el.className) info += ' .' + (typeof el.className === 'string' ? el.className.split(' ')[0] : '');
+  if (el.getAttribute && el.getAttribute('data-name')) info += ' [name=' + el.getAttribute('data-name') + ']';
+  if (el.closest) {
+    const parentBtn = el.closest('button');
+    if (parentBtn) info += ' (inside button: ' + parentBtn.className + ')';
+  }
+  console.log('CLICK:', info);
+});
 
 if (socket) {
   socket.on('screen_frame', (data) => {
