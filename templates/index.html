@@ -881,6 +881,7 @@ class ScreenPlayer {
 
     this.ws.onerror = () => {
       this._setStatus('连接失败');
+      toast('投屏连接失败: ws://192.168.10.83:9000 无响应', 'error');
       this.running = false;
     };
   }
@@ -965,6 +966,7 @@ class ScreenPlayer {
 
   _showError(msg) {
     this._setStatus('❌ ' + msg);
+    toast(msg, 'error');
     console.error('[ScreenPlayer]', msg);
   }
 
@@ -998,13 +1000,20 @@ function startScreen(name, ip) {
 
   const canvas = cell.querySelector('canvas');
   const wsUrl = 'ws://192.168.10.83:9000/stream?name=' + encodeURIComponent(name) + '&ip=' + encodeURIComponent(ip);
+  const healthUrl = 'http://192.168.10.83:9001/health';
 
-  const player = new ScreenPlayer(canvas, name, ip, wsUrl);
-  player.connect();
-
-  screenSessions.push({ slot, name, ip, player });
-  updateScreenCounter();
-  toast('正在投屏 ' + name, 'info');
+  // 先检查 Screen Server 是否在运行
+  fetch(healthUrl, { signal: AbortSignal.timeout(3000) }).then(r => r.json()).then(h => {
+    if (h.status !== 'ok') { toast('Screen Server 状态异常: ' + JSON.stringify(h), 'error'); stopScreen(slot); return; }
+    const player = new ScreenPlayer(canvas, name, ip, wsUrl);
+    player.connect();
+    screenSessions.push({ slot, name, ip, player });
+    updateScreenCounter();
+    toast('正在投屏 ' + name, 'info');
+  }).catch(e => {
+    toast('无法连接 Screen Server (192.168.10.83:9001)，请确认已部署并启动', 'error');
+    stopScreen(slot);
+  });
 
   // 切换到群控窗页面
   document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
