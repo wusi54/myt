@@ -524,8 +524,8 @@ if(d.code!==200){el.innerHTML='<div style="color:#f57f6e">获取失败: '+(d.msg
 const dev=devices.find(x=>x.ip===currentIp);if(dev)dev.container_count=list.length;loadDevices()
 if(!list.length){el.innerHTML='<div style="padding:20px;color:#8899aa">该设备暂无容器</div>';return}
 let html='<table><thead><tr><th>名称</th><th>状态</th><th>Android ID</th><th>容器IP</th><th>操作</th></tr></thead><tbody>'
-list.forEach((c,i)=>{const st=(c.Status||c.status||'unknown').toLowerCase(),badge=st==='running'?'badge-green':st==='stopped'||st==='created'||st==='exited'?'badge-red':'badge-yellow',cip=c.IpAddress||c.ip_address||'',adbPort=c.adb||c.Adb||'',adbAddr=adbPort?currentIp+':'+adbPort:'';html+=`<tr><td><span class="link" onclick="showContainerDetail('${c.Name||c.name}','${currentIp}')">${c.Name||c.name}</span></td><td><span class="badge ${badge}">${st}</span></td><td style="font-size:11px;color:#8899aa">${c.AndroidId||c.android_id||'-'}</td><td>${cip||'-'}</td><td><button class="btn btn-sm btn-outline" onclick="showContainerDetail('${c.Name||c.name}','${currentIp}')">管理</button><button class="btn btn-sm btn-primary" onclick="startScreen('${c.Name||c.name}','${adbAddr}')" ${st!=='running'||!adbAddr?'disabled':''}>投屏</button></td></tr>`})
-html+='</tbody></table>';el.innerHTML=html
+list.forEach((c,i)=>{const st=(c.Status||c.status||'unknown').toLowerCase(),badge=st==='running'?'badge-green':st==='stopped'||st==='created'||st==='exited'?'badge-red':'badge-yellow',cip=c.IpAddress||c.ip_address||'',adbPort=c.adb||c.Adb||'',adbAddr=adbPort?currentIp+':'+adbPort:'';html+=`<tr><td><span class="link" onclick="showContainerDetail('${c.Name||c.name}','${currentIp}')">${c.Name||c.name}</span></td><td><span class="badge ${badge}">${st}</span></td><td style="font-size:11px;color:#8899aa">${c.AndroidId||c.android_id||'-'}</td><td>${cip||'-'}</td><td><button class="btn btn-sm btn-outline" onclick="showContainerDetail('${c.Name||c.name}','${currentIp}')">管理</button><button class="btn btn-sm btn-primary sc-btn" data-name="${c.Name||c.name}" data-adb="${adbAddr}" ${st!=='running'||!adbAddr?'disabled':''}>投屏</button></td></tr>`})
+html+='</tbody></table>';el.innerHTML=html;if(typeof bindScreenButtons==='function')bindScreenButtons()
 }).catch(e=>{document.getElementById('containerList').innerHTML='<div style="color:#f57f6e">请求失败: '+e.message+'</div>'})
 }
 
@@ -541,8 +541,8 @@ let filtered=kw?allContainers.filter(c=>(c.Name||c.name||'').toLowerCase().inclu
 const el=document.getElementById('allContainerList')
 if(!filtered.length){el.innerHTML='<div style="padding:20px;color:#8899aa">暂无匹配的容器</div>';return}
 let html='<table><thead><tr><th>设备IP</th><th>容器名称</th><th>状态</th><th>已导入配置</th><th>镜像</th><th>容器IP</th><th>ADB端口</th><th>代理地址</th><th>操作</th></tr></thead><tbody>'
-filtered.forEach((c,i)=>{const st=(c.Status||c.status||c.state||'unknown').toLowerCase(),badge=st==='running'?'badge-green':st==='stopped'||st==='created'||st==='exited'?'badge-red':'badge-yellow',proxy=c.s5?(c.s5.addr||(c.s5.status===1?'已启动':'未启动')):'-',adb=c.adb||c.Adb||'-',img=c.image||c.Image||'-',shortImg=img.length>50?img.substring(0,50)+'...':img,cfg=c.config_name||'',cname=c.Name||c.name,encName=encodeURIComponent(cname),cip=c.IpAddress||c.ip_address||'',adbPort=c.adb||c.Adb||'',adbAddr=adbPort?(c.device_ip||'')+':'+adbPort:'';html+=`<tr><td>${c.device_ip||'-'}</td><td><span class="link" onclick="showContainerDetail('${cname}','${c.device_ip}')" title="${cname}">${cname.length>40?cname.substring(0,40)+'...':cname}</span><span class="icon-btn" onclick="copyName(decodeURIComponent('${encName}'))" title="复制名称"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span></td><td><span class="badge ${badge}">${st}</span></td><td>${cfg?'<span class="badge badge-blue" title="'+cfg+'">'+cfg:'<span style="color:#555">-'}</span></td><td class="text-truncate" title="${img}">${shortImg}</td><td>${cip||'-'}</td><td>${adb}</td><td style="max-width:none" title="${proxy}">${proxy}</td><td><button class="btn btn-sm btn-outline" onclick="showContainerDetail('${cname}','${c.device_ip}')">管理</button><button class="btn btn-sm btn-primary" onclick="startScreen('${cname}','${adbAddr}')" ${st!=='running'||!adbAddr?'disabled':''}>投屏</button></td></tr>`})
-html+='</tbody></table>';el.innerHTML=html
+filtered.forEach((c,i)=>{const st=(c.Status||c.status||c.state||'unknown').toLowerCase(),badge=st==='running'?'badge-green':st==='stopped'||st==='created'||st==='exited'?'badge-red':'badge-yellow',proxy=c.s5?(c.s5.addr||(c.s5.status===1?'已启动':'未启动')):'-',adb=c.adb||c.Adb||'-',img=c.image||c.Image||'-',shortImg=img.length>50?img.substring(0,50)+'...':img,cfg=c.config_name||'',cname=c.Name||c.name,encName=encodeURIComponent(cname),cip=c.IpAddress||c.ip_address||'',adbPort=c.adb||c.Adb||'',adbAddr=adbPort?(c.device_ip||'')+':'+adbPort:'';html+=`<tr><td>${c.device_ip||'-'}</td><td><span class="link" onclick="showContainerDetail('${cname}','${c.device_ip}')" title="${cname}">${cname.length>40?cname.substring(0,40)+'...':cname}</span><span class="icon-btn" onclick="copyName(decodeURIComponent('${encName}'))" title="复制名称"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span></td><td><span class="badge ${badge}">${st}</span></td><td>${cfg?'<span class="badge badge-blue" title="'+cfg+'">'+cfg:'<span style="color:#555">-'}</span></td><td class="text-truncate" title="${img}">${shortImg}</td><td>${cip||'-'}</td><td>${adb}</td><td style="max-width:none" title="${proxy}">${proxy}</td><td><button class="btn btn-sm btn-outline" onclick="showContainerDetail('${cname}','${c.device_ip}')">管理</button><button class="btn btn-sm btn-primary sc-btn" data-name="${cname}" data-adb="${adbAddr}" ${st!=='running'||!adbAddr?'disabled':''}>投屏</button></td></tr>`})
+html+='</tbody></table>';el.innerHTML=html;if(typeof bindScreenButtons==='function')bindScreenButtons()
 }
 
 // ==================== 真机参数库 ====================
@@ -838,21 +838,21 @@ loadDevices()
 
 // ==================== 群控窗 ====================
 const MAX_SCREENS = 4;
-let screenSessions = []; // { slot, name, socket }
+let screenSessions = [];
 let socket = null;
+console.log('screen script loaded');
 
 try { socket = io(window.location.origin, { transports: ['websocket', 'polling'] }); } catch(e) { console.warn('Socket.IO not loaded', e); }
 
-// 事件委托必须在最前面注册，即使 socket.io 加载失败
-document.addEventListener('click', function(e) {
-  const btn = e.target.closest('.screen-btn');
-  if (btn) {
-    console.log('screen-btn clicked', btn.dataset.name, btn.dataset.adb, 'disabled:', btn.disabled);
-    if (!btn.disabled) {
-      startScreen(btn.dataset.name, btn.dataset.adb);
-    }
-  }
-});
+function bindScreenButtons() {
+  document.querySelectorAll('.sc-btn').forEach(btn => {
+    btn.onclick = function() {
+      if (this.disabled) return;
+      console.log('sc-btn clicked', this.dataset.name, this.dataset.adb);
+      startScreen(this.dataset.name, this.dataset.adb);
+    };
+  });
+}
 
 if (socket) {
   socket.on('screen_frame', (data) => {
@@ -969,6 +969,7 @@ class ScreenPlayer {
 }
 
 function startScreen(name, adbAddr) {
+  console.log('startScreen called', name, adbAddr);
   if (!adbAddr) { toast('ADB 地址为空，无法投屏', 'error'); return; }
   if (screenSessions.length >= MAX_SCREENS) {
     toast('最多同时投屏 ' + MAX_SCREENS + ' 路', 'error');
@@ -1042,6 +1043,7 @@ loadDevices()
 
 window.testScreen = function(name, adbAddr) {
   if (!name || !adbAddr) { toast('用法: testScreen("容器名","ip:port")', 'error'); return; }
+  console.log('testScreen called', name, adbAddr);
   startScreen(name, adbAddr);
 };
 </script>
