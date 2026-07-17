@@ -5,7 +5,7 @@ import uuid
 import os
 import sqlite3
 import subprocess
-from flask import Flask, request, jsonify, render_template, send_file
+from flask import Flask, request, jsonify, render_template, send_file, redirect
 
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
@@ -967,7 +967,9 @@ def scrcpy_launch():
     try:
         subprocess.Popen([SCRCPY_PATH, '--max-size', '720', '-b', '2M',
                           '--max-fps', '30', '--serial', adb_addr])
-        return jsonify({"code": 200, "msg": f"scrcpy launched for {adb_addr}"})
+        if request.is_json:
+            return jsonify({"code": 200, "msg": f"scrcpy launched for {adb_addr}"})
+        return redirect('/')
     except Exception as e:
         return jsonify({"code": 500, "msg": str(e)})
 
