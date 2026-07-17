@@ -857,8 +857,17 @@ function bindScreenButtons() {
   });
 }
 
-// 监听所有点击，排查问题
+// 捕获阶段监听所有点击
 document.addEventListener('click', function(e) {
+  const btn = e.target.closest ? e.target.closest('.sc-btn') : null;
+  if (btn) {
+    console.log('CAPTURE sc-btn', btn.dataset);
+    if (!btn.disabled) {
+      e.stopPropagation();
+      startScreen(btn.dataset.name, btn.dataset.adb);
+    }
+    return;
+  }
   let el = e.target;
   let info = el.tagName;
   if (el.className) info += ' .' + (typeof el.className === 'string' ? el.className.split(' ')[0] : '');
@@ -868,7 +877,7 @@ document.addEventListener('click', function(e) {
     if (parentBtn) info += ' (inside button: ' + parentBtn.className + ')';
   }
   console.log('CLICK:', info);
-});
+}, true);
 
 if (socket) {
   socket.on('screen_frame', (data) => {
