@@ -857,11 +857,15 @@ function bindScreenButtons() {
   });
 }
 
-// 捕获阶段监听所有点击
+// 捕获阶段 + 冒泡阶段双重监测，包含 mousedown
+document.addEventListener('mousedown', function(e) {
+  const btn = e.target.closest ? e.target.closest('.sc-btn') : null;
+  if (btn) console.log('MOUSEDOWN on sc-btn', btn.dataset);
+}, true);
 document.addEventListener('click', function(e) {
   const btn = e.target.closest ? e.target.closest('.sc-btn') : null;
   if (btn) {
-    console.log('CAPTURE sc-btn', btn.dataset);
+    console.log('CAPTURE sc-btn', btn.dataset, 'disabled:', btn.disabled);
     if (!btn.disabled) {
       e.stopPropagation();
       startScreen(btn.dataset.name, btn.dataset.adb);
