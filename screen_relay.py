@@ -21,10 +21,10 @@ async def stream_worker(ws, adb_addr):
     r = subprocess.run([ADB, 'connect', adb_addr], capture_output=True, timeout=10)
     out = r.stdout.decode(errors='replace')
     if 'connected' not in out and 'already' not in out:
-        print(f'[stream] adb connect failed: {out}')
+        print(f'[stream] adb connect failed: {out}', flush=True)
         await ws.close(4002, f'adb connect failed: {out}')
         return
-    print(f'[stream] adb connected: {adb_addr}')
+    print(f'[stream] adb connected: {adb_addr}', flush=True)
 
     heartbeat = asyncio.create_task(adb_heartbeat(adb_addr))
 
@@ -47,7 +47,7 @@ async def stream_worker(ws, adb_addr):
             await ws.close(4003, 'no video data')
             return
     except asyncio.TimeoutError:
-        print(f'[stream] {adb_addr} timeout waiting for first frame')
+        print(f'[stream] {adb_addr} timeout waiting for first frame', flush=True)
         await ws.close(4003, 'screenrecord timeout')
         proc.kill()
         return
@@ -58,12 +58,11 @@ async def stream_worker(ws, adb_addr):
                 break
             await ws.send(chunk)
         await proc.wait()
-        # 检查错误输出
         err = await proc.stderr.read()
         if err:
-            print(f'[stream] {adb_addr} stderr: {err.decode(errors="replace")}')
+            print(f'[stream] {adb_addr} stderr: {err.decode(errors="replace")}', flush=True)
     except Exception as e:
-        print(f'[stream] {adb_addr} error: {e}')
+        print(f'[stream] {adb_addr} error: {e}', flush=True)
         try: proc.kill()
         except: pass
     finally:
@@ -85,7 +84,7 @@ async def handler(ws):
 
 async def main():
     import websockets
-    print(f'Screen relay on ws://0.0.0.0:{WS_PORT}')
+    print(f'[relay] Starting on ws://0.0.0.0:{WS_PORT}', flush=True)
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
