@@ -4,14 +4,12 @@ import signal
 import os
 
 WS_PORT = 9000
-ADB_PATH = r"C:\Users\wusi0\AppData\Local\Android\Sdk\platform-tools\adb.exe"
 active_streams = {}
 
 async def stream_worker(ws, adb_addr):
-    # 先唤醒设备
-    subprocess.run([ADB_PATH, '-s', adb_addr, 'shell', 'input', 'keyevent', '26'], capture_output=True, timeout=5)
-    subprocess.run([ADB_PATH, '-s', adb_addr, 'shell', 'input', 'keyevent', '82'], capture_output=True, timeout=5)
-    
+    # 先 adb connect (确保设备已注册)
+    subprocess.run(['adb', 'connect', adb_addr], capture_output=True, timeout=10)
+
     proc = await asyncio.create_subprocess_exec(
         ADB_PATH, '-s', adb_addr, 'exec-out',
         'screenrecord', '--output-format=h264',

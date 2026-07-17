@@ -968,20 +968,5 @@ def screen_config():
         "ws_url": f"ws://{request.host.split(':')[0]}:9000"
     })
 
-ADB_PATH = r"C:\Users\wusi0\AppData\Local\Android\Sdk\platform-tools\adb.exe"
-
-@app.route('/api/container/wake', methods=['POST'])
-def wake_container():
-    data = request.json
-    adb_addr = data.get('adb_addr', '').strip()
-    if not adb_addr:
-        return jsonify({"code": 400, "msg": "adb_addr required"})
-    try:
-        subprocess.run([ADB_PATH, '-s', adb_addr, 'shell', 'input', 'keyevent', '26'], capture_output=True, timeout=5)
-        subprocess.run([ADB_PATH, '-s', adb_addr, 'shell', 'input', 'keyevent', '82'], capture_output=True, timeout=5)
-        return jsonify({"code": 200, "msg": "wake signal sent"})
-    except Exception as e:
-        return jsonify({"code": 500, "msg": str(e)})
-
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=True)
