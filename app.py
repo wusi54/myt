@@ -891,7 +891,6 @@ def screen_config():
     return jsonify({
         "code": 200,
         "ws_port": 9000,
-        "health_port": 9001,
         "max_screens": 4
     })
 

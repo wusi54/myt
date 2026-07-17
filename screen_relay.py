@@ -5,11 +5,8 @@ import signal
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(__file__))
-
 ADB_PORT = 5555
 WS_PORT = 9000
-HEALTH_PORT = 9001
 MAX_STREAMS = 10
 
 active_streams = {}
@@ -93,33 +90,10 @@ async def ws_handler(ws, path):
     except Exception as e:
         print(f'[stream] error: {e}')
 
-async def health_handler(reader, writer):
-    data = await reader.read(1024)
-    path = data.decode(errors='replace').split(' ')[1] if data else '/'
-    if path == '/health':
-        body = json.dumps({
-            'status': 'ok',
-            'streams': len(active_streams),
-            'max_streams': MAX_STREAMS
-        }).encode()
-        resp = (
-            b'HTTP/1.1 200 OK\r\n'
-            b'Content-Type: application/json\r\n'
-            b'Content-Length: ' + str(len(body)).encode() + b'\r\n'
-            b'Access-Control-Allow-Origin: *\r\n'
-            b'\r\n' + body
-        )
-    else:
-        resp = b'HTTP/1.1 404 NOT FOUND\r\n\r\n'
-    writer.write(resp)
-    await writer.drain()
-    writer.close()
-
 async def main():
     import websockets
 
     print(f'Screen relay starting on ws://0.0.0.0:{WS_PORT}')
-    print(f'Health check on http://0.0.0.0:{HEALTH_PORT}/health')
 
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
@@ -131,8 +105,7 @@ async def main():
             pass
 
     async with websockets.serve(ws_handler, '0.0.0.0', WS_PORT):
-        async with await asyncio.start_server(health_handler, '0.0.0.0', HEALTH_PORT) as health_srv:
-            await stop.wait()
+        await stop.wait()
 
     for name, proc in list(active_streams.items()):
         try: proc.kill()

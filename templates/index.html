@@ -880,8 +880,7 @@ class ScreenPlayer {
     };
 
     this.ws.onerror = () => {
-      this._setStatus('连接失败');
-      toast('投屏连接失败: WebSocket 无响应', 'error');
+      toast('投屏连接失败，请确认 screen_relay.py 已启动', 'error');
       this.running = false;
     };
   }
@@ -1001,20 +1000,12 @@ function startScreen(name, ip) {
   const canvas = cell.querySelector('canvas');
   const host = window.location.hostname || 'localhost';
   const wsUrl = 'ws://' + host + ':9000/stream?name=' + encodeURIComponent(name) + '&ip=' + encodeURIComponent(ip);
-  const healthUrl = 'http://' + host + ':9001/health';
 
-  // 先检查 Screen Server 是否在运行
-  fetch(healthUrl, { signal: AbortSignal.timeout(3000) }).then(r => r.json()).then(h => {
-    if (h.status !== 'ok') { toast('Screen Server 状态异常: ' + JSON.stringify(h), 'error'); stopScreen(slot); return; }
-    const player = new ScreenPlayer(canvas, name, ip, wsUrl);
-    player.connect();
-    screenSessions.push({ slot, name, ip, player });
-    updateScreenCounter();
-    toast('正在投屏 ' + name, 'info');
-  }).catch(e => {
-    toast('无法连接 Screen Relay，请确认已启动 screen_relay.py', 'error');
-    stopScreen(slot);
-  });
+  const player = new ScreenPlayer(canvas, name, ip, wsUrl);
+  player.connect();
+  screenSessions.push({ slot, name, ip, player });
+  updateScreenCounter();
+  toast('正在投屏 ' + name, 'info');
 
   // 切换到群控窗页面
   document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
