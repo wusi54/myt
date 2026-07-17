@@ -83,6 +83,7 @@ tr:hover td{background:#1e2e3e}
 </style>
 </head>
 <body>
+<script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
 <div class="navbar">
 <h1>魔云腾管理平台</h1>
 <div class="nav-tab active" onclick="switchPage('pageDevices',this)">设备管理</div>
@@ -108,7 +109,7 @@ tr:hover td{background:#1e2e3e}
 <div class="stat-box"><div class="num" id="statContainerCount">0</div><div class="label">容器总数</div></div>
 </div>
 <div class="card">
-<div class="card-header"><h3>设备列表</h3><span style="color:#8899aa;font-size:12px" id="deviceCountLabel"></span></div>
+<div class="card-header"><h3>设备列表</h3><div style="display:flex;gap:8px;align-items:center"><span style="color:#8899aa;font-size:12px" id="deviceCountLabel"></span><button class="btn btn-sm btn-outline" onclick="refreshDeviceStatus()">刷新状态</button></div></div>
 <div id="deviceList"><div style="text-align:center;padding:40px;color:#8899aa">暂无设备，请添加设备</div></div>
 </div>
 <div class="card" id="containerSection" style="display:none">
@@ -493,13 +494,25 @@ devices=d.data||[]
 document.getElementById('statDeviceCount').textContent=devices.length
 const el=document.getElementById('deviceList');document.getElementById('deviceCountLabel').textContent='共 '+devices.length+' 台'
 if(!devices.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无设备，请添加设备</div>';document.getElementById('containerSection').style.display='none';return}
-let html='<table><thead><tr><th>IP</th><th>名称</th><th>端口</th><th>容器数</th><th>主机版本</th><th>操作</th></tr></thead><tbody>'
-devices.forEach(dev=>{html+=`<tr><td><span class="link" onclick="selectDevice('${dev.ip}')">${dev.ip}</span></td><td>${dev.name||'-'}</td><td>${dev.port||'83'}</td><td><span class="badge badge-gray">${dev.container_count||'?'}</span></td><td style="font-size:11px;color:#8899aa">${dev.host_ver||'-'}</td><td><button class="btn btn-sm btn-primary" onclick="selectDevice('${dev.ip}')">查看容器</button><button class="btn btn-sm btn-danger" onclick="removeDevice('${dev.ip}')">删除</button></td></tr>`})
+let html='<table><thead><tr><th>IP</th><th>名称</th><th>端口</th><th>状态</th><th>容器数</th><th>主机版本</th><th>操作</th></tr></thead><tbody>'
+devices.forEach(dev=>{const st=dev.status||'unknown';const badge=st==='online'?'badge-green':st==='offline'?'badge-red':'badge-gray';html+=`<tr><td><span class="link" onclick="selectDevice('${dev.ip}')">${dev.ip}</span></td><td>${dev.name||'-'}</td><td>${dev.port||'83'}</td><td><span class="badge ${badge}" id="status-${dev.ip}">${st}</span></td><td><span class="badge badge-gray">${dev.container_count||'?'}</span></td><td style="font-size:11px;color:#8899aa">${dev.host_ver||'-'}</td><td><button class="btn btn-sm btn-primary" onclick="selectDevice('${dev.ip}')">查看容器</button><button class="btn btn-sm btn-danger" onclick="removeDevice('${dev.ip}')">删除</button></td></tr>`})
 html+='</tbody></table>';el.innerHTML=html
 })
 }
 
 function removeDevice(ip){if(!confirm('确定删除设备 '+ip+'?'))return;fetch('/api/device/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip})}).then(r=>r.json()).then(d=>{toast(d.msg,'success');loadDevices()})}
+
+function refreshAllViews(){
+if(currentIp)refreshContainers();const cp=document.getElementById('pageContainers');if(cp.classList.contains('active'))loadAllContainers()
+}
+
+function refreshDeviceStatus(){
+toast('正在检查设备状态...','info')
+fetch('/api/device/check_all',{method:'POST'}).then(r=>r.json()).then(d=>{
+if(d.code===200){const data=d.data||{};devices.forEach(dev=>{const el=document.getElementById('status-'+dev.ip);if(el){const st=data[dev.ip]||'unknown';const badge=st==='online'?'badge-green':st==='offline'?'badge-red':'badge-gray';el.textContent=st;el.className='badge '+badge}});toast('状态已刷新','success')}else toast('检查失败','error')
+loadDevices()
+}).catch(e=>toast('请求失败: '+e.message,'error'))
+}
 
 function selectDevice(ip){currentIp=ip;document.getElementById('currentDeviceLabel').textContent=ip;document.getElementById('containerSection').style.display='block';refreshContainers()}
 
@@ -511,7 +524,7 @@ if(d.code!==200){el.innerHTML='<div style="color:#f57f6e">获取失败: '+(d.msg
 const dev=devices.find(x=>x.ip===currentIp);if(dev)dev.container_count=list.length;loadDevices()
 if(!list.length){el.innerHTML='<div style="padding:20px;color:#8899aa">该设备暂无容器</div>';return}
 let html='<table><thead><tr><th>名称</th><th>状态</th><th>Android ID</th><th>容器IP</th><th>操作</th></tr></thead><tbody>'
-list.forEach(c=>{const st=(c.Status||c.status||'unknown').toLowerCase(),badge=st==='running'?'badge-green':st==='stopped'||st==='created'||st==='exited'?'badge-red':'badge-yellow',cip=c.IpAddress||c.ip_address||'',adbPort=c.adb||c.Adb||'5555',adbAddr=cip?cip+':'+adbPort:'';html+=`<tr><td><span class="link" onclick="showContainerDetail('${c.Name||c.name}','${currentIp}')">${c.Name||c.name}</span></td><td><span class="badge ${badge}">${st}</span></td><td style="font-size:11px;color:#8899aa">${c.AndroidId||c.android_id||'-'}</td><td>${cip||'-'}</td><td><button class="btn btn-sm btn-outline" onclick="showContainerDetail('${c.Name||c.name}','${currentIp}')">管理</button><button class="btn btn-sm btn-primary screen-btn" data-name="${c.Name||c.name}" data-adb="${adbAddr}" ${st!=='running'||!adbAddr?'disabled':''}>投屏</button></td></tr>`})
+list.forEach(c=>{const st=(c.Status||c.status||'unknown').toLowerCase(),badge=st==='running'?'badge-green':st==='stopped'||st==='created'||st==='exited'?'badge-red':'badge-yellow',cip=c.IpAddress||c.ip_address||'',adbPort=c.adb||c.Adb||'',adbAddr=adbPort?currentIp+':'+adbPort:'';html+=`<tr><td><span class="link" onclick="showContainerDetail('${c.Name||c.name}','${currentIp}')">${c.Name||c.name}</span></td><td><span class="badge ${badge}">${st}</span></td><td style="font-size:11px;color:#8899aa">${c.AndroidId||c.android_id||'-'}</td><td>${cip||'-'}</td><td><button class="btn btn-sm btn-outline" onclick="showContainerDetail('${c.Name||c.name}','${currentIp}')">管理</button><button class="btn btn-sm btn-primary screen-btn" data-name="${c.Name||c.name}" data-adb="${adbAddr}" ${st!=='running'||!adbAddr?'disabled':''}>投屏</button></td></tr>`})
 html+='</tbody></table>';el.innerHTML=html
 }).catch(e=>{document.getElementById('containerList').innerHTML='<div style="color:#f57f6e">请求失败: '+e.message+'</div>'})
 }
@@ -528,7 +541,7 @@ let filtered=kw?allContainers.filter(c=>(c.Name||c.name||'').toLowerCase().inclu
 const el=document.getElementById('allContainerList')
 if(!filtered.length){el.innerHTML='<div style="padding:20px;color:#8899aa">暂无匹配的容器</div>';return}
 let html='<table><thead><tr><th>设备IP</th><th>容器名称</th><th>状态</th><th>已导入配置</th><th>镜像</th><th>容器IP</th><th>ADB端口</th><th>代理地址</th><th>操作</th></tr></thead><tbody>'
-filtered.forEach(c=>{const st=(c.Status||c.status||c.state||'unknown').toLowerCase(),badge=st==='running'?'badge-green':st==='stopped'||st==='created'||st==='exited'?'badge-red':'badge-yellow',proxy=c.s5?(c.s5.addr||(c.s5.status===1?'已启动':'未启动')):'-',adb=c.adb||c.Adb||'-',img=c.image||c.Image||'-',shortImg=img.length>50?img.substring(0,50)+'...':img,cfg=c.config_name||'',cname=c.Name||c.name,encName=encodeURIComponent(cname),cip=c.IpAddress||c.ip_address||'',adbPort=c.adb||c.Adb||'5555',adbAddr=cip?cip+':'+adbPort:'';html+=`<tr><td>${c.device_ip||'-'}</td><td><span class="link" onclick="showContainerDetail('${cname}','${c.device_ip}')" title="${cname}">${cname.length>40?cname.substring(0,40)+'...':cname}</span><span class="icon-btn" onclick="copyName(decodeURIComponent('${encName}'))" title="复制名称"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span></td><td><span class="badge ${badge}">${st}</span></td><td>${cfg?'<span class="badge badge-blue" title="'+cfg+'">'+cfg:'<span style="color:#555">-'}</span></td><td class="text-truncate" title="${img}">${shortImg}</td><td>${cip||'-'}</td><td>${adb}</td><td style="max-width:none" title="${proxy}">${proxy}</td><td><button class="btn btn-sm btn-outline" onclick="showContainerDetail('${cname}','${c.device_ip}')">管理</button><button class="btn btn-sm btn-primary screen-btn" data-name="${cname}" data-adb="${adbAddr}" ${st!=='running'||!adbAddr?'disabled':''}>投屏</button></td></tr>`})
+filtered.forEach(c=>{const st=(c.Status||c.status||c.state||'unknown').toLowerCase(),badge=st==='running'?'badge-green':st==='stopped'||st==='created'||st==='exited'?'badge-red':'badge-yellow',proxy=c.s5?(c.s5.addr||(c.s5.status===1?'已启动':'未启动')):'-',adb=c.adb||c.Adb||'-',img=c.image||c.Image||'-',shortImg=img.length>50?img.substring(0,50)+'...':img,cfg=c.config_name||'',cname=c.Name||c.name,encName=encodeURIComponent(cname),cip=c.IpAddress||c.ip_address||'',adbPort=c.adb||c.Adb||'',adbAddr=adbPort?(c.device_ip||'')+':'+adbPort:'';html+=`<tr><td>${c.device_ip||'-'}</td><td><span class="link" onclick="showContainerDetail('${cname}','${c.device_ip}')" title="${cname}">${cname.length>40?cname.substring(0,40)+'...':cname}</span><span class="icon-btn" onclick="copyName(decodeURIComponent('${encName}'))" title="复制名称"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span></td><td><span class="badge ${badge}">${st}</span></td><td>${cfg?'<span class="badge badge-blue" title="'+cfg+'">'+cfg:'<span style="color:#555">-'}</span></td><td class="text-truncate" title="${img}">${shortImg}</td><td>${cip||'-'}</td><td>${adb}</td><td style="max-width:none" title="${proxy}">${proxy}</td><td><button class="btn btn-sm btn-outline" onclick="showContainerDetail('${cname}','${c.device_ip}')">管理</button><button class="btn btn-sm btn-primary screen-btn" data-name="${cname}" data-adb="${adbAddr}" ${st!=='running'||!adbAddr?'disabled':''}>投屏</button></td></tr>`})
 html+='</tbody></table>';el.innerHTML=html
 }
 
@@ -723,6 +736,9 @@ document.getElementById('detailContainerName').textContent=name;showModal('conta
 document.querySelectorAll('#containerDetailModal .tab-content').forEach(t=>t.classList.remove('active'))
 document.querySelectorAll('#containerDetailModal .tab').forEach(t=>t.classList.remove('active'))
 document.getElementById('detailInfo').classList.add('active');document.querySelector('#containerDetailModal .tab').classList.add('active')
+document.getElementById('digitalTwinResult').style.display='none';document.getElementById('digitalTwinResult').textContent=''
+document.getElementById('proxyResult').style.display='none';document.getElementById('proxyResult').textContent=''
+document.getElementById('actionResult').style.display='none';document.getElementById('actionResult').textContent=''
 fetch('/api/container/'+currentIp+'/'+name).then(r=>r.json()).then(d=>{document.getElementById('detailInfoContent').innerHTML='<div class="json-view">'+JSON.stringify(d,null,2)+'</div>'})
 queryProxy();populateFpSelect();populateRealLibSelect();populateProxyPoolSelect()
 }
@@ -747,35 +763,35 @@ proxyPool.forEach(p=>{sel.innerHTML+='<option value="'+p.id+'">'+p.name+' ('+p.i
 
 function applyFpFromLib(){
 const id=document.getElementById('fpSelectFromLib').value;if(!id){toast('请选择参数','error');return}
-fetch('/api/fingerprints/'+id+'/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip:currentIp,name:currentName})}).then(r=>r.json()).then(d=>{document.getElementById('digitalTwinResult').style.display='block';document.getElementById('digitalTwinResult').textContent=JSON.stringify(d,null,2);toast('参数已应用到容器',d.code===200?'success':'error')})
+fetch('/api/fingerprints/'+id+'/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip:currentIp,name:currentName})}).then(r=>r.json()).then(d=>{document.getElementById('digitalTwinResult').style.display='block';document.getElementById('digitalTwinResult').textContent=JSON.stringify(d,null,2);toast('参数已应用到容器',d.code===200?'success':'error');if(d.code===200)refreshAllViews()})
 }
 
 function applyRealLibToContainer(){
 const id=document.getElementById('realLibSelect').value;if(!id){toast('请选择真机库条目','error');return}
-fetch('/api/real_library/'+id+'/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip:currentIp,name:currentName})}).then(r=>r.json()).then(d=>{document.getElementById('digitalTwinResult').style.display='block';document.getElementById('digitalTwinResult').textContent=JSON.stringify(d,null,2);toast('真机数据已应用到容器',d.code===200?'success':'error')})
+fetch('/api/real_library/'+id+'/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip:currentIp,name:currentName})}).then(r=>r.json()).then(d=>{document.getElementById('digitalTwinResult').style.display='block';document.getElementById('digitalTwinResult').textContent=JSON.stringify(d,null,2);toast('真机数据已应用到容器',d.code===200?'success':'error');if(d.code===200)refreshAllViews()})
 }
 
 function applyProxyFromPool(){
 const id=document.getElementById('proxyPoolSelect').value;if(!id){toast('请选择代理','error');return}
-fetch('/api/proxy_pool/'+id+'/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip:currentIp,name:currentName})}).then(r=>r.json()).then(d=>{document.getElementById('proxyResult').style.display='block';document.getElementById('proxyResult').textContent=JSON.stringify(d,null,2);toast('代理已应用',d.code===200?'success':'error')})
+fetch('/api/proxy_pool/'+id+'/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip:currentIp,name:currentName})}).then(r=>r.json()).then(d=>{document.getElementById('proxyResult').style.display='block';document.getElementById('proxyResult').textContent=JSON.stringify(d,null,2);toast('代理已应用',d.code===200?'success':'error');if(d.code===200)refreshAllViews()})
 }
 
 function doRandomDevInfo(){
-fetch('/api/container/'+currentIp+'/'+currentName+'/random_devinfo',{method:'POST'}).then(r=>r.json()).then(d=>{document.getElementById('digitalTwinResult').style.display='block';document.getElementById('digitalTwinResult').textContent=JSON.stringify(d,null,2);toast(d.msg||'一键新机完成',d.code===200?'success':'error')})
+fetch('/api/container/'+currentIp+'/'+currentName+'/random_devinfo',{method:'POST'}).then(r=>r.json()).then(d=>{document.getElementById('digitalTwinResult').style.display='block';document.getElementById('digitalTwinResult').textContent=JSON.stringify(d,null,2);toast(d.msg||'一键新机完成',d.code===200?'success':'error');if(d.code===200)refreshAllViews()})
 }
 
 function doRandomDevInfoAsync(){
-fetch('/api/container/'+currentIp+'/'+currentName+'/random_devinfo_async',{method:'POST'}).then(r=>r.json()).then(d=>{document.getElementById('digitalTwinResult').style.display='block';document.getElementById('digitalTwinResult').textContent=JSON.stringify(d,null,2);toast(d.msg||'异步任务已提交','info')})
+fetch('/api/container/'+currentIp+'/'+currentName+'/random_devinfo_async',{method:'POST'}).then(r=>r.json()).then(d=>{document.getElementById('digitalTwinResult').style.display='block';document.getElementById('digitalTwinResult').textContent=JSON.stringify(d,null,2);toast(d.msg||'异步任务已提交','info');if(d.code===200)refreshAllViews()})
 }
 
 function setProxy(){
 const data={action:'add',s5ip:document.getElementById('proxyIp').value,s5port:document.getElementById('proxyPort').value,s5user:document.getElementById('proxyUser').value,s5pwd:document.getElementById('proxyPwd').value,proxy_mode:document.getElementById('proxyMode').value,domain_mode:document.getElementById('domainMode').value}
-fetch('/api/container/'+currentIp+'/'+currentName+'/s5_set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).then(r=>r.json()).then(d=>{document.getElementById('proxyResult').style.display='block';document.getElementById('proxyResult').textContent=JSON.stringify(d,null,2);toast('代理设置完成',d.code===200?'success':'error')})
+fetch('/api/container/'+currentIp+'/'+currentName+'/s5_set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).then(r=>r.json()).then(d=>{document.getElementById('proxyResult').style.display='block';document.getElementById('proxyResult').textContent=JSON.stringify(d,null,2);toast('代理设置完成',d.code===200?'success':'error');if(d.code===200)refreshAllViews()})
 }
 
 function queryProxy(){fetch('/api/container/'+currentIp+'/'+currentName+'/s5_query').then(r=>r.json()).then(d=>{document.getElementById('proxyResult').style.display='block';document.getElementById('proxyResult').textContent=JSON.stringify(d,null,2)})}
 
-function stopProxy(){fetch('/api/container/'+currentIp+'/'+currentName+'/s5_stop',{method:'POST'}).then(r=>r.json()).then(d=>{document.getElementById('proxyResult').style.display='block';document.getElementById('proxyResult').textContent=JSON.stringify(d,null,2);toast('代理已停止','info')})}
+function stopProxy(){fetch('/api/container/'+currentIp+'/'+currentName+'/s5_stop',{method:'POST'}).then(r=>r.json()).then(d=>{document.getElementById('proxyResult').style.display='block';document.getElementById('proxyResult').textContent=JSON.stringify(d,null,2);toast('代理已停止','info');if(d.code===200)refreshAllViews()})}
 
 function testProxy(){const data={action:'test',s5ip:document.getElementById('proxyIp').value,s5port:document.getElementById('proxyPort').value,s5user:document.getElementById('proxyUser').value,s5pwd:document.getElementById('proxyPwd').value};fetch('/api/container/'+currentIp+'/'+currentName+'/s5_set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).then(r=>r.json()).then(d=>{document.getElementById('proxyResult').style.display='block';document.getElementById('proxyResult').textContent=JSON.stringify(d,null,2)})}
 
@@ -821,28 +837,40 @@ loadDevices()
 }
 
 // ==================== 群控窗 ====================
-const MAX_SCREENS = 10;
-let screenSessions = []; // { slot, name, ip, player }
+const MAX_SCREENS = 4;
+let screenSessions = []; // { slot, name, socket }
+let socket = io(window.location.origin, { transports: ['websocket', 'polling'] });
+
+socket.on('screen_frame', (data) => {
+  // data 是 ArrayBuffer (H.264 Annex B)
+  const slot = data.slot || 0;
+  const session = screenSessions.find(s => s.slot === slot);
+  if (session) session.feed(data);
+});
+
+socket.on('screen_error', (data) => {
+  toast(data.msg || '投屏错误', 'error');
+});
+
+socket.on('screen_end', (data) => {
+  // 由 stopScreen 处理，不做额外操作
+});
 
 class ScreenPlayer {
-  constructor(canvas, name, ip, wsUrl) {
+  constructor(canvas, slot) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
-    this.name = name;
-    this.ip = ip;
-    this.wsUrl = wsUrl;
-    this.ws = null;
+    this.slot = slot;
     this.decoder = null;
     this.buffer = new Uint8Array(0);
     this.lastStart = -1;
     this.nalCache = [];
-    this.running = false;
     this._initDecoder();
   }
 
   _initDecoder() {
     if (typeof VideoDecoder === 'undefined') {
-      this._showError('浏览器不支持 WebCodecs，请使用 Chrome/Edge');
+      this._setStatus('浏览器不支持 WebCodecs，请使用 Chrome/Edge');
       return;
     }
     try {
@@ -855,43 +883,17 @@ class ScreenPlayer {
           } catch(e) {}
           frame.close();
         },
-        error: (e) => this._showError('解码错误: ' + e.message)
+        error: (e) => console.error('解码错误:', e)
       });
-      this.decoder.configure({ codec: 'avc1.42001E', optimizeForLatency: true });
+      this.decoder.configure({ codec: 'avc1.42C01E', optimizeForLatency: true });
     } catch(e) {
-      this._showError('解码器初始化失败: ' + e.message);
+      this._setStatus('解码器初始化失败');
     }
   }
 
-  connect() {
-    if (this.running) return;
-    this.running = true;
-    this._setStatus('连接中...');
-    this.ws = new WebSocket(this.wsUrl);
-    this.ws.binaryType = 'arraybuffer';
-
-    this.ws.onopen = () => {
-      this._setStatus('已连接');
-      this._setLabel(this.name);
-    };
-
-    this.ws.onmessage = (event) => {
-      const data = new Uint8Array(event.data);
-      this.buffer = this._concat(this.buffer, data);
-      this._parseStream();
-    };
-
-    this.ws.onclose = (e) => {
-      this.running = false;
-      if (e.code !== 4000) {
-        this._setStatus('已断开 (' + (e.reason || 'code=' + e.code) + ')');
-      }
-    };
-
-    this.ws.onerror = () => {
-      toast('投屏连接失败，请确认 screen_relay.py 已启动', 'error');
-      this.running = false;
-    };
+  feed(data) {
+    this.buffer = this._concat(this.buffer, new Uint8Array(data));
+    this._parseStream();
   }
 
   _parseStream() {
@@ -903,23 +905,17 @@ class ScreenPlayer {
       } else if (pos < this.buffer.length - 4 && this.buffer[pos] === 0 && this.buffer[pos+1] === 0 && this.buffer[pos+2] === 0 && this.buffer[pos+3] === 1) {
         startLen = 4;
       }
-
       if (startLen > 0) {
         if (this.lastStart >= 0) {
           const nalData = this.buffer.slice(this.lastStart, pos);
           const nalType = nalData[startLen] & 0x1F;
           this.nalCache.push(nalData);
-          if (nalType === 5 || nalType === 1) {
-            this._flushFrame();
-          }
+          if (nalType === 5 || nalType === 1) this._flushFrame();
         }
         this.lastStart = pos;
         pos += startLen;
-      } else {
-        pos++;
-      }
+      } else { pos++; }
     }
-
     if (this.lastStart >= 0) {
       this.buffer = this.buffer.slice(this.lastStart);
       this.lastStart = 0;
@@ -931,51 +927,26 @@ class ScreenPlayer {
     const totalLen = this.nalCache.reduce((s, u) => s + u.length, 0);
     const frame = new Uint8Array(totalLen);
     let offset = 0;
-    for (const nal of this.nalCache) {
-      frame.set(nal, offset);
-      offset += nal.length;
-    }
+    for (const nal of this.nalCache) { frame.set(nal, offset); offset += nal.length; }
     this.nalCache = [];
     try {
-      const chunk = new EncodedVideoChunk({
-        type: 'key',
-        timestamp: 0,
-        duration: 100_000,
-        data: frame
-      });
-      this.decoder.decode(chunk);
+      this.decoder.decode(new EncodedVideoChunk({ type: 'key', timestamp: 0, duration: 100_000, data: frame }));
     } catch(e) {}
   }
 
-  disconnect() {
-    this.running = false;
-    if (this.ws) { try { this.ws.close(4000); } catch {} this.ws = null; }
+  destroy() {
     if (this.decoder) { try { this.decoder.close(); } catch {} this.decoder = null; }
     this.buffer = new Uint8Array(0);
     this.nalCache = [];
     this.lastStart = -1;
   }
 
-  _setLabel(text) {
-    const cell = this.canvas?.closest('.screen-cell');
-    if (cell) {
-      const label = cell.querySelector('.sc-name');
-      if (label) label.textContent = text;
-    }
-  }
-
   _setStatus(text) {
-    const cell = this.canvas?.closest('.screen-cell');
+    const cell = document.getElementById('sc-' + this.slot);
     if (cell) {
-      const status = cell.querySelector('.sc-status');
-      if (status) status.textContent = text;
+      const s = cell.querySelector('.sc-status');
+      if (s) s.textContent = text;
     }
-  }
-
-  _showError(msg) {
-    this._setStatus('❌ ' + msg);
-    toast(msg, 'error');
-    console.error('[ScreenPlayer]', msg);
   }
 
   _concat(a, b) {
@@ -986,18 +957,15 @@ class ScreenPlayer {
 }
 
 function startScreen(name, adbAddr) {
-  console.log('startScreen called', name, adbAddr);
   if (!adbAddr) { toast('ADB 地址为空，无法投屏', 'error'); return; }
   if (screenSessions.length >= MAX_SCREENS) {
-    toast('最多同时投屏 ' + MAX_SCREENS + ' 路，请先停止一路', 'error');
+    toast('最多同时投屏 ' + MAX_SCREENS + ' 路', 'error');
     return;
   }
   if (screenSessions.find(s => s.name === name)) {
     toast('该容器已在投屏中', 'info');
     return;
   }
-
-  // 找空闲槽位
   let slot = -1;
   for (let i = 0; i < MAX_SCREENS; i++) {
     if (!screenSessions.find(s => s.slot === i)) { slot = i; break; }
@@ -1008,16 +976,14 @@ function startScreen(name, adbAddr) {
   cell.innerHTML = '<div class="sc-label"><span class="sc-name">' + name + '</span><button class="btn btn-sm btn-danger" onclick="stopScreen(' + slot + ')">停止</button></div><canvas></canvas><div class="sc-status">连接中...</div>';
 
   const canvas = cell.querySelector('canvas');
-  const host = window.location.hostname || 'localhost';
-  const wsUrl = 'ws://' + host + ':9000/stream?name=' + encodeURIComponent(name) + '&adb_addr=' + encodeURIComponent(adbAddr);
+  const player = new ScreenPlayer(canvas, slot);
 
-  const player = new ScreenPlayer(canvas, name, adbAddr, wsUrl);
-  player.connect();
-  screenSessions.push({ slot, name, adbAddr, player });
+  socket.emit('start_screen', { name, adb_addr: adbAddr });
+
+  screenSessions.push({ slot, name, adbAddr, player, canvas });
   updateScreenCounter();
   toast('正在投屏 ' + name, 'info');
 
-  // 切换到群控窗页面
   document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.getElementById('pageScreenControl').classList.add('active');
@@ -1030,8 +996,9 @@ function stopScreen(slot) {
   const idx = screenSessions.findIndex(s => s.slot === slot);
   if (idx < 0) return;
   const session = screenSessions[idx];
-  session.player.disconnect();
+  session.player.destroy();
   screenSessions.splice(idx, 1);
+  socket.emit('stop_screen');
 
   const cell = document.getElementById('sc-' + slot);
   cell.innerHTML = '<div class="sc-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg><span>点击容器旁的"投屏"按钮</span></div>';
@@ -1046,20 +1013,7 @@ function updateScreenCounter() {
   document.getElementById('screenCounter').textContent = '已投屏 ' + screenSessions.length + ' / ' + MAX_SCREENS;
 }
 
-// 切换页面时加载投屏配置
-const origSwitchPage = switchPage;
-switchPage = function(pageId, el) {
-  origSwitchPage(pageId, el);
-  if (pageId === 'pageScreenControl') {
-    fetch('/api/screen/config').then(r => r.json()).then(d => {
-      if (d.code === 200) {
-        document.getElementById('screenCounter').textContent = '已投屏 ' + screenSessions.length + ' / ' + (d.max_screens || MAX_SCREENS);
-      }
-    }).catch(() => {});
-  }
-};
-
-// 事件委托: 监听 screen-btn 点击（绕过 CSP inline onclick 限制）
+// 事件委托: 监听 screen-btn 点击
 document.addEventListener('click', function(e) {
   const btn = e.target.closest('.screen-btn');
   if (btn && !btn.disabled) {
@@ -1070,7 +1024,6 @@ document.addEventListener('click', function(e) {
 // Init
 loadDevices()
 
-// 手动测试入口
 window.testScreen = function(name, adbAddr) {
   if (!name || !adbAddr) { toast('用法: testScreen("容器名","ip:port")', 'error'); return; }
   startScreen(name, adbAddr);

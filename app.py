@@ -4,10 +4,17 @@ import time
 import uuid
 import os
 import sqlite3
+import threading
+import subprocess
 from flask import Flask, request, jsonify, render_template, send_file
+from flask_socketio import SocketIO, emit
 
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+# 活跃的投屏流: { sid: { proc, name, adb_addr } }
+screen_streams = {}
 
 API_BASE = "http://192.168.10.83:83"
 TIMEOUT = 30
@@ -287,12 +294,16 @@ def get_devices():
             if r.ok:
                 data = r.json().get('data', []) or r.json().get('result', [])
                 d['container_count'] = len(data)
+                d['status'] = 'online'
+            else:
+                d['status'] = 'offline'
         except:
-            pass
+            d['status'] = 'offline'
         try:
             r = requests.get(f"{API_BASE}/dc_api/v1/get_host_ver/{d['ip']}", timeout=TIMEOUT)
             if r.ok:
-                d['host_ver'] = r.json().get('msg', '') or r.json().get('message', '')
+                j = r.json()
+                d['host_ver'] = j.get('data', '') or j.get('message', '')
         except:
             pass
     return jsonify({"code": 200, "data": devices, "msg": "ok"})
@@ -332,6 +343,26 @@ def check_device(ip):
     if result.get('code') == 200:
         return jsonify({"code": 200, "data": result, "msg": "ok"})
     return jsonify({"code": 500, "msg": "device not reachable"})
+
+@app.route('/api/device/check_all', methods=['POST'])
+def check_all_devices():
+    global devices
+    results = {}
+    for dev in devices:
+        ip = dev['ip']
+        try:
+            r = requests.get(f"{API_BASE}/get/{ip}", timeout=5)
+            if r.ok and r.json().get('code') == 200:
+                results[ip] = 'online'
+                dev['status'] = 'online'
+            else:
+                results[ip] = 'offline'
+                dev['status'] = 'offline'
+        except:
+            results[ip] = 'offline'
+            dev['status'] = 'offline'
+        save_device(dev)
+    return jsonify({"code": 200, "data": results, "msg": "ok"})
 
 @app.route('/api/device/host_ver/<ip>')
 def host_ver(ip):
@@ -890,9 +921,64 @@ def proxy_container_counts():
 def screen_config():
     return jsonify({
         "code": 200,
-        "ws_port": 9000,
         "max_screens": 4
     })
 
+# ========== Socket.IO 投屏 ==========
+@socketio.on('start_screen')
+def on_start_screen(data):
+    name = data.get('name', '')
+    adb_addr = data.get('adb_addr', '')
+    if not name or not adb_addr:
+        emit('screen_error', {'msg': 'missing name or adb_addr'})
+        return
+
+    sid = request.sid
+
+    def stream_worker():
+        try:
+            proc = subprocess.Popen(
+                ['adb', '-s', adb_addr, 'exec-out',
+                 'screenrecord', '--output-format=h264',
+                 '--size', '480x720',
+                 '--bit-rate', '500000',
+                 '--time-limit', '180', '-'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL
+            )
+            screen_streams[sid] = {'proc': proc, 'name': name, 'adb_addr': adb_addr}
+
+            while True:
+                chunk = proc.stdout.read(65536)
+                if not chunk:
+                    break
+                socketio.emit('screen_frame', chunk, to=sid)
+
+            proc.wait()
+        except Exception as e:
+            socketio.emit('screen_error', {'msg': str(e)}, to=sid)
+        finally:
+            screen_streams.pop(sid, None)
+            socketio.emit('screen_end', {}, to=sid)
+
+    t = threading.Thread(target=stream_worker, daemon=True)
+    t.start()
+
+@socketio.on('stop_screen')
+def on_stop_screen():
+    sid = request.sid
+    stream = screen_streams.pop(sid, None)
+    if stream:
+        try: stream['proc'].kill()
+        except: pass
+
+@socketio.on('disconnect')
+def on_disconnect():
+    sid = request.sid
+    stream = screen_streams.pop(sid, None)
+    if stream:
+        try: stream['proc'].kill()
+        except: pass
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5001, debug=True)
+    socketio.run(app, host='0.0.0.0', port=5001, debug=True, allow_unsafe_werkzeug=True)
