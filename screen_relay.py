@@ -31,9 +31,9 @@ async def stream_worker(ws, adb_addr):
     finally:
         active_streams.pop(adb_addr, None)
 
-async def handler(ws, path):
+async def handler(ws):
     from urllib.parse import urlparse, parse_qs
-    qs = parse_qs(urlparse(path).query)
+    qs = parse_qs(urlparse(ws.path).query)
     adb_addr = (qs.get('adb_addr') or [''])[0]
     if not adb_addr:
         await ws.close(4000, 'missing adb_addr')
