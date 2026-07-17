@@ -781,6 +781,8 @@ def update_proxy(proxy_id):
         return jsonify({"code": 404, "msg": "proxy not found"})
     if not data.get('ip') or not data.get('port'):
         return jsonify({"code": 400, "msg": "ip and port required"})
+    old_ip = proxy['ip']
+    old_port = proxy['port']
     proxy['ip'] = data['ip'].strip()
     proxy['port'] = str(data['port']).strip()
     proxy['user'] = data.get('user', '')
@@ -788,14 +790,54 @@ def update_proxy(proxy_id):
     proxy['name'] = data.get('name', '') or f"{data['ip']}:{data['port']}"
     proxy['type'] = data.get('type', 'socks5')
     save_proxy_to_db(proxy)
+    # sync: re-apply updated proxy to containers using the old address
+    _sync_proxy_to_containers(old_ip, old_port, proxy)
     return jsonify({"code": 200, "msg": "updated", "data": proxy})
+
+def _find_containers_by_proxy(proxy_ip, proxy_port):
+    """Find all containers whose s5.addr matches the given proxy."""
+    import re
+    matches = []
+    for dev in devices:
+        try:
+            r = requests.get(f"{API_BASE}/dc_api/v1/list/{dev['ip']}", timeout=5)
+            if r.ok:
+                for c in (r.json().get('data', []) or r.json().get('result', [])):
+                    addr = (c.get('s5', {}) or {}).get('addr', '') or ''
+                    m = re.search(r'@([^@]+)$', addr)
+                    key = m.group(1) if m else addr
+                    if key == f"{proxy_ip}:{proxy_port}":
+                        matches.append((dev['ip'], c.get('Name') or c.get('name', '')))
+        except:
+            pass
+    return matches
+
+def _sync_proxy_to_containers(old_ip, old_port, proxy):
+    """Re-apply updated proxy to all containers that were using the old proxy address."""
+    containers = _find_containers_by_proxy(old_ip, old_port)
+    for dev_ip, cname in containers:
+        try:
+            params = {"action": "add", "s5ip": proxy['ip'], "s5port": proxy['port'],
+                      "s5user": proxy.get('user',''), "s5pwd": proxy.get('pwd','')}
+            requests.get(f"{API_BASE}/s5_set/{dev_ip}/{cname}", params=params, timeout=10)
+        except:
+            pass
 
 @app.route('/api/proxy_pool/<proxy_id>', methods=['DELETE'])
 def delete_proxy(proxy_id):
     global proxy_pool
+    proxy = next((p for p in proxy_pool if p['id'] == proxy_id), None)
+    if not proxy: return jsonify({"code": 404, "msg": "proxy not found"})
+    # sync: stop proxy on containers using this proxy
+    containers = _find_containers_by_proxy(proxy['ip'], proxy['port'])
+    for dev_ip, cname in containers:
+        try:
+            requests.get(f"{API_BASE}/s5_stop/{dev_ip}/{cname}", timeout=10)
+        except:
+            pass
     proxy_pool = [p for p in proxy_pool if p['id'] != proxy_id]
     delete_proxy_from_db(proxy_id)
-    return jsonify({"code": 200, "msg": "deleted"})
+    return jsonify({"code": 200, "msg": "deleted", "synced_containers": len(containers)})
 
 @app.route('/api/proxy_pool/<proxy_id>/apply', methods=['POST'])
 def apply_proxy(proxy_id):
