@@ -114,9 +114,13 @@ function connect() {
   ws.onopen = () => { statusEl.textContent = '已连接'; console.log('WS connected'); };
   ws.onmessage = (e) => feedH264(e.data);
   ws.onclose = (e) => {
-    statusEl.textContent = '已断开 (code=' + e.code + ')，3秒后重连...';
+    const msgs = {4000:'缺少adb_addr',4001:'已在投屏中',4002:'ADB连接失败',4003:'screenrecord超时，容器可能未运行'};
+    const msg = msgs[e.code] || ('断开 (code='+e.code+')');
+    statusEl.textContent = msg;
     console.log('WS closed:', e.code, e.reason);
-    setTimeout(connect, 3000);
+    if (e.code !== 4000 && e.code !== 4001) {
+      setTimeout(connect, 5000);
+    }
   };
   ws.onerror = (e) => {
     statusEl.textContent = '连接失败，3秒后重连...';
