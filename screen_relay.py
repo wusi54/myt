@@ -6,12 +6,23 @@ import os
 WS_PORT = 9000
 active_streams = {}
 
+async def adb_heartbeat(adb_addr):
+    """每30秒发一次 adb connect 保持连接"""
+    while True:
+        await asyncio.sleep(30)
+        try:
+            subprocess.run(['adb', 'connect', adb_addr],
+                           capture_output=True, timeout=5)
+        except:
+            pass
+
 async def stream_worker(ws, adb_addr):
-    # 先 adb connect (确保设备已注册)
     subprocess.run(['adb', 'connect', adb_addr], capture_output=True, timeout=10)
 
+    heartbeat = asyncio.create_task(adb_heartbeat(adb_addr))
+
     proc = await asyncio.create_subprocess_exec(
-        ADB_PATH, '-s', adb_addr, 'exec-out',
+        'adb', '-s', adb_addr, 'exec-out',
         'screenrecord', '--output-format=h264',
         '--size', '480x720',
         '--bit-rate', '500000',
@@ -31,6 +42,7 @@ async def stream_worker(ws, adb_addr):
         try: proc.kill()
         except: pass
     finally:
+        heartbeat.cancel()
         active_streams.pop(adb_addr, None)
 
 async def handler(ws):

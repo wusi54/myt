@@ -101,22 +101,29 @@ function concat(a, b) {
 
 // Start
 if (!initDecoder()) {
-  // fallback: no WebCodecs
   statusEl.textContent = '浏览器不支持 WebCodecs';
 } else {
+  connect();
+}
+
+function connect() {
+  statusEl.textContent = '连接中...';
   const ws = new WebSocket(wsUrl);
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => { statusEl.textContent = '已连接'; console.log('WS connected'); };
   ws.onmessage = (e) => feedH264(e.data);
   ws.onclose = (e) => {
-    statusEl.textContent = '已断开 (code=' + e.code + ' reason=' + e.reason + ')';
+    statusEl.textContent = '已断开 (code=' + e.code + ')，3秒后重连...';
     console.log('WS closed:', e.code, e.reason);
+    setTimeout(connect, 3000);
   };
   ws.onerror = (e) => {
-    statusEl.textContent = '连接失败';
+    statusEl.textContent = '连接失败，3秒后重连...';
     console.log('WS error:', e);
+    ws.close();
   };
+}
 }
 </script>
 </body>
