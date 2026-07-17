@@ -957,8 +957,11 @@ SCRCPY_PATH = r"C:\Users\wusi0\AppData\Local\Microsoft\WinGet\Packages\Genymobil
 
 @app.route('/api/scrcpy/launch', methods=['POST'])
 def scrcpy_launch():
-    data = request.json
-    adb_addr = data.get('adb_addr', '').strip()
+    adb_addr = ''
+    if request.is_json:
+        adb_addr = request.json.get('adb_addr', '').strip()
+    else:
+        adb_addr = request.form.get('adb_addr', '').strip()
     if not adb_addr:
         return jsonify({"code": 400, "msg": "adb_addr required"})
     try:
