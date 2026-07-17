@@ -963,8 +963,16 @@ function removeFromWall(idx) {
 }
 
 function showAddToWallModal() {
-  renderWallContainerList();
+  document.getElementById('wallContainerList').innerHTML = '<div style="color:#8899aa;padding:12px">加载容器列表中...</div>';
+  loadAllContainers();
   showModal('addToWallModal');
+  // 等数据加载完再渲染
+  var wait = setInterval(function() {
+    if (allContainers.length) {
+      clearInterval(wait);
+      renderWallContainerList();
+    }
+  }, 200);
 }
 
 function renderWallContainerList() {
@@ -975,7 +983,7 @@ function renderWallContainerList() {
   });
   const el = document.getElementById('wallContainerList');
   if (!list.length) { el.innerHTML = '<div style="color:#8899aa;padding:12px">没有匹配的容器</div>'; return; }
-  let html = '';
+  let html = '<div style="margin-bottom:8px"><a href="#" onclick="toggleWallCbs(true)" style="color:#00d4ff;font-size:12px">全选</a> / <a href="#" onclick="toggleWallCbs(false)" style="color:#00d4ff;font-size:12px">取消全选</a></div>';
   list.forEach(c => {
     const name = c.Name || c.name;
     const adbPort = c.adb || c.Adb || '';
@@ -985,6 +993,10 @@ function renderWallContainerList() {
     html += '<label style="display:flex;align-items:center;gap:10px;padding:6px 8px;cursor:pointer;border-bottom:1px solid #1e2e3e;font-size:13px"><input type="checkbox" class="wall-cb" value="' + name + '" data-adb="' + adbAddr + '" ' + checked + '><span>' + name + '</span><span style="color:#8899aa;font-size:11px;margin-left:auto">' + adbAddr + '</span></label>';
   });
   el.innerHTML = html;
+}
+
+function toggleWallCbs(checked) {
+  document.querySelectorAll('#wallContainerList .wall-cb:not(:disabled)').forEach(function(cb) { cb.checked = checked; });
 }
 
 function addSelectedToWall() {
