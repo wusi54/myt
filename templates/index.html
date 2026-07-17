@@ -839,22 +839,34 @@ loadDevices()
 // ==================== 群控窗 ====================
 const MAX_SCREENS = 4;
 let screenSessions = []; // { slot, name, socket }
-let socket = io(window.location.origin, { transports: ['websocket', 'polling'] });
+let socket = null;
 
-socket.on('screen_frame', (data) => {
-  // data 是 ArrayBuffer (H.264 Annex B)
-  const slot = data.slot || 0;
-  const session = screenSessions.find(s => s.slot === slot);
-  if (session) session.feed(data);
+try { socket = io(window.location.origin, { transports: ['websocket', 'polling'] }); } catch(e) { console.warn('Socket.IO not loaded', e); }
+
+// 事件委托必须在最前面注册，即使 socket.io 加载失败
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('.screen-btn');
+  if (btn) {
+    console.log('screen-btn clicked', btn.dataset.name, btn.dataset.adb, 'disabled:', btn.disabled);
+    if (!btn.disabled) {
+      startScreen(btn.dataset.name, btn.dataset.adb);
+    }
+  }
 });
 
-socket.on('screen_error', (data) => {
-  toast(data.msg || '投屏错误', 'error');
-});
+if (socket) {
+  socket.on('screen_frame', (data) => {
+    const slot = data.slot || 0;
+    const session = screenSessions.find(s => s.slot === slot);
+    if (session) session.feed(data);
+  });
 
-socket.on('screen_end', (data) => {
-  // 由 stopScreen 处理，不做额外操作
-});
+  socket.on('screen_error', (data) => {
+    toast(data.msg || '投屏错误', 'error');
+  });
+
+  socket.on('screen_end', (data) => {});
+}
 
 class ScreenPlayer {
   constructor(canvas, slot) {
@@ -978,7 +990,8 @@ function startScreen(name, adbAddr) {
   const canvas = cell.querySelector('canvas');
   const player = new ScreenPlayer(canvas, slot);
 
-  socket.emit('start_screen', { name, adb_addr: adbAddr });
+  if (socket) socket.emit('start_screen', { name, adb_addr: adbAddr });
+  else toast('Socket.IO 未连接，无法投屏', 'error');
 
   screenSessions.push({ slot, name, adbAddr, player, canvas });
   updateScreenCounter();
@@ -998,7 +1011,7 @@ function stopScreen(slot) {
   const session = screenSessions[idx];
   session.player.destroy();
   screenSessions.splice(idx, 1);
-  socket.emit('stop_screen');
+  if (socket) socket.emit('stop_screen');
 
   const cell = document.getElementById('sc-' + slot);
   cell.innerHTML = '<div class="sc-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg><span>点击容器旁的"投屏"按钮</span></div>';
@@ -1023,11 +1036,6 @@ document.addEventListener('click', function(e) {
     }
   }
 });
-
-// 全局测试: 点击任何地方都输出日志
-document.addEventListener('click', function(e) {
-  console.log('click:', e.target.tagName, e.target.className);
-}, { once: true });
 
 // Init
 loadDevices()
