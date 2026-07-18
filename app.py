@@ -968,5 +968,82 @@ def screen_config():
         "ws_url": f"ws://{request.host.split(':')[0]}:9000"
     })
 
+ADB_PATH = r"C:\Users\wusi0\AppData\Local\Android\Sdk\platform-tools\adb.exe"
+
+import threading
+
+class ADBShellPool:
+    def __init__(self):
+        self._shells = {}
+        self._lock = threading.Lock()
+
+    def _ensure_shell(self, adb_addr):
+        with self._lock:
+            proc = self._shells.get(adb_addr)
+            if proc and proc.poll() is None:
+                return proc
+            if proc:
+                try: proc.kill()
+                except: pass
+            proc = subprocess.Popen(
+                [ADB_PATH, '-s', adb_addr, 'shell'],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            self._shells[adb_addr] = proc
+            return proc
+
+    def send(self, adb_addr, cmd):
+        try:
+            proc = self._ensure_shell(adb_addr)
+            proc.stdin.write((cmd + '\n').encode())
+            proc.stdin.flush()
+            return True
+        except Exception:
+            with self._lock:
+                self._shells.pop(adb_addr, None)
+            try:
+                proc = self._ensure_shell(adb_addr)
+                proc.stdin.write((cmd + '\n').encode())
+                proc.stdin.flush()
+                return True
+            except:
+                return False
+
+    def close_all(self):
+        with self._lock:
+            for p in self._shells.values():
+                try: p.kill()
+                except: pass
+            self._shells.clear()
+
+adb_pool = ADBShellPool()
+
+@app.route('/api/screen/touch', methods=['POST'])
+def screen_touch():
+    data = request.json or {}
+    adb_addr = data.get('adb_addr', '')
+    action = data.get('action', 'tap')
+    x = int(data.get('x', 0))
+    y = int(data.get('y', 0))
+    if not adb_addr:
+        return jsonify({"code": 400, "msg": "missing adb_addr"})
+    if action == 'tap':
+        cmd = f'input tap {x} {y}'
+    elif action == 'swipe':
+        x2 = int(data.get('x2', x))
+        y2 = int(data.get('y2', y))
+        dur = int(data.get('duration', 300))
+        cmd = f'input swipe {x} {y} {x2} {y2} {dur}'
+    elif action == 'key':
+        keycode = data.get('keycode', '')
+        cmd = f'input keyevent {keycode}'
+    elif action == 'text':
+        text = data.get('text', '')
+        cmd = f'input text {text}'
+    else:
+        return jsonify({"code": 400, "msg": f"unknown action: {action}"})
+    ok = adb_pool.send(adb_addr, cmd)
+    return jsonify({"code": 200 if ok else 500, "msg": "ok" if ok else "adb send failed"})
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=True)

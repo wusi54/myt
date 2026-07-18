@@ -74,13 +74,26 @@ tr:hover td{background:#1e2e3e}
 .wall-2{grid-template-columns:1fr 1fr}
 .wall-3{grid-template-columns:1fr 1fr 1fr}
 .wall-4{grid-template-columns:1fr 1fr 1fr 1fr}
+.wall-5{grid-template-columns:1fr 1fr 1fr 1fr 1fr}
+.wall-6{grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr}
+.wall-7{grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr 1fr}
 .wall-cell{background:#000;border-radius:4px;overflow:hidden;position:relative;aspect-ratio:9/16;border:1px solid #2a3a4a}
-.wall-cell canvas{width:100%;height:100%;display:block;object-fit:contain}
+.wall-cell canvas{width:100%;height:100%;display:block;object-fit:contain;cursor:crosshair}
 .wall-cell .wc-label{position:absolute;top:0;left:0;right:0;padding:4px 8px;background:linear-gradient(180deg,#000000b3,transparent);font-size:11px;z-index:2;display:flex;justify-content:space-between;align-items:center}
 .wall-cell .wc-label .wc-name{color:#00d4ff;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .wall-cell .wc-label .wc-close{color:#ff6b6b;cursor:pointer;font-size:14px;line-height:1;padding:0 4px}
 .wall-cell .wc-placeholder{display:flex;align-items:center;justify-content:center;height:100%;color:#3a4a5a;font-size:12px;flex-direction:column;gap:6px}
 .wall-cell .wc-status{position:absolute;bottom:4px;right:6px;font-size:9px;color:#8899aa;z-index:2}
+.wall-cell .wc-status.st-connecting{color:#f0ad4e}
+.wall-cell .wc-status.st-connected{color:#4ec94e}
+.wall-cell .wc-status.st-disconnected{color:#f57f6e}
+.wall-cell .wc-status.st-reconnecting{color:#f0ad4e;animation:wcBlink 1s infinite}
+@keyframes wcBlink{0%,100%{opacity:1}50%{opacity:.3}}
+.wall-cell .wc-toolbar{position:absolute;bottom:0;left:0;right:0;padding:4px 6px;background:linear-gradient(0deg,#000000cc,transparent);z-index:3;display:flex;gap:4px;justify-content:center;opacity:0;transition:opacity .2s}
+.wall-cell:hover .wc-toolbar{opacity:1}
+.wall-cell .wc-tb-btn{padding:3px 8px;background:#1a2a3a;border:1px solid #3a4a5a;border-radius:3px;color:#8899aa;font-size:10px;cursor:pointer;transition:all .15s;white-space:nowrap}
+.wall-cell .wc-tb-btn:hover{background:#2a3a4a;color:#00d4ff;border-color:#0078d4}
+.wall-cell .wc-tb-btn.tb-active{background:#0078d4;color:#fff;border-color:#0078d4}
 @media(max-width:900px){.wall-4{grid-template-columns:1fr 1fr}}
 @media(max-width:600px){.wall-3,.wall-4{grid-template-columns:1fr 1fr}.wall-2{grid-template-columns:1fr}}
 </style>
@@ -138,12 +151,15 @@ tr:hover td{background:#1e2e3e}
 <div class="card-header">
 <h3>群控窗</h3>
 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-<select id="wallGridSize" style="width:80px" onchange="resizeWall()">
+<select id="wallGridSize" style="width:100px" onchange="resizeWall()">
 <option value="2">2×2</option>
 <option value="3" selected>3×3</option>
 <option value="4">4×4</option>
+<option value="5">5×5</option>
+<option value="6">6×6</option>
+<option value="7">7×7</option>
 </select>
-<button class="btn btn-sm btn-primary" onclick="showAddToWallModal()">+ 添加容器</button>
+<button class="btn btn-sm btn-primary" id="openWallModalBtn">+ 添加容器</button>
 <button class="btn btn-sm btn-outline" onclick="clearWall()">清空</button>
 <span id="wallCounter" style="font-size:12px;color:#8899aa">0 个容器</span>
 </div>
@@ -455,7 +471,7 @@ tr:hover td{background:#1e2e3e}
 <div id="wallContainerList" style="max-height:300px;overflow-y:auto;border:1px solid #2a3a4a;border-radius:4px;padding:8px;background:#0f1923"></div>
 <div class="modal-actions">
 <button class="btn btn-outline" onclick="closeModal('addToWallModal')">取消</button>
-<button class="btn btn-primary" onclick="addSelectedToWall()">添加到群控窗</button>
+<button class="btn btn-primary" id="addSelectedToWallBtn">添加到群控窗</button>
 </div>
 </div></div>
 
@@ -846,9 +862,11 @@ loadDevices()
 
 // ==================== 群控窗 ====================
 let wallItems = []; // { name, adbAddr, player, canvas }
+const DEVICE_W = 720, DEVICE_H = 1280;
+const VIDEO_W = 480, VIDEO_H = 720;
 
 class WallPlayer {
-  constructor(canvas) {
+  constructor(canvas, adbAddr) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.decoder = null;
@@ -856,29 +874,67 @@ class WallPlayer {
     this.lastStart = -1;
     this.nalCache = [];
     this.ws = null;
+    this.adbAddr = adbAddr;
+    this.statusEl = null;
+    this.reconnectDelay = 1000;
+    this.reconnectTimer = null;
+    this.destroyed = false;
     this._initDecoder();
   }
   _initDecoder() {
     if (typeof VideoDecoder === 'undefined') return;
+    this.ts = 0;
     try {
       this.decoder = new VideoDecoder({
         output: (frame) => {
-          try { this.canvas.width = frame.displayWidth; this.canvas.height = frame.displayHeight; this.ctx.drawImage(frame, 0, 0); } catch(e) {}
+          try {
+            if (this.canvas.width !== frame.displayWidth) this.canvas.width = frame.displayWidth;
+            if (this.canvas.height !== frame.displayHeight) this.canvas.height = frame.displayHeight;
+            this.ctx.drawImage(frame, 0, 0);
+          } catch(e) {}
           frame.close();
         },
-        error: () => {}
+        error: (e) => { console.error('WallPlayer decode error:', e); }
       });
       this.decoder.configure({ codec: 'avc1.42C01E', optimizeForLatency: true });
-    } catch(e) {}
+    } catch(e) { console.error('WallPlayer decoder configure failed:', e); }
   }
-  connect(adbAddr) {
+  _setStatus(cls, text) {
+    if (this.statusEl) {
+      this.statusEl.className = 'wc-status ' + cls;
+      this.statusEl.textContent = text;
+    }
+  }
+  connect() {
+    if (this.destroyed) return;
     if (this.ws) this.disconnect();
+    this._setStatus('st-connecting', '连接中...');
     const host = window.location.hostname || 'localhost';
-    this.ws = new WebSocket('ws://' + host + ':9000/stream?adb_addr=' + encodeURIComponent(adbAddr));
+    this.ws = new WebSocket('ws://' + host + ':9000/stream?adb_addr=' + encodeURIComponent(this.adbAddr));
     this.ws.binaryType = 'arraybuffer';
+    this.ws.onopen = () => {
+      this.reconnectDelay = 1000;
+      this._setStatus('st-connected', '投屏中');
+    };
     this.ws.onmessage = (e) => { this.buffer = this._concat(this.buffer, new Uint8Array(e.data)); this._parse(); };
-    this.ws.onclose = () => { this.ws = null; };
-    this.ws.onerror = () => { this.ws = null; };
+    this.ws.onclose = () => {
+      this.ws = null;
+      if (!this.destroyed) this._scheduleReconnect();
+    };
+    this.ws.onerror = () => {
+      if (this.ws) { try { this.ws.close(); } catch {} this.ws = null; }
+    };
+  }
+  _scheduleReconnect() {
+    if (this.destroyed || this.reconnectTimer) return;
+    this._setStatus('st-reconnecting', Math.round(this.reconnectDelay / 1000) + 's后重连');
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.destroyed) {
+        this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, 15000);
+        this.connect();
+      }
+    }, this.reconnectDelay);
   }
   _parse() {
     let pos = 0;
@@ -887,27 +943,50 @@ class WallPlayer {
       if (this.buffer[pos] === 0 && this.buffer[pos+1] === 0 && this.buffer[pos+2] === 1) sl = 3;
       else if (pos < this.buffer.length - 4 && this.buffer[pos] === 0 && this.buffer[pos+1] === 0 && this.buffer[pos+2] === 0 && this.buffer[pos+3] === 1) sl = 4;
       if (sl > 0) {
-        if (this.lastStart >= 0) { this.nalCache.push(this.buffer.slice(this.lastStart, pos)); }
+        if (this.lastStart >= 0) {
+          const nalData = this.buffer.slice(this.lastStart, pos);
+          const nalType = nalData[sl] & 0x1F;
+          this.nalCache.push(nalData);
+          if (nalType === 5 || nalType === 1) this._flush();
+        }
         this.lastStart = pos; pos += sl;
       } else { pos++; }
     }
     if (this.lastStart >= 0) { this.buffer = this.buffer.slice(this.lastStart); this.lastStart = 0; }
-    this._flush();
   }
   _flush() {
     if (this.nalCache.length === 0 || !this.decoder) return;
+    let hasIdr = false;
+    for (const n of this.nalCache) {
+      const sl = (n[0] === 0 && n[1] === 0 && n[2] === 0) ? 4 : 3;
+      if ((n[sl] & 0x1F) === 5) { hasIdr = true; break; }
+    }
     const total = this.nalCache.reduce((s, u) => s + u.length, 0);
     const f = new Uint8Array(total); let off = 0;
     for (const n of this.nalCache) { f.set(n, off); off += n.length; }
     this.nalCache = [];
-    try { this.decoder.decode(new EncodedVideoChunk({ type: 'key', timestamp: 0, duration: 100_000, data: f })); } catch(e) {}
+    const ts = this.ts; this.ts += 100000;
+    try { this.decoder.decode(new EncodedVideoChunk({ type: hasIdr ? 'key' : 'delta', timestamp: ts, duration: 100_000, data: f })); } catch(e) { console.error('WallPlayer decode err:', e); }
   }
   disconnect() {
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     if (this.ws) { try { this.ws.close(); } catch {} this.ws = null; }
     this.buffer = new Uint8Array(0); this.nalCache = []; this.lastStart = -1;
   }
-  destroy() { this.disconnect(); if (this.decoder) { try { this.decoder.close(); } catch {} this.decoder = null; } }
+  destroy() {
+    this.destroyed = true;
+    this.disconnect();
+    if (this.decoder) { try { this.decoder.close(); } catch {} this.decoder = null; }
+  }
   _concat(a, b) { const c = new Uint8Array(a.length + b.length); c.set(a); c.set(b, a.length); return c; }
+}
+
+function wallSendTouch(adbAddr, action, params) {
+  fetch('/api/screen/touch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ adb_addr: adbAddr, action, ...params })
+  }).catch(() => {});
 }
 
 function resizeWall() {
@@ -925,22 +1004,32 @@ function renderWall() {
   for (let i = 0; i < max; i++) {
     const item = wallItems[i];
     if (item) {
-      html += '<div class="wall-cell" id="wc-' + i + '"><div class="wc-label"><span class="wc-name" title="' + item.name + '">' + item.name + '</span><span class="wc-close" onclick="removeFromWall(' + i + ')">×</span></div><canvas></canvas><div class="wc-status">投屏中</div></div>';
+      html += '<div class="wall-cell" id="wc-' + i + '">'
+        + '<div class="wc-label"><span class="wc-name" title="' + item.name + '">' + item.name + '</span><span class="wc-close" data-remove="' + i + '">×</span></div>'
+        + '<canvas data-wall-idx="' + i + '"></canvas>'
+        + '<div class="wc-status st-connecting" data-status="' + i + '">连接中...</div>'
+        + '<div class="wc-toolbar" data-toolbar="' + i + '">'
+        + '<span class="wc-tb-btn" data-tb="back" data-idx="' + i + '">返回</span>'
+        + '<span class="wc-tb-btn" data-tb="home" data-idx="' + i + '">主页</span>'
+        + '<span class="wc-tb-btn" data-tb="recent" data-idx="' + i + '">最近</span>'
+        + '<span class="wc-tb-btn" data-tb="input" data-idx="' + i + '">输入</span>'
+        + '</div></div>';
     } else {
       html += '<div class="wall-cell" id="wc-' + i + '"><div class="wc-placeholder"><span>空位</span></div></div>';
     }
   }
   grid.innerHTML = html;
-  // 为已有内容的格子启动/重连播放器
   for (let i = 0; i < max; i++) {
     const item = wallItems[i];
     if (item) {
       const cell = document.getElementById('wc-' + i);
       const canvas = cell.querySelector('canvas');
+      const statusEl = cell.querySelector('[data-status]');
       if (canvas && (!item.player || item.player.canvas !== canvas)) {
         if (item.player) item.player.destroy();
-        const player = new WallPlayer(canvas);
-        player.connect(item.adbAddr);
+        const player = new WallPlayer(canvas, item.adbAddr);
+        player.statusEl = statusEl;
+        player.connect();
         item.player = player;
         item.canvas = canvas;
       }
@@ -966,7 +1055,6 @@ function showAddToWallModal() {
   document.getElementById('wallContainerList').innerHTML = '<div style="color:#8899aa;padding:12px">加载容器列表中...</div>';
   loadAllContainers();
   showModal('addToWallModal');
-  // 等数据加载完再渲染
   var wait = setInterval(function() {
     if (allContainers.length) {
       clearInterval(wait);
@@ -979,11 +1067,11 @@ function renderWallContainerList() {
   const kw = (document.getElementById('wallSearch').value || '').toLowerCase();
   const list = allContainers.filter(c => {
     const name = (c.Name || c.name || '').toLowerCase();
-    return name.includes(kw) && (c.Status || c.status || '').toLowerCase() === 'running';
+    return name.includes(kw) && ((c.Status || c.status || c.state || '').toLowerCase().includes('running') || (c.Status || c.status || c.state || '').toLowerCase().includes('up'));
   });
   const el = document.getElementById('wallContainerList');
   if (!list.length) { el.innerHTML = '<div style="color:#8899aa;padding:12px">没有匹配的容器</div>'; return; }
-  let html = '<div style="margin-bottom:8px"><a href="#" onclick="toggleWallCbs(true)" style="color:#00d4ff;font-size:12px">全选</a> / <a href="#" onclick="toggleWallCbs(false)" style="color:#00d4ff;font-size:12px">取消全选</a></div>';
+  let html = '<div style="margin-bottom:8px"><span class="link" id="wallSelectAll" style="font-size:12px">全选</span> / <span class="link" id="wallDeselectAll" style="font-size:12px">取消全选</span></div>';
   list.forEach(c => {
     const name = c.Name || c.name;
     const adbPort = c.adb || c.Adb || '';
@@ -1024,6 +1112,69 @@ switchPage = function(pageId, el) {
     renderWall();
   }
 };
+
+// 用 addEventListener 绑定按钮，避免 CSP 问题
+document.getElementById('openWallModalBtn').addEventListener('click', showAddToWallModal);
+document.getElementById('addSelectedToWallBtn').addEventListener('click', function() {
+  addSelectedToWall();
+});
+document.addEventListener('click', function(e) {
+  if (e.target.id === 'wallSelectAll') toggleWallCbs(true);
+  if (e.target.id === 'wallDeselectAll') toggleWallCbs(false);
+  if (e.target.dataset.remove !== undefined) removeFromWall(parseInt(e.target.dataset.remove));
+  // 工具栏按钮
+  if (e.target.dataset.tb) {
+    const idx = parseInt(e.target.dataset.idx);
+    const item = wallItems[idx];
+    if (!item) return;
+    const tb = e.target.dataset.tb;
+    if (tb === 'back') wallSendTouch(item.adbAddr, 'key', { keycode: '4' });
+    else if (tb === 'home') wallSendTouch(item.adbAddr, 'key', { keycode: '3' });
+    else if (tb === 'recent') wallSendTouch(item.adbAddr, 'key', { keycode: '187' });
+    else if (tb === 'input') {
+      const text = prompt('输入文字发送到设备:');
+      if (text) wallSendTouch(item.adbAddr, 'text', { text });
+    }
+  }
+});
+
+// Canvas 交互：点击=tap，拖拽=swipe
+document.addEventListener('mousedown', function(e) {
+  if (!e.target.matches('canvas[data-wall-idx]')) return;
+  const idx = parseInt(e.target.dataset.wallIdx);
+  const item = wallItems[idx];
+  if (!item) return;
+  const rect = e.target.getBoundingClientRect();
+  e.target._touchStart = { x: e.clientX - rect.left, y: e.clientY - rect.top, t: Date.now(), rect };
+  e.target._touchMoved = false;
+});
+document.addEventListener('mousemove', function(e) {
+  if (!e.target.matches('canvas[data-wall-idx]')) return;
+  if (!e.target._touchStart) return;
+  e.target._touchMoved = true;
+});
+document.addEventListener('mouseup', function(e) {
+  if (!e.target.matches('canvas[data-wall-idx]')) return;
+  const start = e.target._touchStart;
+  if (!start) return;
+  e.target._touchStart = null;
+  const rect = start.rect;
+  const ex = e.clientX - rect.left, ey = e.clientY - rect.top;
+  const dx = ex - start.x, dy = ey - start.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const scaleX = DEVICE_W / rect.width, scaleY = DEVICE_H / rect.height;
+  const item = wallItems[parseInt(e.target.dataset.wallIdx)];
+  if (!item) return;
+  if (dist < 8 && (Date.now() - start.t) < 500) {
+    const tx = Math.round(start.x * scaleX), ty = Math.round(start.y * scaleY);
+    wallSendTouch(item.adbAddr, 'tap', { x: tx, y: ty });
+  } else {
+    const tx1 = Math.round(start.x * scaleX), ty1 = Math.round(start.y * scaleY);
+    const tx2 = Math.round(ex * scaleX), ty2 = Math.round(ey * scaleY);
+    const dur = Math.max(100, Math.min(800, Math.round(dist / 2)));
+    wallSendTouch(item.adbAddr, 'swipe', { x: tx1, y: ty1, x2: tx2, y2: ty2, duration: dur });
+  }
+});
 
 // Init
 loadDevices()

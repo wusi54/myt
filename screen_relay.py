@@ -1,10 +1,9 @@
 import asyncio
 import subprocess
-import signal
-import os
 
 WS_PORT = 9000
 ADB = r"C:\Users\wusi0\AppData\Local\Android\Sdk\platform-tools\adb.exe"
+SCREEN_LIMIT = 180
 active_streams = {}
 
 async def adb_heartbeat(adb_addr):
@@ -17,7 +16,6 @@ async def adb_heartbeat(adb_addr):
             pass
 
 async def stream_worker(ws, adb_addr):
-    # 连接 ADB，检查是否成功
     r = subprocess.run([ADB, 'connect', adb_addr], capture_output=True, timeout=10)
     out = r.stdout.decode(errors='replace')
     if 'connected' not in out and 'already' not in out:
@@ -27,74 +25,80 @@ async def stream_worker(ws, adb_addr):
     print(f'[stream] adb connected: {adb_addr}', flush=True)
 
     heartbeat = asyncio.create_task(adb_heartbeat(adb_addr))
+    restart_count = 0
 
-    proc = await asyncio.create_subprocess_exec(
-        ADB, '-s', adb_addr, 'exec-out',
-        'screenrecord', '--output-format=h264',
-        '--size', '480x720',
-        '--bit-rate', '500000',
-        '--time-limit', '180', '-',
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-    active_streams[adb_addr] = proc
-    # 等待第一帧，超时15秒则退出
-    try:
-        first = await asyncio.wait_for(proc.stdout.read(65536), timeout=15)
-        if first:
-            await ws.send(first)
-        else:
-            await ws.close(4003, 'no video data')
-            return
-    except asyncio.TimeoutError:
-        print(f'[stream] {adb_addr} timeout waiting for first frame', flush=True)
-        await ws.close(4003, 'screenrecord timeout')
-        proc.kill()
-        return
     try:
         while True:
-            chunk = await proc.stdout.read(65536)
-            if not chunk:
+            print(f'[stream] {adb_addr} starting screenrecord (attempt {restart_count + 1})', flush=True)
+            proc = await asyncio.create_subprocess_exec(
+                ADB, '-s', adb_addr, 'exec-out',
+                'screenrecord', '--output-format=h264',
+                '--size', '480x720',
+                '--bit-rate', '500000',
+                '--time-limit', str(SCREEN_LIMIT), '-',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            active_streams[adb_addr] = proc
+
+            ws_alive = True
+            try:
+                while True:
+                    chunk = await proc.stdout.read(65536)
+                    if not chunk:
+                        print(f'[stream] {adb_addr} stdout EOF, stream ended', flush=True)
+                        break
+                    await ws.send(chunk)
+            except Exception as e:
+                ws_alive = False
+                print(f'[stream] {adb_addr} send error: {e}', flush=True)
+
+            try:
+                proc.kill()
+            except:
+                pass
+
+            if not ws_alive:
+                print(f'[stream] {adb_addr} client disconnected', flush=True)
                 break
-            await ws.send(chunk)
-        await proc.wait()
-        err = await proc.stderr.read()
-        if err:
-            print(f'[stream] {adb_addr} stderr: {err.decode(errors="replace")}', flush=True)
+
+            await proc.wait()
+            err = await proc.stderr.read()
+            if err:
+                print(f'[stream] {adb_addr} stderr: {err.decode(errors="replace")}', flush=True)
+
+            restart_count += 1
+            print(f'[stream] {adb_addr} screenrecord ended, restarting in 1s...', flush=True)
+            await asyncio.sleep(1)
+
     except Exception as e:
         print(f'[stream] {adb_addr} error: {e}', flush=True)
-        try: proc.kill()
-        except: pass
     finally:
         heartbeat.cancel()
         active_streams.pop(adb_addr, None)
 
 async def handler(ws):
     from urllib.parse import urlparse, parse_qs
-    path = ws.request.path if ws.request else '/'
+    path = ws.request.path if hasattr(ws, 'request') else '/'
+    print(f'[relay] new connection, path={path}, type={type(ws).__name__}', flush=True)
     qs = parse_qs(urlparse(path).query)
     adb_addr = (qs.get('adb_addr') or [''])[0]
     if not adb_addr:
+        print(f'[relay] missing adb_addr, closing', flush=True)
         await ws.close(4000, 'missing adb_addr')
         return
     if adb_addr in active_streams:
+        print(f'[relay] {adb_addr} already streaming, closing', flush=True)
         await ws.close(4001, 'already streaming')
         return
+    print(f'[relay] starting stream for {adb_addr}', flush=True)
     await stream_worker(ws, adb_addr)
 
 async def main():
-    import websockets
+    from websockets.asyncio.server import serve
     print(f'[relay] Starting on ws://0.0.0.0:{WS_PORT}', flush=True)
-    loop = asyncio.get_running_loop()
-    stop = asyncio.Event()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try: loop.add_signal_handler(sig, lambda: stop.set() if not stop.is_set() else None)
-        except: pass
-    async with websockets.serve(handler, '0.0.0.0', WS_PORT):
-        await stop.wait()
-    for p in active_streams.values():
-        try: p.kill()
-        except: pass
+    async with serve(handler, '0.0.0.0', WS_PORT, ping_interval=20, ping_timeout=10):
+        await asyncio.Future()
 
 if __name__ == '__main__':
     asyncio.run(main())
