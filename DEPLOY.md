@@ -155,3 +155,57 @@ python screen_relay.py
 ```
 
 Windows 下 `ADB_PATH` 默认指向 Android SDK 的 `adb.exe`；其他平台设为实际路径或 `adb`。
+
+---
+
+## 八、CentOS / RHEL 宿主机注意事项
+
+镜像内是 **Debian（`python:3.11-slim`）**，apt/pip 都在容器里执行，**与宿主机的 CentOS 无关**。但宿主机（CentOS）上有几处需要确认：
+
+### 1. Docker 与 Compose 版本
+本 `docker-compose.yml` 使用 **Compose 规范**（无 `version:` 字段，含 `x-app` 扩展与 `<<:` 锚点），需要 **Docker Compose v2**：
+```bash
+docker compose version        # 需要 v2，输出形如 Docker Compose version v2.x
+```
+若只有旧版 `docker-compose`（v1），请升级安装 `docker-ce` + `docker-compose-plugin`（CentOS 7 建议 7.9）。
+
+### 2. SELinux（重点）
+CentOS 默认 **SELinux enforcing**，bind mount 的宿主目录容器可能无权限访问。本仓库卷挂载已加 `:z`（见 `docker-compose.yml`）。若仍报 `Permission denied`：
+```bash
+getenforce                    # 确认是否 Enforcing
+# 方案A：改用私有标签 :Z（把 :z 改成 :Z）
+# 方案B：手工打标签
+chcon -Rt svirt_sandbox_file_t ./data ./uploads ./app_uploads
+```
+
+### 3. 防火墙放行端口
+```bash
+firewall-cmd --permanent --add-port=5001/tcp
+firewall-cmd --permanent --add-port=9000/tcp
+firewall-cmd --reload
+```
+
+### 4. 能否拉取基础镜像（Docker Hub 可达性）
+构建需要拉取 `python:3.11-slim`。若 live 环境访问 Docker Hub 受限，配置镜像加速器（阿里云）到 `/etc/docker/daemon.json`：
+```json
+{ "registry-mirrors": ["https://<你的ID>.mirror.aliyuncs.com"] }
+```
+```bash
+systemctl restart docker
+```
+
+### 5. 推荐：完全离线部署（最稳）
+若 live 环境网络受限（如无法访问 Docker Hub / deb.debian.org），可**在能联网的机器上构建好镜像**，再离线导入：
+
+```bash
+# ① 能联网的机器：构建并导出镜像
+docker compose build
+docker save myt-manager:2.1.0 -o myt-manager-2.1.0.tar
+gzip myt-manager-2.1.0.tar        # 可选，文件较大
+
+# ② 把 myt-manager-2.1.0.tar.gz 和本仓库一起拷到 live 机器
+
+# ③ live 机器：导入镜像后直接启动（不要加 --build，避免联网重新构建）
+docker load -i myt-manager-2.1.0.tar.gz
+docker compose up -d
+```
