@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""魔云腾(MYT) SDK WEB API 客户端封装。
+"""云phone(MYT) SDK WEB API 客户端封装。
 
 接口文档: 每个设备的 API base (参见 devices.url) + /docs
 参考文档: http://113.105.100.58:83/docs

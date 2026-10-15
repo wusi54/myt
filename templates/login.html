@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>登录 - 云phone设备管理平台</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'Segoe UI','Microsoft YaHei',sans-serif;background:#0f1923;color:#e0e0e0;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.login-wrap{width:100%;max-width:380px;padding:20px}
+.login-card{background:#1a2a3a;border:1px solid #2a3a4a;border-radius:10px;padding:32px 28px;box-shadow:0 12px 40px #00000060}
+.login-card h1{font-size:18px;color:#00d4ff;text-align:center;margin-bottom:4px}
+.login-card h1 small{display:block;color:#5a6a7a;font-size:11px;font-weight:400;margin-top:4px}
+.form-row{margin-bottom:14px;margin-top:0}
+.form-row label{display:block;font-size:12px;color:#8899aa;margin-bottom:5px}
+.form-row input{width:100%;background:#0f1923;border:1px solid #2a3a4a;color:#e0e0e0;padding:10px 12px;border-radius:5px;font-size:14px}
+.form-row input:focus{outline:none;border-color:#0078d4}
+.btn{width:100%;padding:11px;border:none;border-radius:5px;background:#0078d4;color:#fff;font-size:14px;cursor:pointer;transition:background .2s;margin-top:6px}
+.btn:hover{background:#0086e8}
+.btn:disabled{opacity:.6;cursor:not-allowed}
+.err{color:#f57f6e;font-size:12px;min-height:16px;text-align:center;margin-top:4px}
+.hint{color:#5a6a7a;font-size:11px;text-align:center;margin-top:16px;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="login-wrap">
+  <form class="login-card" id="loginForm" autocomplete="on">
+    <h1>云phone管理平台 <small>V2.1.0</small></h1>
+    <div class="form-row">
+      <label>用户名</label>
+      <input id="username" name="username" autocomplete="username" autofocus>
+    </div>
+    <div class="form-row">
+      <label>密码</label>
+      <input id="password" name="password" type="password" autocomplete="current-password">
+    </div>
+    <div id="err" class="err"></div>
+    <button class="btn" type="submit" id="submitBtn">登 录</button>
+    <div class="hint">首次登录后请及时修改密码</div>
+  </form>
+</div>
+<script>
+const form = document.getElementById('loginForm');
+const errEl = document.getElementById('err');
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  errEl.textContent = '';
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  if (!username || !password) { errEl.textContent = '请输入用户名和密码'; return; }
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true; btn.textContent = '登录中...';
+  try {
+    const r = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    const d = await r.json();
+    if (d.code === 200) { location.href = '/'; return; }
+    errEl.textContent = d.msg || '登录失败';
+  } catch (ex) {
+    errEl.textContent = '网络错误：' + ex.message;
+  }
+  btn.disabled = false; btn.textContent = '登 录';
+});
+</script>
+</body>
+</html>

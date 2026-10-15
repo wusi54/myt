@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>魔云腾设备管理平台 V2.1.0</title>
+<title>云phone设备管理平台 V2.1.0</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,'Segoe UI','Microsoft YaHei',sans-serif;background:#0f1923;color:#e0e0e0;min-height:100vh}
@@ -13,6 +13,9 @@ body{font-family:-apple-system,'Segoe UI','Microsoft YaHei',sans-serif;backgroun
 .nav-tab{padding:14px 20px;color:#8899aa;cursor:pointer;font-size:13px;border-bottom:2px solid transparent;transition:all .2s}
 .nav-tab:hover{color:#00d4ff;background:#1e2e3e}
 .nav-tab.active{color:#00d4ff;border-bottom-color:#00d4ff;background:#1e2e3e}
+.nav-user{margin-left:auto;display:flex;align-items:center;gap:8px;color:#8899aa;font-size:12px;padding:6px 0}
+.nav-user .uname{color:#00d4ff;font-weight:600}
+.nav-user .urole{font-size:10px;padding:1px 6px;border-radius:8px;background:#0078d440;color:#4fc3f7}
 .container{max-width:100%;margin:0 auto;padding:16px 20px}
 .card{background:#1a2a3a;border-radius:8px;padding:16px;margin-bottom:16px;border:1px solid #2a3a4a}
 .card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px}
@@ -74,9 +77,11 @@ tr:hover td{background:#1e2e3e}
 .wall-5{grid-template-columns:repeat(5,1fr)}.wall-6{grid-template-columns:repeat(6,1fr)}.wall-7{grid-template-columns:repeat(7,1fr)}
 .wall-cell{background:#000;border-radius:4px;overflow:hidden;position:relative;aspect-ratio:9/16;border:1px solid #2a3a4a}
 .wall-cell canvas{width:100%;height:100%;display:block;object-fit:contain;cursor:crosshair}
-.wall-cell .wc-label{position:absolute;top:0;left:0;right:0;padding:4px 8px;background:linear-gradient(180deg,#000000b3,transparent);font-size:11px;z-index:2;display:flex;justify-content:space-between;align-items:center}
-.wall-cell .wc-label .wc-name{color:#00d4ff;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.wall-cell .wc-label .wc-close{color:#ff6b6b;cursor:pointer;font-size:14px;line-height:1;padding:0 4px}
+.wall-cell .wc-label{position:absolute;top:0;left:0;right:0;padding:4px 8px;background:linear-gradient(180deg,#000000b3,transparent);font-size:11px;z-index:2;display:flex;justify-content:space-between;align-items:flex-start;gap:6px;pointer-events:none}
+.wall-cell .wc-label .wc-meta{min-width:0;flex:1}
+.wall-cell .wc-label .wc-api{display:block;color:#ff4d4f;font-size:11px;font-weight:700;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#000000a6;border-radius:3px;padding:0 4px;margin-bottom:2px;text-shadow:0 1px 2px #000}
+.wall-cell .wc-label .wc-name{color:#ffa500;font-size:11px;font-weight:700;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 2px #000}
+.wall-cell .wc-label .wc-close{color:#ff6b6b;cursor:pointer;font-size:14px;line-height:1;padding:0 4px;pointer-events:auto}
 .wall-cell .wc-placeholder{display:flex;align-items:center;justify-content:center;height:100%;color:#3a4a5a;font-size:12px}
 .wall-cell .wc-status{position:absolute;bottom:4px;right:6px;font-size:9px;color:#8899aa;z-index:2}
 .wall-cell .wc-status.st-connected{color:#4ec94e}.wall-cell .wc-status.st-connecting,.wall-cell .wc-status.st-reconnecting{color:#f0ad4e}
@@ -90,13 +95,20 @@ tr:hover td{background:#1e2e3e}
 </head>
 <body>
 <div class="navbar">
-<h1>魔云腾管理平台 <small>V2.1.0</small></h1>
+<h1>云phone管理平台 <small>V2.1.0</small></h1>
 <div class="nav-tab active" onclick="switchPage('pageDevices',this)">设备管理</div>
 <div class="nav-tab" onclick="switchPage('pageContainers',this)">容器管理</div>
 <div class="nav-tab" onclick="switchPage('pageRealParams',this)">真机参数库</div>
 <div class="nav-tab" onclick="switchPage('pageProxies',this)">代理池</div>
 <div class="nav-tab" onclick="switchPage('pageApps',this)">应用管理</div>
 <div class="nav-tab" onclick="switchPage('pageScreenWall',this)">群控窗</div>
+<div class="nav-tab" id="navUsers" style="display:none" onclick="switchPage('pageUsers',this)">用户管理</div>
+<div class="nav-user">
+  <span id="curUserName">-</span>
+  <span id="curUserRole" class="urole" style="display:none"></span>
+  <button class="btn btn-sm btn-outline" onclick="showPwdModal()">修改密码</button>
+  <button class="btn btn-sm btn-outline" onclick="doLogout()">退出</button>
+</div>
 </div>
 <div id="toast" class="toast"></div>
 <div class="container">
@@ -189,7 +201,36 @@ tr:hover td{background:#1e2e3e}
 </div>
 </div>
 
+<!-- ==================== 用户管理 ==================== -->
+<div id="pageUsers" class="page">
+<div class="card">
+<div class="card-header"><h3>用户管理</h3><button class="btn btn-sm btn-primary" onclick="showUserModal()">+ 新增用户</button></div>
+<div id="userList"></div>
 </div>
+</div>
+
+</div>
+
+<!-- ========== Modal: 用户新增/编辑 ========== -->
+<div id="userModal" class="modal-overlay"><div class="modal" style="max-width:440px">
+<h2 id="userModalTitle">新增用户</h2>
+<input type="hidden" id="usr_id">
+<div class="form-row"><label>用户名 *</label><input id="usr_username" placeholder="2-32位字母/数字/_.@-"></div>
+<div class="form-row"><label>显示名称</label><input id="usr_display" placeholder="可选"></div>
+<div class="form-row"><label>角色</label><select id="usr_role"><option value="user">普通用户</option><option value="admin">管理员</option></select></div>
+<div class="form-row"><label>密码 <span id="usr_pwd_hint">*</span></label><input id="usr_password" type="password" placeholder="至少6位，编辑时留空表示不修改"></div>
+<div class="form-row" id="usr_status_row" style="display:none"><label>状态</label><select id="usr_status"><option value="active">启用</option><option value="disabled">禁用</option></select></div>
+<div class="modal-actions"><button class="btn btn-outline" onclick="closeModal('userModal')">取消</button><button class="btn btn-primary" onclick="saveUser()">保存</button></div>
+</div></div>
+
+<!-- ========== Modal: 修改密码 ========== -->
+<div id="pwdModal" class="modal-overlay"><div class="modal" style="max-width:400px">
+<h2>修改密码</h2>
+<div class="form-row"><label>原密码</label><input id="pwd_old" type="password" autocomplete="current-password"></div>
+<div class="form-row"><label>新密码</label><input id="pwd_new" type="password" autocomplete="new-password" placeholder="至少6位"></div>
+<div class="form-row"><label>确认新密码</label><input id="pwd_new2" type="password" autocomplete="new-password"></div>
+<div class="modal-actions"><button class="btn btn-outline" onclick="closeModal('pwdModal')">取消</button><button class="btn btn-primary" onclick="doChangePwd()">确定</button></div>
+</div></div>
 
 <!-- ========== Modal: 设备新增/编辑 ========== -->
 <div id="deviceModal" class="modal-overlay"><div class="modal" style="max-width:480px">
@@ -381,8 +422,9 @@ tr:hover td{background:#1e2e3e}
 
 <script>
 // ==================== 基础工具 ====================
-let devices=[], allContainers=[], realParams=[], proxies=[], apps=[];
+let devices=[], allContainers=[], realParams=[], proxies=[], apps=[], users=[];
 let currentContainer=null, pickCb=null, pickMulti=true, pickSelected=new Set();
+let CURRENT_USER=null;
 
 function toast(msg,type='info'){const t=document.getElementById('toast');t.textContent=msg;t.className='toast '+type;setTimeout(()=>{t.style.display='none'},3200)}
 function closeModal(id){document.getElementById(id).classList.remove('active')}
@@ -391,7 +433,10 @@ function esc(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;
 async function api(url,method='GET',body=null,isForm=false){
   const opt={method,headers:{}};
   if(body){ if(isForm){opt.body=body} else {opt.headers['Content-Type']='application/json';opt.body=JSON.stringify(body)} }
-  const r=await fetch(url,opt); return r.json();
+  const r=await fetch(url,opt);
+  if(r.status===401){ location.href='/login'; return {code:401,msg:'未登录或登录已过期'}; }
+  if(r.status===403){ let m='无权限'; try{m=(await r.json()).msg||m}catch(e){} toast(m,'error'); return {code:403,msg:m}; }
+  try{return await r.json()}catch(e){return {code:r.status,msg:'响应解析失败'}}
 }
 function switchSubTab(tabId,btn){const p=btn.closest('.modal');p.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));p.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById(tabId).classList.add('active');btn.classList.add('active')}
 function switchPage(pageId,el){
@@ -403,7 +448,8 @@ function switchPage(pageId,el){
   if(pageId==='pageRealParams')loadRealParams();
   if(pageId==='pageProxies')loadProxies();
   if(pageId==='pageApps')loadApps();
-  if(pageId==='pageScreenWall'){loadContainers().then(renderWall);}
+  if(pageId==='pageScreenWall'){loadContainers().then(()=>{autoFillWall();renderWall();});}
+  if(pageId==='pageUsers')loadUsers();
 }
 function badge(status){
   const s=(status||'').toLowerCase();
@@ -825,7 +871,7 @@ function installApp(id){
 
 // ==================== 群控窗 (投屏) ====================
 let wallItems=[];
-const DEVICE_W=720,DEVICE_H=1280;
+let wallAutoFilled=false;
 class WallPlayer{
   constructor(canvas,adbAddr){this.canvas=canvas;this.ctx=canvas.getContext('2d');this.decoder=null;this.buffer=new Uint8Array(0);this.lastStart=-1;this.nalCache=[];this.ws=null;this.adbAddr=adbAddr;this.statusEl=null;this.reconnectDelay=1000;this.reconnectTimer=null;this.destroyed=false;this._initDecoder()}
   _initDecoder(){if(typeof VideoDecoder==='undefined')return;this.ts=0;try{this.decoder=new VideoDecoder({output:(frame)=>{try{if(this.canvas.width!==frame.displayWidth)this.canvas.width=frame.displayWidth;if(this.canvas.height!==frame.displayHeight)this.canvas.height=frame.displayHeight;this.ctx.drawImage(frame,0,0)}catch(e){}frame.close()},error:(e)=>{console.error('decode error',e)}});this.decoder.configure({codec:'avc1.42C01E',optimizeForLatency:true})}catch(e){}}
@@ -843,7 +889,7 @@ function resizeWall(){document.getElementById('wallGrid').className='wall-grid w
 function renderWall(){
   const grid=document.getElementById('wallGrid');const size=parseInt(document.getElementById('wallGridSize').value);const max=size*size;let html='';
   for(let i=0;i<max;i++){const item=wallItems[i];
-    if(item){html+='<div class="wall-cell" id="wc-'+i+'"><div class="wc-label"><span class="wc-name" title="'+esc(item.name)+'">'+esc(item.name)+'</span><span class="wc-close" data-remove="'+i+'">×</span></div><canvas data-wall-idx="'+i+'"></canvas><div class="wc-status st-connecting" data-status="'+i+'">连接中...</div><div class="wc-toolbar"><span class="wc-tb-btn" data-tb="back" data-idx="'+i+'">返回</span><span class="wc-tb-btn" data-tb="home" data-idx="'+i+'">主页</span><span class="wc-tb-btn" data-tb="recent" data-idx="'+i+'">最近</span><span class="wc-tb-btn" data-tb="input" data-idx="'+i+'">输入</span></div></div>'}
+    if(item){html+='<div class="wall-cell" id="wc-'+i+'"><div class="wc-label"><div class="wc-meta">'+(item.apiUrl?'<div class="wc-api" title="'+esc(item.apiUrl)+'">'+esc(item.apiUrl)+'</div>':'')+'<div class="wc-name" title="'+esc(item.name)+'">'+esc(item.name)+'</div></div><span class="wc-close" data-remove="'+i+'">×</span></div><canvas data-wall-idx="'+i+'"></canvas><div class="wc-toolbar"><span class="wc-tb-btn" data-tb="back" data-idx="'+i+'">返回</span><span class="wc-tb-btn" data-tb="home" data-idx="'+i+'">主页</span><span class="wc-tb-btn" data-tb="recent" data-idx="'+i+'">最近</span><span class="wc-tb-btn" data-tb="input" data-idx="'+i+'">输入</span></div></div>'}
     else{html+='<div class="wall-cell" id="wc-'+i+'"><div class="wc-placeholder"><span>空位</span></div></div>'}
   }
   grid.innerHTML=html;
@@ -851,6 +897,20 @@ function renderWall(){
   document.getElementById('wallCounter').textContent=wallItems.length+' 个容器';
 }
 function clearWall(){wallItems.forEach(it=>{if(it.player)it.player.destroy()});wallItems=[];renderWall()}
+// 首次进入群控窗：若有已启动(running)的容器，默认放入 2 个
+function autoFillWall(){
+  if(wallItems.length){wallAutoFilled=true;return}
+  if(wallAutoFilled)return;
+  const size=parseInt(document.getElementById('wallGridSize').value)||3,max=size*size;
+  const running=allContainers.filter(c=>String(c.state||'').toLowerCase()==='running'&&c.adb_addr);
+  let added=0;
+  for(const c of running){
+    if(wallItems.length>=max||added>=2)break;
+    wallItems.push({name:c.name,adbAddr:c.adb_addr,apiUrl:c.device_url||'',player:null,canvas:null});
+    added++;
+  }
+  if(added)wallAutoFilled=true;
+}
 function removeFromWall(idx){const it=wallItems[idx];if(it&&it.player)it.player.destroy();wallItems.splice(idx,1);renderWall()}
 function showAddToWallModal(){document.getElementById('wallContainerList').innerHTML='<div style="padding:12px;color:#8899aa">加载中...</div>';loadContainers().then(renderWallContainerList);document.getElementById('wallSearch').value='';showModal('addToWallModal')}
 function renderWallContainerList(){
@@ -859,11 +919,11 @@ function renderWallContainerList(){
   const el=document.getElementById('wallContainerList');
   if(!list.length){el.innerHTML='<div style="padding:12px;color:#8899aa">没有匹配的容器</div>';return}
   let html='<div style="padding:8px"><span class="link" onclick="toggleWallCbs(true)">全选</span> / <span class="link" onclick="toggleWallCbs(false)">取消全选</span></div>';
-  list.forEach(c=>{const adb=c.adb_addr||'';if(!adb)return;const checked=wallItems.some(w=>w.adbAddr===adb)?'checked disabled':'';html+='<label class="pick-item"><input type="checkbox" class="wall-cb" value="'+esc(c.name)+'" data-adb="'+esc(adb)+'" '+checked+'><span>'+esc(c.name)+'</span><span class="hint" style="margin-left:auto">'+esc(adb)+'</span></label>'});
+  list.forEach(c=>{const adb=c.adb_addr||'';if(!adb)return;const checked=wallItems.some(w=>w.adbAddr===adb)?'checked disabled':'';html+='<label class="pick-item"><input type="checkbox" class="wall-cb" value="'+esc(c.name)+'" data-adb="'+esc(adb)+'" data-url="'+esc(c.device_url||'')+'" '+checked+'><span>'+esc(c.name)+'</span><span class="hint" style="margin-left:auto">'+esc(c.device_url||'')+' · '+esc(adb)+'</span></label>'});
   el.innerHTML=html;
 }
 function toggleWallCbs(v){document.querySelectorAll('#wallContainerList .wall-cb:not(:disabled)').forEach(cb=>cb.checked=v)}
-function addSelectedToWall(){const size=parseInt(document.getElementById('wallGridSize').value);const max=size*size;const cbs=document.querySelectorAll('#wallContainerList .wall-cb:checked:not(:disabled)');let added=0;cbs.forEach(cb=>{if(wallItems.length>=max)return;wallItems.push({name:cb.value,adbAddr:cb.dataset.adb,player:null,canvas:null});added++});closeModal('addToWallModal');renderWall();toast(added?('已添加 '+added+' 个'):'未添加','info')}
+function addSelectedToWall(){const size=parseInt(document.getElementById('wallGridSize').value);const max=size*size;const cbs=document.querySelectorAll('#wallContainerList .wall-cb:checked:not(:disabled)');let added=0;cbs.forEach(cb=>{if(wallItems.length>=max)return;wallItems.push({name:cb.value,adbAddr:cb.dataset.adb,apiUrl:cb.dataset.url||'',player:null,canvas:null});added++});closeModal('addToWallModal');renderWall();toast(added?('已添加 '+added+' 个'):'未添加','info')}
 document.addEventListener('click',function(e){
   if(e.target.dataset.remove!==undefined)removeFromWall(parseInt(e.target.dataset.remove));
   if(e.target.dataset.tb){const item=wallItems[parseInt(e.target.dataset.idx)];if(!item)return;const tb=e.target.dataset.tb;
@@ -872,18 +932,117 @@ document.addEventListener('click',function(e){
     else if(tb==='recent')wallSendTouch(item.adbAddr,'key',{keycode:'187'});
     else if(tb==='input'){const text=prompt('输入文字发送到设备:');if(text)wallSendTouch(item.adbAddr,'text',{text})}}
 });
-document.addEventListener('mousedown',function(e){if(!e.target.matches('canvas[data-wall-idx]'))return;const rect=e.target.getBoundingClientRect();e.target._ts={x:e.clientX-rect.left,y:e.clientY-rect.top,t:Date.now(),rect}});
+function wallNorm(canvas,clientX,clientY){
+  // 按 object-fit:contain 计算点相对画面的归一化坐标(0~1)，兼容黑边
+  const rect=canvas.getBoundingClientRect();
+  const bw=canvas.width||1,bh=canvas.height||1;
+  const k=Math.min(rect.width/bw,rect.height/bh);
+  const dw=bw*k,dh=bh*k,ox=(rect.width-dw)/2,oy=(rect.height-dh)/2;
+  const nx=(clientX-rect.left-ox)/dw,ny=(clientY-rect.top-oy)/dh;
+  if(nx<0||nx>1||ny<0||ny>1)return null;
+  return {nx:nx,ny:ny};
+}
+document.addEventListener('mousedown',function(e){if(!e.target.matches('canvas[data-wall-idx]'))return;e.target._ts={cx:e.clientX,cy:e.clientY,t:Date.now()}});
 document.addEventListener('mousemove',function(e){if(e.target.matches('canvas[data-wall-idx]')&&e.target._ts)e.target._tm=true});
 document.addEventListener('mouseup',function(e){
   if(!e.target.matches('canvas[data-wall-idx]'))return;const s=e.target._ts;if(!s)return;e.target._ts=null;
-  const rect=s.rect,ex=e.clientX-rect.left,ey=e.clientY-rect.top,dx=ex-s.x,dy=ey-s.y,dist=Math.sqrt(dx*dx+dy*dy);
-  const sx=DEVICE_W/rect.width,sy=DEVICE_H/rect.height,item=wallItems[parseInt(e.target.dataset.wallIdx)];if(!item)return;
-  if(dist<8&&(Date.now()-s.t)<500){wallSendTouch(item.adbAddr,'tap',{x:Math.round(s.x*sx),y:Math.round(s.y*sy)})}
-  else{wallSendTouch(item.adbAddr,'swipe',{x:Math.round(s.x*sx),y:Math.round(s.y*sy),x2:Math.round(ex*sx),y2:Math.round(ey*sy),duration:Math.max(100,Math.min(800,Math.round(dist/2)))})}
+  const item=wallItems[parseInt(e.target.dataset.wallIdx)];if(!item)return;
+  const p1=wallNorm(e.target,s.cx,s.cy);if(!p1)return;
+  const dist=Math.hypot(e.clientX-s.cx,e.clientY-s.cy);
+  if(dist<8&&(Date.now()-s.t)<500){wallSendTouch(item.adbAddr,'tap',{nx:p1.nx,ny:p1.ny})}
+  else{const p2=wallNorm(e.target,e.clientX,e.clientY);if(!p2)return;
+    wallSendTouch(item.adbAddr,'swipe',{nx:p1.nx,ny:p1.ny,nx2:p2.nx,ny2:p2.ny,duration:Math.max(100,Math.min(800,Math.round(dist/2)))})}
 });
 
+// ==================== 登录用户 / 用户管理 ====================
+async function loadCurrentUser(){
+  const d=await api('/api/auth/me');
+  if(d.code===200&&d.data){CURRENT_USER=d.data}
+  return CURRENT_USER;
+}
+function renderCurrentUser(){
+  if(!CURRENT_USER)return;
+  document.getElementById('curUserName').textContent=CURRENT_USER.display_name||CURRENT_USER.username;
+  const roleEl=document.getElementById('curUserRole');
+  if(CURRENT_USER.role==='admin'){roleEl.textContent='管理员';roleEl.style.display='';document.getElementById('navUsers').style.display=''}
+  else{roleEl.style.display='none';document.getElementById('navUsers').style.display='none'}
+}
+async function doLogout(){
+  if(!confirm('确定退出登录?'))return;
+  await api('/api/auth/logout','POST',{});
+  location.href='/login';
+}
+function showPwdModal(){
+  document.getElementById('pwd_old').value='';document.getElementById('pwd_new').value='';document.getElementById('pwd_new2').value='';
+  showModal('pwdModal');
+}
+async function doChangePwd(){
+  const o=document.getElementById('pwd_old').value,n=document.getElementById('pwd_new').value,n2=document.getElementById('pwd_new2').value;
+  if(!o){toast('请输入原密码','error');return}
+  if(n.length<6){toast('新密码至少6位','error');return}
+  if(n!==n2){toast('两次输入的新密码不一致','error');return}
+  const d=await api('/api/auth/password','POST',{old_password:o,new_password:n});
+  toast(d.msg,d.code===200?'success':'error');
+  if(d.code===200)closeModal('pwdModal');
+}
+async function loadUsers(){
+  const d=await api('/api/users');if(d.code!==200)return;
+  users=d.data||[];renderUsers();
+}
+function renderUsers(){
+  const el=document.getElementById('userList');
+  if(!users.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无用户</div>';return}
+  let h='<table><thead><tr><th>ID</th><th>用户名</th><th>显示名称</th><th>角色</th><th>状态</th><th>最近登录</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
+  users.forEach(u=>{
+    const role=u.role==='admin'?'<span class="badge badge-blue">管理员</span>':'<span class="badge badge-gray">普通用户</span>';
+    const st=u.status==='active'?'<span class="badge badge-green">启用</span>':'<span class="badge badge-red">禁用</span>';
+    const isSelf=CURRENT_USER&&u.id===CURRENT_USER.id;
+    h+='<tr><td>'+u.id+'</td><td>'+esc(u.username)+(isSelf?' <span class="hint">(我)</span>':'')+'</td><td>'+esc(u.display_name||'-')+'</td><td>'+role+'</td><td>'+st+'</td><td>'+(esc(u.last_login)||'-')+'</td><td>'+(esc(u.created)||'-')+'</td><td>'+
+      '<button class="btn btn-sm btn-outline" onclick="showUserModal('+u.id+')">编辑</button> '+
+      '<button class="btn btn-sm btn-danger" onclick="deleteUser('+u.id+')">删除</button></td></tr>';
+  });
+  h+='</tbody></table>';el.innerHTML=h;
+}
+function showUserModal(id){
+  const editing=!!id;
+  document.getElementById('userModalTitle').textContent=editing?'编辑用户':'新增用户';
+  document.getElementById('usr_id').value=id||'';
+  const pwdHint=document.getElementById('usr_pwd_hint');
+  if(editing){
+    const u=users.find(x=>x.id===id);if(!u)return;
+    document.getElementById('usr_username').value=u.username;document.getElementById('usr_username').disabled=true;
+    document.getElementById('usr_display').value=u.display_name||'';
+    document.getElementById('usr_role').value=u.role;
+    document.getElementById('usr_password').value='';pwdHint.textContent='(留空不修改)';
+    document.getElementById('usr_status_row').style.display='';
+    document.getElementById('usr_status').value=u.status;
+  }else{
+    document.getElementById('usr_username').value='';document.getElementById('usr_username').disabled=false;
+    document.getElementById('usr_display').value='';document.getElementById('usr_role').value='user';
+    document.getElementById('usr_password').value='';pwdHint.textContent='*';
+    document.getElementById('usr_status_row').style.display='none';
+  }
+  showModal('userModal');
+}
+async function saveUser(){
+  const id=document.getElementById('usr_id').value;
+  const body={display_name:document.getElementById('usr_display').value.trim(),role:document.getElementById('usr_role').value};
+  const pwd=document.getElementById('usr_password').value;
+  if(pwd)body.password=pwd;
+  let d;
+  if(id){body.status=document.getElementById('usr_status').value;d=await api('/api/users/'+id,'PUT',body)}
+  else{body.username=document.getElementById('usr_username').value.trim();d=await api('/api/users','POST',body)}
+  toast(d.msg,d.code===200?'success':'error');
+  if(d.code===200){closeModal('userModal');loadUsers()}
+}
+async function deleteUser(id){
+  if(!confirm('确定删除该用户?'))return;
+  const d=await api('/api/users/'+id,'DELETE');
+  toast(d.msg,d.code===200?'success':'error');loadUsers();
+}
+
 // ==================== 初始化 ====================
-loadDevices().then(()=>loadRealParams()).then(()=>loadProxies()).then(()=>loadApps()).then(()=>loadContainers());
+loadCurrentUser().then(renderCurrentUser).then(()=>loadDevices()).then(()=>loadRealParams()).then(()=>loadProxies()).then(()=>loadApps()).then(()=>loadContainers());
 </script>
 </body>
 </html>

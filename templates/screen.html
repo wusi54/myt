@@ -7,18 +7,27 @@
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#000;display:flex;justify-content:center;align-items:center;min-height:100vh;flex-direction:column;color:#fff;font-family:sans-serif}
-#screen{width:100%;max-width:480px;border-radius:4px}
+#screen{width:100%;max-width:480px;border-radius:4px;cursor:crosshair;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
 #status{padding:12px;font-size:14px;color:#8899aa}
-canvas{width:100%;border-radius:4px;background:#111}
 .controls{position:fixed;top:12px;right:12px;z-index:10}
 .btn{padding:8px 16px;background:#c42b1c;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px}
 .btn:hover{background:#d83b2f}
+.toolbar{display:flex;gap:8px;padding:12px;flex-wrap:wrap;justify-content:center}
+.tbtn{padding:8px 16px;background:#1a2a3a;color:#cfe3f5;border:1px solid #2a3a4a;border-radius:4px;cursor:pointer;font-size:13px}
+.tbtn:hover{background:#243a4f;color:#00d4ff}
 </style>
 </head>
 <body>
 <div class="controls"><button class="btn" onclick="window.close()">关闭</button></div>
 <canvas id="screen"></canvas>
 <div id="status">连接中...</div>
+<div class="toolbar">
+  <button class="tbtn" onclick="sendKey(4)">← 返回</button>
+  <button class="tbtn" onclick="sendKey(3)">● 主页</button>
+  <button class="tbtn" onclick="sendKey(187)">■ 最近</button>
+  <button class="tbtn" onclick="sendKey(26)">⏻ 电源</button>
+  <button class="tbtn" onclick="sendText()">⌨ 输入</button>
+</div>
 <script>
 const adbAddr = '{{ adb_addr }}';
 const canvas = document.getElementById('screen');
@@ -33,6 +42,53 @@ let buffer = new Uint8Array(0);
 let lastStart = -1;
 let nalCache = [];
 
+// ===== 屏幕操作（触控/按键/输入）=====
+async function sendTouch(action, params){
+  try{
+    await fetch('/api/screen/touch', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(Object.assign({adb_addr:adbAddr, action:action}, params||{}))
+    });
+  }catch(e){ console.error('touch error', e); }
+}
+function sendKey(code){ sendTouch('key', {keycode:code}); }
+function sendText(){ const t = prompt('输入文字发送到设备:'); if(t) sendTouch('text', {text:t}); }
+
+// 按 object-fit:contain 计算画面归一化坐标(0~1)，兼容黑边
+function normPoint(clientX, clientY){
+  const rect = canvas.getBoundingClientRect();
+  const bw = canvas.width || 1, bh = canvas.height || 1;
+  const k = Math.min(rect.width/bw, rect.height/bh);
+  const dw = bw*k, dh = bh*k, ox = (rect.width-dw)/2, oy = (rect.height-dh)/2;
+  const nx = (clientX - rect.left - ox)/dw, ny = (clientY - rect.top - oy)/dh;
+  if(nx < 0 || nx > 1 || ny < 0 || ny > 1) return null;
+  return {nx:nx, ny:ny};
+}
+
+let downPt = null;
+canvas.addEventListener('pointerdown', (e)=>{
+  downPt = {x:e.clientX, y:e.clientY, t:Date.now()};
+  try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
+  e.preventDefault();
+});
+canvas.addEventListener('pointerup', (e)=>{
+  if(!downPt) return;
+  const start = downPt; downPt = null;
+  const dist = Math.hypot(e.clientX-start.x, e.clientY-start.y);
+  const p1 = normPoint(start.x, start.y);
+  if(!p1) return;
+  if(dist < 8 && (Date.now()-start.t) < 500){
+    sendTouch('tap', {nx:p1.nx, ny:p1.ny});
+  } else {
+    const p2 = normPoint(e.clientX, e.clientY);
+    if(!p2) return;
+    sendTouch('swipe', {nx:p1.nx, ny:p1.ny, nx2:p2.nx, ny2:p2.ny,
+                        duration:Math.max(100, Math.min(800, Math.round(dist/2)))});
+  }
+});
+canvas.addEventListener('pointercancel', ()=>{ downPt = null; });
+
 function initDecoder() {
   if (typeof VideoDecoder === 'undefined') {
     statusEl.textContent = '浏览器不支持 WebCodecs，请使用 Chrome/Edge';
@@ -42,8 +98,8 @@ function initDecoder() {
     decoder = new VideoDecoder({
       output: (frame) => {
         try {
-          canvas.width = frame.displayWidth;
-          canvas.height = frame.displayHeight;
+          if (canvas.width !== frame.displayWidth) canvas.width = frame.displayWidth;
+          if (canvas.height !== frame.displayHeight) canvas.height = frame.displayHeight;
           ctx.drawImage(frame, 0, 0);
         } catch(e) {}
         frame.close();
@@ -111,7 +167,7 @@ function connect() {
   const ws = new WebSocket(wsUrl);
   ws.binaryType = 'arraybuffer';
 
-  ws.onopen = () => { statusEl.textContent = '已连接'; console.log('WS connected'); };
+  ws.onopen = () => { statusEl.textContent = '已连接（可触控操作）'; console.log('WS connected'); };
   ws.onmessage = (e) => feedH264(e.data);
   ws.onclose = (e) => {
     const msgs = {4000:'缺少adb_addr',4001:'已在投屏中',4002:'ADB连接失败',4003:'screenrecord超时，容器可能未运行'};

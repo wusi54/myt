@@ -1,10 +1,57 @@
+import os
+import re
 import asyncio
 import subprocess
 
-WS_PORT = 9000
-ADB = r"C:\Users\wusi0\AppData\Local\Android\Sdk\platform-tools\adb.exe"
-SCREEN_LIMIT = 180
+WS_PORT = int(os.environ.get('RELAY_PORT', '9000'))
+ADB = os.environ.get('ADB_PATH') or (
+    r"C:\Users\wusi0\AppData\Local\Android\Sdk\platform-tools\adb.exe"
+    if os.name == 'nt' else 'adb')
+SCREEN_LIMIT = int(os.environ.get('SCREEN_LIMIT', '180'))          # 单段最长录制秒数
+SCREEN_MAX = int(os.environ.get('SCREEN_MAX', '640'))              # 输出最长边（等比缩放）
+SCREEN_BITRATE = int(os.environ.get('SCREEN_BITRATE', '300000'))  # 码率 bps
+DEFAULT_SIZE = (360, 640)                                          # 取不到分辨率时兜底(9:16)
 active_streams = {}
+
+
+def _even(v):
+    v = int(round(v))
+    return v - (v % 2) or 2
+
+
+def get_device_size(adb_addr):
+    """读取设备(容器)逻辑分辨率，Override 优先，其次 Physical。"""
+    try:
+        r = subprocess.run([ADB, '-s', adb_addr, 'shell', 'wm', 'size'],
+                           capture_output=True, timeout=10)
+        out = (r.stdout or b'').decode(errors='replace')
+    except Exception:
+        return None
+    physical = None
+    for line in out.splitlines():
+        low = line.lower()
+        if 'size:' not in low:
+            continue
+        m = re.search(r'(\d+)x(\d+)', line)
+        if not m:
+            continue
+        pair = (int(m.group(1)), int(m.group(2)))
+        if 'override' in low:
+            return pair
+        physical = physical or pair
+    return physical
+
+
+def scaled_size(adb_addr):
+    """按设备分辨率等比缩放到最长边 SCREEN_MAX，宽高取偶数（H.264 要求）。"""
+    size = get_device_size(adb_addr)
+    if not size:
+        return DEFAULT_SIZE
+    w, h = size
+    if max(w, h) <= 0:
+        return DEFAULT_SIZE
+    k = min(1.0, SCREEN_MAX / max(w, h))
+    return (_even(w * k), _even(h * k))
 
 async def adb_heartbeat(adb_addr):
     while True:
@@ -24,6 +71,9 @@ async def stream_worker(ws, adb_addr):
         return
     print(f'[stream] adb connected: {adb_addr}', flush=True)
 
+    out_size = await asyncio.to_thread(scaled_size, adb_addr)
+    print(f'[stream] {adb_addr} output {out_size[0]}x{out_size[1]} @ {SCREEN_BITRATE}bps', flush=True)
+
     heartbeat = asyncio.create_task(adb_heartbeat(adb_addr))
     restart_count = 0
 
@@ -33,8 +83,8 @@ async def stream_worker(ws, adb_addr):
             proc = await asyncio.create_subprocess_exec(
                 ADB, '-s', adb_addr, 'exec-out',
                 'screenrecord', '--output-format=h264',
-                '--size', '480x720',
-                '--bit-rate', '500000',
+                '--size', f'{out_size[0]}x{out_size[1]}',
+                '--bit-rate', str(SCREEN_BITRATE),
                 '--time-limit', str(SCREEN_LIMIT), '-',
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE

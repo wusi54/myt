@@ -1,0 +1,50 @@
+# 云phone设备管理平台 V2.1.0 —— Docker Compose 部署
+# 启动:  docker compose up -d --build
+# 停止:  docker compose down
+# 日志:  docker compose logs -f
+# 访问:  http://<宿主机IP>:5001   (投屏 relay: :9000)
+
+x-app: &app
+  build: .
+  image: myt-manager:2.1.0
+  restart: unless-stopped
+  init: true
+
+services:
+  # Web 服务（Flask + waitress）
+  web:
+    <<: *app
+    container_name: myt-web
+    command: ["waitress-serve", "--host=0.0.0.0", "--port=5001", "--threads=24", "app:app"]
+    ports:
+      - "5001:5001"
+    environment:
+      PORT: "5001"
+      DB_PATH: /app/data/data.db
+      UPLOAD_DIR: /app/uploads
+      APP_UPLOAD_DIR: /app/app_uploads
+      ADB_PATH: /usr/bin/adb
+      SECRET_KEY: change-me-in-production
+    volumes:
+      - ./data:/app/data                 # 数据库持久化（含 WAL）
+      - ./uploads:/app/uploads           # 真机参数文件
+      - ./app_uploads:/app/app_uploads   # APK 文件
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5001/healthz',timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # 投屏中继（WebSocket + adb screenrecord）
+  relay:
+    <<: *app
+    container_name: myt-relay
+    command: ["python", "screen_relay.py"]
+    ports:
+      - "9000:9000"
+    environment:
+      RELAY_PORT: "9000"
+      ADB_PATH: /usr/bin/adb
+      SCREEN_MAX: "640"          # 投屏输出最长边（按设备分辨率等比缩放，越小越流畅）
+      SCREEN_BITRATE: "300000"   # 投屏码率 bps

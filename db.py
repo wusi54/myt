@@ -9,6 +9,7 @@ V2.1.0 数据模型：
   app_library  应用库（APK）
   install_logs 安装日志
   container_configs 容器已导入配置记录（保留）
+  users        平台用户（登录鉴权，管理员/普通用户）
 """
 import os
 import json
@@ -16,7 +17,8 @@ import time
 import uuid
 import sqlite3
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data.db')
+DB_PATH = os.environ.get('DB_PATH') or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'data.db')
 
 
 def now():
@@ -146,6 +148,17 @@ SCHEMA = [
         message TEXT DEFAULT '',
         created TEXT DEFAULT ''
     )''',
+    '''CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        role TEXT DEFAULT 'user',
+        status TEXT DEFAULT 'active',
+        display_name TEXT DEFAULT '',
+        last_login TEXT DEFAULT '',
+        created TEXT DEFAULT '',
+        updated TEXT DEFAULT ''
+    )''',
 ]
 
 
@@ -161,7 +174,7 @@ def rebuild_db():
     """重建数据库：删除所有表后重新创建。"""
     conn = get_db()
     for t in ['devices', 'containers', 'real_params', 'proxies',
-              'container_configs', 'app_library', 'install_logs']:
+              'container_configs', 'app_library', 'install_logs', 'users']:
         conn.execute(f'DROP TABLE IF EXISTS {t}')
     conn.commit()
     conn.close()
@@ -416,6 +429,58 @@ def list_install_logs(app_id=None):
     return rows('SELECT * FROM install_logs ORDER BY created DESC')
 
 
+# ==================== users ====================
+def list_users():
+    return rows('SELECT * FROM users ORDER BY id')
+
+
+def get_user(uid):
+    return row('SELECT * FROM users WHERE id=?', (uid,))
+
+
+def get_user_by_username(username):
+    return row('SELECT * FROM users WHERE username=?', (username,))
+
+
+def count_users():
+    return row('SELECT COUNT(*) c FROM users')['c']
+
+
+def add_user(username, password_hash, role='user', display_name=''):
+    ts = now()
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            '''INSERT INTO users (username,password_hash,role,status,display_name,created,updated)
+               VALUES (?,?,?,?,?,?,?)''',
+            (username, password_hash, role, 'active', display_name, ts, ts))
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def update_user(uid, **fields):
+    if not fields:
+        return
+    fields['updated'] = now()
+    cols = ', '.join(f'{k}=?' for k in fields)
+    execute(f'UPDATE users SET {cols} WHERE id=?', (*fields.values(), uid))
+
+
+def delete_user(uid):
+    execute('DELETE FROM users WHERE id=?', (uid,))
+
+
+def count_active_admins(exclude_id=None):
+    if exclude_id:
+        r = row("SELECT COUNT(*) c FROM users WHERE role='admin' AND status='active' AND id<>?",
+                (exclude_id,))
+    else:
+        r = row("SELECT COUNT(*) c FROM users WHERE role='admin' AND status='active'")
+    return r['c']
+
+
 # ==================== 统计 ====================
 def stats():
     def count(sql, params=()):
@@ -430,6 +495,7 @@ def stats():
         'proxies_idle': count("SELECT COUNT(*) c FROM proxies WHERE status='idle'"),
         'proxies_used': count("SELECT COUNT(*) c FROM proxies WHERE in_use=1"),
         'apps': count('SELECT COUNT(*) c FROM app_library'),
+        'users': count('SELECT COUNT(*) c FROM users'),
     }
 
 

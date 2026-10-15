@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-"""魔云腾设备管理平台 V2.1.0
+"""云phone设备管理平台 V2.1.0
 
 模块：
   1. 设备管理   盒子/主机设备（ip:port + API url），增删改查 + 端口扫描
   2. 容器管理   自动识别容器实例，增删改查 + 导入真机参数/配置代理/安装APK
   3. 真机参数库 文件内容MD5去重，状态管理，批量导入/操作
   4. 代理池     socks5 代理，状态锁定防止多实例占用
+  5. 登录鉴权   JWT 登录、两级角色（管理员/普通用户）、用户管理
 """
 import os
 import re
@@ -19,24 +20,186 @@ import sqlite3
 import threading
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse
 
-from flask import Flask, request, jsonify, render_template, send_file, redirect
+from flask import Flask, request, jsonify, render_template, send_file, redirect, g
 
 import db
+import auth
 import myt_client
 from myt_client import MytClient, normalize_base
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_DIR = os.path.join(BASE_DIR, 'uploads')          # 真机参数文件
-APP_UPLOAD_DIR = os.path.join(BASE_DIR, 'app_uploads')   # APK
+UPLOAD_DIR = os.environ.get('UPLOAD_DIR') or os.path.join(BASE_DIR, 'uploads')          # 真机参数文件
+APP_UPLOAD_DIR = os.environ.get('APP_UPLOAD_DIR') or os.path.join(BASE_DIR, 'app_uploads')   # APK
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(APP_UPLOAD_DIR, exist_ok=True)
 
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
 app.config['MAX_CONTENT_LENGTH'] = 512 * 1024 * 1024
+app.secret_key = auth.SECRET_KEY
 
 db.init_db()
+auth.ensure_default_admin()
+
+
+# ==================== 登录鉴权 ====================
+# 无需登录即可访问的路径
+PUBLIC_PATHS = {'/login', '/healthz', '/api/auth/login'}
+
+
+@app.before_request
+def _auth_guard():
+    p = request.path
+    if p.startswith('/static/') or p == '/favicon.ico':
+        return None
+    if p in PUBLIC_PATHS:
+        return None
+    user = auth.current_user()
+    if not user:
+        # API 返回 401，页面跳转到登录页
+        if p.startswith('/api/'):
+            return jsonify({'code': 401, 'msg': '未登录或登录已过期', 'data': None}), 401
+        return redirect('/login')
+    g.user = user
+    return None
+
+
+@app.route('/healthz')
+def healthz():
+    return jsonify({'code': 200, 'msg': 'ok'})
+
+
+@app.route('/login')
+def login_page():
+    if auth.current_user():
+        return redirect('/')
+    return render_template('login.html')
+
+
+@app.route('/api/auth/login', methods=['POST'])
+def api_auth_login():
+    d = request.json or {}
+    username = (d.get('username') or '').strip()
+    password = d.get('password') or ''
+    if not username or not password:
+        return err('请输入用户名和密码')
+    u = db.get_user_by_username(username)
+    if not u or not auth.verify_password(password, u['password_hash']):
+        return err('用户名或密码错误', 401)
+    if u.get('status') != 'active':
+        return err('账号已被禁用，请联系管理员', 403)
+    db.update_user(u['id'], last_login=db.now())
+    u = db.get_user(u['id'])
+    token = auth.make_token(u)
+    resp = jsonify({'code': 200, 'msg': '登录成功',
+                    'data': {'token': token, 'user': auth.public_user(u)}})
+    resp.set_cookie(auth.COOKIE_NAME, token, max_age=auth.TOKEN_TTL,
+                    httponly=True, samesite='Lax', path='/')
+    return resp
+
+
+@app.route('/api/auth/logout', methods=['POST'])
+def api_auth_logout():
+    resp = jsonify({'code': 200, 'msg': '已退出登录', 'data': None})
+    resp.delete_cookie(auth.COOKIE_NAME, path='/')
+    return resp
+
+
+@app.route('/api/auth/me')
+def api_auth_me():
+    return ok(g.user)
+
+
+@app.route('/api/auth/password', methods=['POST'])
+def api_auth_password():
+    d = request.json or {}
+    old = d.get('old_password') or ''
+    new = d.get('new_password') or ''
+    if len(new) < 6:
+        return err('新密码至少 6 位')
+    u = db.get_user(g.user['id'])
+    if not auth.verify_password(old, u['password_hash']):
+        return err('原密码错误')
+    db.update_user(u['id'], password_hash=auth.hash_password(new))
+    return ok(None, '密码已修改')
+
+
+# ==================== 用户管理（仅管理员） ====================
+def _clean_user(u):
+    if not u:
+        return None
+    return {k: v for k, v in u.items() if k != 'password_hash'}
+
+
+@app.route('/api/users', methods=['GET'])
+@auth.admin_required
+def api_users():
+    return ok([_clean_user(u) for u in db.list_users()])
+
+
+@app.route('/api/users', methods=['POST'])
+@auth.admin_required
+def api_user_add():
+    d = request.json or {}
+    username = (d.get('username') or '').strip()
+    password = d.get('password') or ''
+    role = d.get('role') or 'user'
+    display_name = (d.get('display_name') or '').strip()
+    if not username:
+        return err('用户名不能为空')
+    if not re.match(r'^[A-Za-z0-9_.@-]{2,32}$', username):
+        return err('用户名需为 2-32 位字母/数字/_.@-')
+    if len(password) < 6:
+        return err('密码至少 6 位')
+    if role not in ('admin', 'user'):
+        role = 'user'
+    if db.get_user_by_username(username):
+        return err('用户名已存在')
+    uid = db.add_user(username, auth.hash_password(password), role, display_name)
+    return ok(_clean_user(db.get_user(uid)), '已创建用户')
+
+
+@app.route('/api/users/<int:uid>', methods=['PUT'])
+@auth.admin_required
+def api_user_update(uid):
+    u = db.get_user(uid)
+    if not u:
+        return err('用户不存在', 404)
+    d = request.json or {}
+    fields = {}
+    if 'display_name' in d:
+        fields['display_name'] = (d.get('display_name') or '').strip()
+    if 'role' in d and d.get('role') in ('admin', 'user'):
+        fields['role'] = d['role']
+    if 'status' in d and d.get('status') in ('active', 'disabled'):
+        fields['status'] = d['status']
+    if d.get('password'):
+        if len(d['password']) < 6:
+            return err('密码至少 6 位')
+        fields['password_hash'] = auth.hash_password(d['password'])
+    # 保护：不能移除最后一个可用管理员
+    will_lose_admin = (fields.get('role') == 'user' or fields.get('status') == 'disabled')
+    if u.get('role') == 'admin' and u.get('status') == 'active' and will_lose_admin:
+        if db.count_active_admins(exclude_id=uid) == 0:
+            return err('至少需要保留一个可用的管理员账号')
+    db.update_user(uid, **fields)
+    return ok(_clean_user(db.get_user(uid)), '已更新')
+
+
+@app.route('/api/users/<int:uid>', methods=['DELETE'])
+@auth.admin_required
+def api_user_delete(uid):
+    if uid == g.user['id']:
+        return err('不能删除当前登录账号')
+    u = db.get_user(uid)
+    if not u:
+        return err('用户不存在', 404)
+    if u.get('role') == 'admin' and db.count_active_admins(exclude_id=uid) == 0:
+        return err('至少需要保留一个可用的管理员账号')
+    db.delete_user(uid)
+    return ok(None, '已删除')
 
 
 # ==================== 工具 ====================
@@ -52,6 +215,36 @@ def client_for(dev):
     """根据设备配置构造 API 客户端。"""
     base = normalize_base(dev.get('url'), dev.get('ip'), dev.get('port'))
     return MytClient(base)
+
+
+def adb_host_for(dev):
+    """投屏/ADB 连接使用的主机。
+
+    设备若通过网关(如 113.105.100.58:83)访问，容器的 adb 端口通常也映射在网关上，
+    因此优先取 API url 的 host，取不到时回退到设备 ip。
+    """
+    base = normalize_base(dev.get('url'), dev.get('ip'), dev.get('port'))
+    try:
+        host = urlparse(base).hostname
+    except Exception:
+        host = None
+    return host or (dev.get('ip') or '')
+
+
+def migrate_adb_addrs():
+    """按设备 url 修正历史容器的 adb_addr（幂等，随启动执行）。"""
+    devs = {d['id']: d for d in db.list_devices()}
+    changed = 0
+    for c in db.list_containers():
+        dev = devs.get(c.get('device_id'))
+        port = c.get('adb_port') or ''
+        if not dev or not port:
+            continue
+        new = f"{adb_host_for(dev)}:{port}"
+        if new != (c.get('adb_addr') or ''):
+            db.update_container(c['id'], adb_addr=new)
+            changed += 1
+    return changed
 
 
 def device_or_404(dev_id):
@@ -173,7 +366,7 @@ def _tcp_open(ip, port, timeout=0.8):
 
 @app.route('/api/devices/scan', methods=['POST'])
 def api_device_scan():
-    """通过 TCP 扫描指定网段的 83 端口，识别魔云腾设备。"""
+    """通过 TCP 扫描指定网段的 83 端口，识别云phone设备。"""
     d = request.json or {}
     subnet = d.get('subnet') or ''
     port = int(d.get('port') or 83)
@@ -271,7 +464,7 @@ def _sync_one_device(dev):
             'id': cid, 'device_id': dev['id'], 'device_ip': dev['ip'],
             'name': c.get('name', ''), 'index_num': c.get('index', 0),
             'short_id': c.get('short_id', ''), 'adb_port': adb_port,
-            'adb_addr': f"{dev['ip']}:{adb_port}" if adb_port else '',
+            'adb_addr': f"{adb_host_for(dev)}:{adb_port}" if adb_port else '',
             'image': c.get('image', ''), 'state': c.get('state', ''),
             'status': c.get('status', ''), 'and_state': c.get('and_state', 0),
             'api_port': str(c.get('api_port') or ''), 'ctr_port': str(c.get('ctr_port') or ''),
@@ -309,6 +502,11 @@ def api_containers_sync():
 @app.route('/api/containers', methods=['GET'])
 def api_containers():
     items = db.list_containers()
+    devs = db.list_devices()
+    by_id = {d['id']: (d.get('url') or '') for d in devs}
+    by_ip = {d['ip']: (d.get('url') or '') for d in devs}
+    for c in items:
+        c['device_url'] = by_id.get(c.get('device_id')) or by_ip.get(c.get('device_ip')) or ''
     kw = (request.args.get('kw') or '').lower()
     dev_filter = request.args.get('device_id')
     if dev_filter:
@@ -1051,6 +1249,15 @@ def api_stats():
 
 
 # ==================== 页面 ====================
+@app.after_request
+def _no_cache_html(resp):
+    # 前端页面不做缓存，避免更新后浏览器仍显示旧界面
+    if resp.mimetype == 'text/html':
+        resp.headers['Cache-Control'] = 'no-store, must-revalidate'
+        resp.headers['Pragma'] = 'no-cache'
+    return resp
+
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -1066,46 +1273,94 @@ def screen_page(adb_addr=''):
 
 
 # ==================== 投屏 adb 控制 ====================
-ADB_PATH = os.environ.get('ADB_PATH', r'C:\Users\wusi0\AppData\Local\Android\Sdk\platform-tools\adb.exe')
+ADB_PATH = os.environ.get('ADB_PATH') or (
+    r'C:\Users\wusi0\AppData\Local\Android\Sdk\platform-tools\adb.exe'
+    if os.name == 'nt' else 'adb')
 
 
 class ADBShellPool:
+    """执行容器内的 adb shell 命令（投屏触控/按键/输入等）。
+
+    注意：web 与 relay 是不同容器，各自有独立的 adb server。
+    relay 负责投屏流（自己会 adb connect），而触控命令在 web 容器里执行，
+    所以这里必须先 adb connect，否则会报 "device not found"。
+    """
+
     def __init__(self):
-        self._shells = {}
+        self._connected = {}          # adb_addr -> 最近一次成功 connect 的时间
+        self._sizes = {}              # adb_addr -> (w, h) 设备逻辑分辨率缓存
         self._lock = threading.Lock()
 
-    def _ensure_shell(self, adb_addr):
+    def _ensure_connected(self, adb_addr, ttl=30):
+        now = time.time()
         with self._lock:
-            proc = self._shells.get(adb_addr)
-            if proc and proc.poll() is None:
-                return proc
-            if proc:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-            proc = subprocess.Popen([ADB_PATH, '-s', adb_addr, 'shell'],
-                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE)
-            self._shells[adb_addr] = proc
-            return proc
+            if now - self._connected.get(adb_addr, 0) < ttl:
+                return
+        ok = False
+        try:
+            r = subprocess.run([ADB_PATH, 'connect', adb_addr],
+                               capture_output=True, timeout=10)
+            out = (r.stdout or b'').decode(errors='replace')
+            ok = 'connected' in out
+        except Exception:
+            ok = False
+        with self._lock:
+            if ok:
+                self._connected[adb_addr] = now
+            else:
+                self._connected.pop(adb_addr, None)
+
+    def device_size(self, adb_addr):
+        """设备逻辑分辨率 (w, h)，Override 优先，其次 Physical；结果缓存。"""
+        with self._lock:
+            cached = self._sizes.get(adb_addr)
+        if cached:
+            return cached
+        self._ensure_connected(adb_addr)
+        w = h = 0
+        try:
+            r = self._run(adb_addr, 'wm size')
+            out = (r.stdout or b'').decode(errors='replace')
+            for line in out.splitlines():
+                low = line.lower()
+                if 'size:' not in low:
+                    continue
+                m = re.search(r'(\d+)x(\d+)', line)
+                if not m:
+                    continue
+                pair = (int(m.group(1)), int(m.group(2)))
+                if 'override' in low:
+                    w, h = pair
+                    break
+                if not w:
+                    w, h = pair
+        except Exception:
+            pass
+        if w and h:
+            with self._lock:
+                self._sizes[adb_addr] = (w, h)
+        return (w, h)
+
+    def _run(self, adb_addr, cmd):
+        return subprocess.run([ADB_PATH, '-s', adb_addr, 'shell', cmd],
+                              capture_output=True, timeout=15)
 
     def send(self, adb_addr, cmd):
+        """执行命令，成功返回 True；首次或断连时自动重连后重试一次。"""
+        self._ensure_connected(adb_addr)
         try:
-            proc = self._ensure_shell(adb_addr)
-            proc.stdin.write((cmd + '\n').encode())
-            proc.stdin.flush()
-            return True
-        except Exception:
-            with self._lock:
-                self._shells.pop(adb_addr, None)
-            try:
-                proc = self._ensure_shell(adb_addr)
-                proc.stdin.write((cmd + '\n').encode())
-                proc.stdin.flush()
+            if self._run(adb_addr, cmd).returncode == 0:
                 return True
-            except Exception:
-                return False
+        except Exception:
+            pass
+        # 连接可能已失效：强制重连后再试一次
+        with self._lock:
+            self._connected.pop(adb_addr, None)
+        self._ensure_connected(adb_addr)
+        try:
+            return self._run(adb_addr, cmd).returncode == 0
+        except Exception:
+            return False
 
 
 adb_pool = ADBShellPool()
@@ -1123,11 +1378,35 @@ def screen_touch():
     action = d.get('action', 'tap')
     if not adb_addr:
         return err('missing adb_addr')
-    x, y = int(d.get('x', 0)), int(d.get('y', 0))
+
+    def to_dev(nx, ny):
+        """归一化坐标(0~1) -> 设备像素坐标。"""
+        w, h = adb_pool.device_size(adb_addr)
+        if not w or not h:
+            return None
+        return (int(round(float(nx) * w)), int(round(float(ny) * h)))
+
     if action == 'tap':
+        if 'nx' in d and 'ny' in d:
+            pt = to_dev(d['nx'], d['ny'])
+            if not pt:
+                return err('无法获取设备分辨率', 500)
+            x, y = pt
+        else:
+            x, y = int(d.get('x', 0)), int(d.get('y', 0))
         cmd = f'input tap {x} {y}'
     elif action == 'swipe':
-        cmd = f"input swipe {x} {y} {int(d.get('x2', x))} {int(d.get('y2', y))} {int(d.get('duration', 300))}"
+        if 'nx' in d and 'ny' in d:
+            p1 = to_dev(d['nx'], d['ny'])
+            p2 = to_dev(d.get('nx2', d['nx']), d.get('ny2', d['ny']))
+            if not p1 or not p2:
+                return err('无法获取设备分辨率', 500)
+            x, y = p1
+            x2, y2 = p2
+        else:
+            x, y = int(d.get('x', 0)), int(d.get('y', 0))
+            x2, y2 = int(d.get('x2', x)), int(d.get('y2', y))
+        cmd = f'input swipe {x} {y} {x2} {y2} {int(d.get("duration", 300))}'
     elif action == 'key':
         cmd = f"input keyevent {d.get('keycode', '')}"
     elif action == 'text':
@@ -1138,5 +1417,17 @@ def screen_touch():
     return ok(None) if okk else err('adb send failed', 500)
 
 
+# 启动时按设备 url 修正历史容器的投屏(adb)地址（网关场景，幂等）
+try:
+    _n = migrate_adb_addrs()
+    if _n:
+        print(f'[migrate] 已修正 {_n} 个容器的 adb_addr')
+except Exception as _e:
+    print(f'[migrate] adb_addr 修正跳过: {_e}')
+
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5001, debug=True)
+    host = os.environ.get('HOST', '0.0.0.0')
+    port = int(os.environ.get('PORT', '5001'))
+    debug = os.environ.get('DEBUG', '').lower() in ('1', 'true', 'yes')
+    app.run(host=host, port=port, debug=debug, threaded=True)
