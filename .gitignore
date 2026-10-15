@@ -7,3 +7,7 @@ __pycache__/
 data/
 *.db-wal
 *.db-shm
+
+# 上传的 APK 等运行期文件（体积大，不纳入版本库）
+app_uploads/
+uploads/
