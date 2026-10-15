@@ -75,13 +75,13 @@ tr:hover td{background:#1e2e3e}
 .wall-grid{display:grid;gap:6px;background:#0f1923;border-radius:4px;padding:6px;min-height:200px}
 .wall-2{grid-template-columns:1fr 1fr}.wall-3{grid-template-columns:1fr 1fr 1fr}.wall-4{grid-template-columns:1fr 1fr 1fr 1fr}
 .wall-5{grid-template-columns:repeat(5,1fr)}.wall-6{grid-template-columns:repeat(6,1fr)}.wall-7{grid-template-columns:repeat(7,1fr)}
-.wall-cell{background:#000;border-radius:4px;overflow:hidden;position:relative;aspect-ratio:9/16;border:1px solid #2a3a4a}
-.wall-cell canvas{width:100%;height:100%;display:block;object-fit:contain;cursor:crosshair}
-.wall-cell .wc-label{position:absolute;top:0;left:0;right:0;padding:4px 8px;background:linear-gradient(180deg,#000000b3,transparent);font-size:11px;z-index:2;display:flex;justify-content:space-between;align-items:flex-start;gap:6px;pointer-events:none}
+.wall-cell{background:#000;border-radius:4px;overflow:hidden;position:relative;aspect-ratio:9/16;border:1px solid #2a3a4a;display:flex;flex-direction:column}
+.wall-cell canvas{width:100%;flex:1;min-height:0;display:block;object-fit:contain;cursor:crosshair}
+.wall-cell .wc-label{flex:0 0 auto;padding:4px 8px;background:#0f1923;border-bottom:1px solid #2a3a4a;font-size:11px;z-index:2;display:flex;justify-content:space-between;align-items:center;gap:6px}
 .wall-cell .wc-label .wc-meta{min-width:0;flex:1}
-.wall-cell .wc-label .wc-api{display:block;color:#ff4d4f;font-size:11px;font-weight:700;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#000000a6;border-radius:3px;padding:0 4px;margin-bottom:2px;text-shadow:0 1px 2px #000}
-.wall-cell .wc-label .wc-name{color:#ffa500;font-size:11px;font-weight:700;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 2px #000}
-.wall-cell .wc-label .wc-close{color:#ff6b6b;cursor:pointer;font-size:14px;line-height:1;padding:0 4px;pointer-events:auto}
+.wall-cell .wc-label .wc-api{display:block;color:#ff4d4f;font-size:11px;font-weight:700;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wall-cell .wc-label .wc-name{color:#ffa500;font-size:11px;font-weight:700;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wall-cell .wc-label .wc-close{color:#ff6b6b;cursor:pointer;font-size:14px;line-height:1;padding:0 4px}
 .wall-cell .wc-placeholder{display:flex;align-items:center;justify-content:center;height:100%;color:#3a4a5a;font-size:12px}
 .wall-cell .wc-toolbar{position:absolute;bottom:0;left:0;right:0;padding:4px 6px;background:linear-gradient(0deg,#000000cc,transparent);z-index:3;display:flex;gap:4px;justify-content:center;opacity:0;transition:opacity .2s}
 .wall-cell:hover .wc-toolbar{opacity:1}
@@ -239,6 +239,7 @@ tr:hover td{background:#1e2e3e}
 <div class="form-row"><label>API 地址 (url，留空则用 http://IP:端口)</label><input id="dev_url" placeholder="http://113.105.100.58:83"></div>
 <div class="form-row"><label>名称</label><input id="dev_name" placeholder="可选"></div>
 <div class="form-row"><label>备注</label><input id="dev_remark" placeholder="可选"></div>
+  <div class="form-row"><label>投屏网络</label><select id="dev_screen_net"><option value="wan">外网（API url 主机）</option><option value="lan">内网（设备IP）</option></select></div>
 <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal('deviceModal')">取消</button><button class="btn btn-primary" onclick="saveDevice()">保存</button></div>
 </div></div>
 
@@ -481,7 +482,7 @@ async function loadDevices(){
   h+='</tbody></table>';el.innerHTML=h;loadStats();
 }
 function showDeviceModal(){
-  ['dev_id','dev_ip','dev_port','dev_url','dev_name','dev_remark'].forEach(id=>document.getElementById(id).value='');
+  ['dev_id','dev_ip','dev_port','dev_url','dev_name','dev_remark','dev_screen_net'].forEach(id=>{const e=document.getElementById(id);if(e)e.value=id==='dev_screen_net'?'wan':''});
   document.getElementById('dev_port').value='83';
   document.getElementById('deviceModalTitle').textContent='添加设备';showModal('deviceModal');
 }
@@ -491,12 +492,13 @@ function editDevice(id){
   document.getElementById('dev_id').value=d.id;document.getElementById('dev_ip').value=d.ip;
   document.getElementById('dev_port').value=d.port;document.getElementById('dev_url').value=d.url||'';
   document.getElementById('dev_name').value=d.name||'';document.getElementById('dev_remark').value=d.remark||'';
+  document.getElementById('dev_screen_net').value=d.screen_net||'wan';
   showModal('deviceModal');
 }
 async function saveDevice(){
   const id=document.getElementById('dev_id').value;
   const body={ip:document.getElementById('dev_ip').value.trim(),port:document.getElementById('dev_port').value.trim(),
-    url:document.getElementById('dev_url').value.trim(),name:document.getElementById('dev_name').value.trim(),
+    url:document.getElementById('dev_url').value.trim(),name:document.getElementById('dev_name').value.trim(),screen_net:document.getElementById('dev_screen_net').value,
     remark:document.getElementById('dev_remark').value.trim()};
   if(!body.ip){toast('请输入IP','error');return}
   const d=id?await api('/api/devices/'+id,'PUT',body):await api('/api/devices','POST',body);
@@ -877,7 +879,8 @@ const wallCells=new Map();   // adbAddr -> {el,canvas,player}  复用单元格�
 class WallPlayer{
   constructor(canvas,adbAddr){this.canvas=canvas;this.ctx=canvas.getContext('2d');this.decoder=null;this.buffer=new Uint8Array(0);this.lastStart=-1;this.nalCache=[];this.ws=null;this.adbAddr=adbAddr;this.reconnectDelay=1000;this.reconnectTimer=null;this.destroyed=false;this.maxQueue=30;this.dropUntilKey=false;this._dropStart=0;this._resyncing=false;this._initDecoder()}
   _initDecoder(){if(typeof VideoDecoder==='undefined')return;this.ts=0;try{this.decoder=new VideoDecoder({output:(frame)=>{try{if(this.canvas.width!==frame.displayWidth)this.canvas.width=frame.displayWidth;if(this.canvas.height!==frame.displayHeight)this.canvas.height=frame.displayHeight;this.ctx.drawImage(frame,0,0)}catch(e){}frame.close()},error:(e)=>{console.error('decode error',e)}});this.decoder.configure({codec:'avc1.42C01E',optimizeForLatency:true})}catch(e){}}
-  connect(){if(this.destroyed)return;if(this.ws)this.disconnect();const host=window.location.hostname||'localhost';this.ws=new WebSocket('ws://'+host+':9000/stream?adb_addr='+encodeURIComponent(this.adbAddr));this.ws.binaryType='arraybuffer';this.ws.onopen=()=>{this.reconnectDelay=1000};this.ws.onmessage=(e)=>{this.buffer=this._concat(this.buffer,new Uint8Array(e.data));this._parse()};this.ws.onclose=()=>{this.ws=null;if(!this.destroyed)this._scheduleReconnect()};this.ws.onerror=()=>{if(this.ws){try{this.ws.close()}catch{}this.ws=null}}}
+  _drawStatus(text,color){try{const c=this.ctx;if(!this.canvas.width)this.canvas.width=300;if(!this.canvas.height)this.canvas.height=400;c.fillStyle='#000';c.fillRect(0,0,this.canvas.width,this.canvas.height);c.fillStyle=color||'#8899aa';c.font='12px sans-serif';c.textBaseline='middle';c.fillText(text,8,this.canvas.height/2);}catch(e){}}
+  connect(){if(this.destroyed)return;if(this.ws)this.disconnect();this._drawStatus('连接中…','#8899aa');const wproto=(window.location.protocol==='https:')?'wss://':'ws://';this.ws=new WebSocket(wproto+window.location.host+'/ws/screen?adb_addr='+encodeURIComponent(this.adbAddr));this.ws.binaryType='arraybuffer';this.ws.onopen=()=>{this.reconnectDelay=1000;if(!this.decoder){this._drawStatus('⚠ 浏览器不支持 WebCodecs（请使用 https + Chrome/Edge）','#ff6b6b')}else{this.ctx.clearRect(0,0,this.canvas.width,this.canvas.height)}};this.ws.onmessage=(e)=>{this.buffer=this._concat(this.buffer,new Uint8Array(e.data));this._parse()};this.ws.onclose=(ev)=>{this.ws=null;if(this.destroyed)return;if(ev&&ev.code===4002){this._drawStatus('设备不可达（adb 连接失败）','#ff6b6b');return}this._drawStatus('重连中…','#8899aa');this._scheduleReconnect()};this.ws.onerror=()=>{if(this.ws){try{this.ws.close()}catch{}this.ws=null}}}
   _scheduleReconnect(){if(this.destroyed||this.reconnectTimer)return;this.reconnectTimer=setTimeout(()=>{this.reconnectTimer=null;if(!this.destroyed){this.reconnectDelay=Math.min(this.reconnectDelay*1.5,15000);this.connect()}},this.reconnectDelay)}
   _parse(){let pos=0;while(pos<this.buffer.length-3){let sl=0;if(this.buffer[pos]===0&&this.buffer[pos+1]===0&&this.buffer[pos+2]===1)sl=3;else if(pos<this.buffer.length-4&&this.buffer[pos]===0&&this.buffer[pos+1]===0&&this.buffer[pos+2]===0&&this.buffer[pos+3]===1)sl=4;if(sl>0){if(this.lastStart>=0){const nalData=this.buffer.slice(this.lastStart,pos);const nalType=nalData[sl]&0x1F;this.nalCache.push(nalData);if(nalType===5||nalType===1)this._flush()}this.lastStart=pos;pos+=sl}else{pos++}}if(this.lastStart>=0){this.buffer=this.buffer.slice(this.lastStart);this.lastStart=0}}
   _flush(){
@@ -920,7 +923,7 @@ function makeWallCell(item){
   const el=c?c.el:document.createElement('div');
   if(!c){
     el.className='wall-cell';
-    el.innerHTML='<div class="wc-label"><div class="wc-meta"><div class="wc-api"></div><div class="wc-name"></div></div><span class="wc-close">×</span></div><canvas></canvas><div class="wc-toolbar"><span class="wc-tb-btn" data-tb="back">返回</span><span class="wc-tb-btn" data-tb="home">主页</span><span class="wc-tb-btn" data-tb="recent">最近</span><span class="wc-tb-btn" data-tb="input">输入</span></div>';
+    el.innerHTML='<div class="wc-label"><div class="wc-meta"><div class="wc-api"></div><div class="wc-name"></div></div><span class="wc-close">×</span></div><canvas></canvas><div class="wc-toolbar"><span class="wc-tb-btn" data-tb="back">返回</span><span class="wc-tb-btn" data-tb="home">主页</span><span class="wc-tb-btn" data-tb="recent">最近</span><span class="wc-tb-btn" data-tb="input">输入</span><span class="wc-tb-btn" data-tb="popup">弹窗</span></div>';
   }
   const apiEl=el.querySelector('.wc-api');
   if(item.apiUrl){apiEl.style.display='';apiEl.textContent=item.apiUrl;apiEl.title=item.apiUrl}else{apiEl.style.display='none'}
@@ -992,7 +995,8 @@ document.addEventListener('click',function(e){
     if(tb==='back')wallSendTouch(item.adbAddr,'key',{keycode:'4'});
     else if(tb==='home')wallSendTouch(item.adbAddr,'key',{keycode:'3'});
     else if(tb==='recent')wallSendTouch(item.adbAddr,'key',{keycode:'187'});
-    else if(tb==='input'){const text=prompt('输入文字发送到设备:');if(text)wallSendTouch(item.adbAddr,'text',{text})}}
+    else if(tb==='input'){const text=prompt('输入文字发送到设备:');if(text)wallSendTouch(item.adbAddr,'text',{text})}
+    else if(tb==='popup'){window.open('/screen/'+encodeURIComponent(item.adbAddr)+'?name='+encodeURIComponent(item.name||''),'_blank','width=440,height=860')}}
 });
 function wallNorm(canvas,clientX,clientY){
   // 按 object-fit:contain 计算点相对画面的归一化坐标(0~1)，兼容黑边

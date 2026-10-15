@@ -21,13 +21,31 @@ x-app: &app
   init: true
 
 services:
+  # 反向代理 + TLS 终止（对外唯一入口，HTTPS 9111）
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: myt-nginx
+    restart: unless-stopped
+    depends_on:
+      - web
+      - relay
+    ports:
+      - "9111:9111"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    networks:
+      - myt-net
+
   # Web 服务（Flask + waitress）
   web:
     <<: *app
     container_name: myt-web
     command: ["waitress-serve", "--host=0.0.0.0", "--port=9111", "--threads=24", "app:app"]
-    ports:
-      - "9111:9111"
+    expose:
+      - "9111"
+    networks:
+      - myt-net
     environment:
       PORT: "9111"
       DB_PATH: /app/data/data.db
@@ -39,6 +57,7 @@ services:
       - ./data:/app/data:z                 # 数据库持久化（含 WAL）；:z 兼容宿主机 SELinux(CentOS)
       - ./uploads:/app/uploads:z           # 真机参数文件
       - ./app_uploads:/app/app_uploads:z   # APK 文件
+      - ./templates:/app/templates:ro      # 前端页面（含 screen.html 的 wss 改动）热更新
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9111/healthz',timeout=3).status==200 else 1)"]
       interval: 30s
@@ -51,10 +70,18 @@ services:
     <<: *app
     container_name: myt-relay
     command: ["python", "screen_relay.py"]
-    ports:
-      - "9000:9000"
+    expose:
+      - "9000"
     environment:
       RELAY_PORT: "9000"
       ADB_PATH: /usr/bin/adb
       SCREEN_MAX: "480"          # 投屏输出最长边（按设备分辨率等比缩放，越小越流畅）
       SCREEN_BITRATE: "150000"   # 投屏码率 bps
+    volumes:
+      - ./screen_relay.py:/app/screen_relay.py:ro   # 投屏中继逻辑热更新（改后 restart relay 生效）
+    networks:
+      - myt-net
+
+networks:
+  myt-net:
+    driver: bridge

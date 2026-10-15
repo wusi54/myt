@@ -52,6 +52,7 @@ SCHEMA = [
         host_ver TEXT DEFAULT '',
         systeminfo TEXT DEFAULT '',
         remark TEXT DEFAULT '',
+        screen_net TEXT DEFAULT 'wan',
         created TEXT DEFAULT '',
         updated TEXT DEFAULT '',
         UNIQUE(ip, port)
@@ -162,10 +163,19 @@ SCHEMA = [
 ]
 
 
+def _ensure_columns(conn):
+    """为旧库补齐后加的列（幂等）。"""
+    def cols(table):
+        return {r[1] for r in conn.execute(f'PRAGMA table_info({table})').fetchall()}
+    if 'screen_net' not in cols('devices'):
+        conn.execute("ALTER TABLE devices ADD COLUMN screen_net TEXT DEFAULT 'wan'")
+
+
 def init_db():
     conn = get_db()
     for sql in SCHEMA:
         conn.execute(sql)
+    _ensure_columns(conn)
     conn.commit()
     conn.close()
 
@@ -217,13 +227,13 @@ def get_device(dev_id):
     return row('SELECT * FROM devices WHERE id=?', (dev_id,))
 
 
-def add_device(ip, port='83', url='', name='', remark=''):
+def add_device(ip, port='83', url='', name='', remark='', screen_net='wan'):
     ts = now()
     conn = get_db()
     try:
         cur = conn.execute(
-            'INSERT INTO devices (ip,port,url,name,remark,created,updated) VALUES (?,?,?,?,?,?,?)',
-            (ip, port, url, name or f'{ip}:{port}', remark, ts, ts))
+            'INSERT INTO devices (ip,port,url,name,remark,screen_net,created,updated) VALUES (?,?,?,?,?,?,?,?)',
+            (ip, port, url, name or f'{ip}:{port}', remark, screen_net, ts, ts))
         conn.commit()
         return cur.lastrowid
     finally:

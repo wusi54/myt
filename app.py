@@ -220,9 +220,12 @@ def client_for(dev):
 def adb_host_for(dev):
     """投屏/ADB 连接使用的主机。
 
-    设备若通过网关(如 113.105.100.58:83)访问，容器的 adb 端口通常也映射在网关上，
-    因此优先取 API url 的 host，取不到时回退到设备 ip。
+    设备配置 screen_net='lan'(内网) 时直接使用设备 IP（如 192.168.2.40）；
+    默认 screen_net='wan'(外网) 时优先取 API url 的 host（网关/公网映射），
+    取不到时回退设备 ip。
     """
+    if (dev.get('screen_net') or 'wan').lower() == 'lan':
+        return (dev.get('ip') or '')
     base = normalize_base(dev.get('url'), dev.get('ip'), dev.get('port'))
     try:
         host = urlparse(base).hostname
@@ -272,7 +275,8 @@ def api_device_add():
     if db.row('SELECT id FROM devices WHERE ip=? AND port=?', (ip, port)):
         return err('设备已存在')
     dev_id = db.add_device(ip, port, (d.get('url') or '').strip(),
-                           (d.get('name') or '').strip(), (d.get('remark') or '').strip())
+                           (d.get('name') or '').strip(), (d.get('remark') or '').strip(),
+                           (d.get('screen_net') or 'wan').strip().lower())
     return ok(db.get_device(dev_id), '已添加')
 
 
@@ -282,7 +286,7 @@ def api_device_update(dev_id):
         return err('设备不存在', 404)
     d = request.json or {}
     fields = {}
-    for k in ('ip', 'port', 'url', 'name', 'remark', 'status'):
+    for k in ('ip', 'port', 'url', 'name', 'remark', 'status', 'screen_net'):
         if k in d:
             fields[k] = (d[k] or '').strip() if isinstance(d[k], str) else d[k]
     if ('ip' in fields) or ('port' in fields):
@@ -505,8 +509,10 @@ def api_containers():
     devs = db.list_devices()
     by_id = {d['id']: (d.get('url') or '') for d in devs}
     by_ip = {d['ip']: (d.get('url') or '') for d in devs}
+    net_by_id = {d['id']: (d.get('screen_net') or 'wan') for d in devs}
     for c in items:
         c['device_url'] = by_id.get(c.get('device_id')) or by_ip.get(c.get('device_ip')) or ''
+        c['device_screen_net'] = net_by_id.get(c.get('device_id')) or 'wan'
     kw = (request.args.get('kw') or '').lower()
     dev_filter = request.args.get('device_id')
     if dev_filter:

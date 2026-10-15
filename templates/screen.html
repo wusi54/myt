@@ -33,8 +33,8 @@ const adbAddr = '{{ adb_addr }}';
 const canvas = document.getElementById('screen');
 const ctx = canvas.getContext('2d');
 const statusEl = document.getElementById('status');
-const host = window.location.hostname || 'localhost';
-const wsUrl = 'ws://' + host + ':9000/stream?adb_addr=' + encodeURIComponent(adbAddr);
+const wsProto = (window.location.protocol === 'https:') ? 'wss://' : 'ws://';
+const wsUrl = wsProto + window.location.host + '/ws/screen?adb_addr=' + encodeURIComponent(adbAddr);
 console.log('Connecting to:', wsUrl);
 
 let decoder = null;

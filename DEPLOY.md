@@ -16,7 +16,8 @@
 - Docker Desktop / Docker Engine + Docker Compose v2+
 - **Linux 容器**模式（Windows 上需开启 Docker Desktop 的 Linux containers）
 - 宿主机能访问设备/盒子所在网段（容器通过 NAT 出去）
-- 浏览器能访问宿主机 `9111`、`9000` 端口
+- 浏览器只需访问宿主机 `9111`（由 `nginx` 统一 TLS 终止并反代 Flask 与投屏中继 `9000`；`9000` 为容器内部端口，不再对外暴露）
+- 宿主机需提供 `./certs/server.crt` 与 `./certs/server.key`（自签或 CA 证书；`certs/` 已在 `.gitignore` 中、不入库，部署时自行放置）
 
 ---
 
@@ -129,7 +130,7 @@ docker compose up -d --build   # 拉取最新代码后重建
   docker compose exec relay adb connect <设备IP>:<端口>
   docker compose exec relay adb devices
   ```
-- 浏览器需能访问宿主机 `9000` 端口（防火墙放行）。
+- 浏览器只需能访问宿主机 `9111`（由 nginx 反代 `/ws/screen` → relay `9000`，防火墙放行 `9111` 即可，`9000` 无需对外）。
 
 ### 3. adb 需要授权
 部分设备首次 `adb connect` 需要在设备端确认授权。可在 `relay` 容器内手动执行一次 `adb connect`，设备端确认后即可。
