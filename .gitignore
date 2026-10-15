@@ -11,3 +11,7 @@ data/
 # 上传的 APK 等运行期文件（体积大，不纳入版本库）
 app_uploads/
 uploads/
+
+# 离线导出的镜像包
+/myt-manager-*.tar
+/myt-manager-*.tar.gz
