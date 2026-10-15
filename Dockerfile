@@ -20,16 +20,16 @@ WORKDIR /app
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ARG NO_PROXY
-# 内网 apt 源（默认官方源），例如 mirrors.aliyun.com / mirrors.tuna.tsinghua.edu.cn
-ARG APT_MIRROR=deb.debian.org
-# 内网 pip 源，例如 https://pypi.tuna.tsinghua.edu.cn/simple
-ARG PIP_INDEX_URL
-ARG PIP_TRUSTED_HOST
+# apt 镜像源（默认阿里云；可覆盖，如 mirrors.tuna.tsinghua.edu.cn；传 deb.debian.org 用官方源）
+ARG APT_MIRROR=mirrors.aliyun.com
+# pip 镜像源（默认阿里云；可覆盖，如 https://pypi.tuna.tsinghua.edu.cn/simple）
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ARG PIP_TRUSTED_HOST=mirrors.aliyun.com
 
 # 安装 adb（用于投屏/触控），并预创建运行期目录
 # 弱网/代理环境下 apt 偶发失败（exit 100），这里做多次重试；并支持切换内网 mirror
 RUN set -eux; \
-    mirror="${APT_MIRROR:-deb.debian.org}"; \
+    mirror="${APT_MIRROR:-mirrors.aliyun.com}"; \
     if [ -n "$mirror" ] && [ "$mirror" != "deb.debian.org" ]; then \
         for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do \
             [ -f "$f" ] && sed -i "s|deb.debian.org|$mirror|g" "$f" || true; \

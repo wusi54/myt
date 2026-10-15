@@ -5,7 +5,16 @@
 # 访问:  http://<宿主机IP>:5001   (投屏 relay: :9000)
 
 x-app: &app
-  build: .
+  build:
+    context: .
+    args:
+      # 构建期可覆盖（默认走阿里云源）；也可在 live 环境用环境变量覆盖
+      APT_MIRROR: ${APT_MIRROR:-mirrors.aliyun.com}
+      PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
+      PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-mirrors.aliyun.com}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-}
   image: myt-manager:2.1.0
   restart: unless-stopped
   init: true
