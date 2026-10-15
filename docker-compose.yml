@@ -2,7 +2,7 @@
 # 启动:  docker compose up -d --build
 # 停止:  docker compose down
 # 日志:  docker compose logs -f
-# 访问:  http://<宿主机IP>:5001   (投屏 relay: :9000)
+# 访问:  http://<宿主机IP>:9111   (投屏 relay: :9000)
 
 x-app: &app
   build:
@@ -25,11 +25,11 @@ services:
   web:
     <<: *app
     container_name: myt-web
-    command: ["waitress-serve", "--host=0.0.0.0", "--port=5001", "--threads=24", "app:app"]
+    command: ["waitress-serve", "--host=0.0.0.0", "--port=9111", "--threads=24", "app:app"]
     ports:
-      - "5001:5001"
+      - "9111:9111"
     environment:
-      PORT: "5001"
+      PORT: "9111"
       DB_PATH: /app/data/data.db
       UPLOAD_DIR: /app/uploads
       APP_UPLOAD_DIR: /app/app_uploads
@@ -40,7 +40,7 @@ services:
       - ./uploads:/app/uploads:z           # 真机参数文件
       - ./app_uploads:/app/app_uploads:z   # APK 文件
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5001/healthz',timeout=3).status==200 else 1)"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9111/healthz',timeout=3).status==200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -56,5 +56,5 @@ services:
     environment:
       RELAY_PORT: "9000"
       ADB_PATH: /usr/bin/adb
-      SCREEN_MAX: "640"          # 投屏输出最长边（按设备分辨率等比缩放，越小越流畅）
-      SCREEN_BITRATE: "300000"   # 投屏码率 bps
+      SCREEN_MAX: "480"          # 投屏输出最长边（按设备分辨率等比缩放，越小越流畅）
+      SCREEN_BITRATE: "150000"   # 投屏码率 bps

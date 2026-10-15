@@ -1278,23 +1278,102 @@ ADB_PATH = os.environ.get('ADB_PATH') or (
     if os.name == 'nt' else 'adb')
 
 
+class _PersistentShell:
+    """常驻 `adb -s <addr> shell` 会话：复用同一进程下发命令，避免每次 fork +
+    握手（单次可省 100~300ms），从而降低触控延迟。
+
+    采用“发了不管”(fire-and-forget)：`input` 类命令无输出，设备端 shell 会按写入
+    顺序依次执行，无需等待回包即可返回。stdout/stderr 由后台线程持续读走，防止
+    管道写满导致 shell 阻塞。
+    """
+
+    def __init__(self, adb_addr):
+        self.addr = adb_addr
+        self.proc = None
+        self.lock = threading.Lock()
+        self._start()
+
+    def _start(self):
+        self.proc = subprocess.Popen(
+            [ADB_PATH, '-s', self.addr, 'shell'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, bufsize=0)
+        threading.Thread(target=self._drain, args=(self.proc,), daemon=True).start()
+
+    @staticmethod
+    def _drain(proc):
+        try:
+            while proc.stdout.read(4096):
+                pass
+        except Exception:
+            pass
+
+    def alive(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def write(self, cmd):
+        """写入一条命令；进程已死无法写入时返回 False。"""
+        with self.lock:
+            if not self.alive():
+                self._start()
+            try:
+                self.proc.stdin.write((cmd + '\n').encode('utf-8', 'replace'))
+                self.proc.stdin.flush()
+                return True
+            except Exception:
+                return False
+
+    def close(self):
+        with self.lock:
+            if self.proc is not None:
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
+                self.proc = None
+
+
 class ADBShellPool:
     """执行容器内的 adb shell 命令（投屏触控/按键/输入等）。
 
     注意：web 与 relay 是不同容器，各自有独立的 adb server。
     relay 负责投屏流（自己会 adb connect），而触控命令在 web 容器里执行，
     所以这里必须先 adb connect，否则会报 "device not found"。
+
+    触控走常驻 shell（低延迟）；wm size 等需要读输出的命令仍走一次性执行。
     """
 
     def __init__(self):
         self._connected = {}          # adb_addr -> 最近一次成功 connect 的时间
         self._sizes = {}              # adb_addr -> (w, h) 设备逻辑分辨率缓存
+        self._shells = {}             # adb_addr -> _PersistentShell
         self._lock = threading.Lock()
+        self._ka_started = False
 
-    def _ensure_connected(self, adb_addr, ttl=30):
+    def _start_keepalive(self):
+        """后台每 25s 对已有 shell 的设备做一次 adb connect，保持长连接不因空闲掉线。"""
+        with self._lock:
+            if self._ka_started:
+                return
+            self._ka_started = True
+        threading.Thread(target=self._keepalive_loop, daemon=True).start()
+
+    def _keepalive_loop(self):
+        while True:
+            time.sleep(25)
+            with self._lock:
+                addrs = list(self._shells.keys())
+            for a in addrs:
+                try:
+                    subprocess.run([ADB_PATH, 'connect', a],
+                                   capture_output=True, timeout=5)
+                except Exception:
+                    pass
+
+    def _ensure_connected(self, adb_addr, ttl=30, force=False):
         now = time.time()
         with self._lock:
-            if now - self._connected.get(adb_addr, 0) < ttl:
+            if not force and now - self._connected.get(adb_addr, 0) < ttl:
                 return
         ok = False
         try:
@@ -1345,18 +1424,41 @@ class ADBShellPool:
         return subprocess.run([ADB_PATH, '-s', adb_addr, 'shell', cmd],
                               capture_output=True, timeout=15)
 
-    def send(self, adb_addr, cmd):
-        """执行命令，成功返回 True；首次或断连时自动重连后重试一次。"""
-        self._ensure_connected(adb_addr)
-        try:
-            if self._run(adb_addr, cmd).returncode == 0:
-                return True
-        except Exception:
-            pass
-        # 连接可能已失效：强制重连后再试一次
+    def _get_shell(self, adb_addr):
         with self._lock:
-            self._connected.pop(adb_addr, None)
-        self._ensure_connected(adb_addr)
+            return self._shells.get(adb_addr)
+
+    def _new_shell(self, adb_addr):
+        sh = _PersistentShell(adb_addr)
+        with self._lock:
+            self._shells[adb_addr] = sh
+        return sh
+
+    def _drop_shell(self, adb_addr):
+        with self._lock:
+            sh = self._shells.pop(adb_addr, None)
+        if sh is not None:
+            try:
+                sh.close()
+            except Exception:
+                pass
+
+    def send(self, adb_addr, cmd):
+        """下发命令：优先常驻 shell（低延迟、不等待回包），失败回退一次性执行。"""
+        self._start_keepalive()
+        sh = self._get_shell(adb_addr)
+        if sh is None:
+            self._ensure_connected(adb_addr, force=True)
+            sh = self._new_shell(adb_addr)
+        if sh.write(cmd):
+            return True
+        # shell 失效：重连并重建，再试一次
+        self._drop_shell(adb_addr)
+        self._ensure_connected(adb_addr, force=True)
+        sh = self._new_shell(adb_addr)
+        if sh.write(cmd):
+            return True
+        # 兜底：一次性执行
         try:
             return self._run(adb_addr, cmd).returncode == 0
         except Exception:
@@ -1428,6 +1530,6 @@ except Exception as _e:
 
 if __name__ == '__main__':
     host = os.environ.get('HOST', '0.0.0.0')
-    port = int(os.environ.get('PORT', '5001'))
+    port = int(os.environ.get('PORT', '9111'))
     debug = os.environ.get('DEBUG', '').lower() in ('1', 'true', 'yes')
     app.run(host=host, port=port, debug=debug, threaded=True)

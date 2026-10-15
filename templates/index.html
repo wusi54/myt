@@ -83,8 +83,6 @@ tr:hover td{background:#1e2e3e}
 .wall-cell .wc-label .wc-name{color:#ffa500;font-size:11px;font-weight:700;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 2px #000}
 .wall-cell .wc-label .wc-close{color:#ff6b6b;cursor:pointer;font-size:14px;line-height:1;padding:0 4px;pointer-events:auto}
 .wall-cell .wc-placeholder{display:flex;align-items:center;justify-content:center;height:100%;color:#3a4a5a;font-size:12px}
-.wall-cell .wc-status{position:absolute;bottom:4px;right:6px;font-size:9px;color:#8899aa;z-index:2}
-.wall-cell .wc-status.st-connected{color:#4ec94e}.wall-cell .wc-status.st-connecting,.wall-cell .wc-status.st-reconnecting{color:#f0ad4e}
 .wall-cell .wc-toolbar{position:absolute;bottom:0;left:0;right:0;padding:4px 6px;background:linear-gradient(0deg,#000000cc,transparent);z-index:3;display:flex;gap:4px;justify-content:center;opacity:0;transition:opacity .2s}
 .wall-cell:hover .wc-toolbar{opacity:1}
 .wall-cell .wc-tb-btn{padding:3px 8px;background:#1a2a3a;border:1px solid #3a4a5a;border-radius:3px;color:#8899aa;font-size:10px;cursor:pointer}
@@ -439,10 +437,13 @@ async function api(url,method='GET',body=null,isForm=false){
   try{return await r.json()}catch(e){return {code:r.status,msg:'响应解析失败'}}
 }
 function switchSubTab(tabId,btn){const p=btn.closest('.modal');p.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));p.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById(tabId).classList.add('active');btn.classList.add('active')}
+let currentPage='pageDevices';
 function switchPage(pageId,el){
+  if(currentPage==='pageScreenWall'&&pageId!=='pageScreenWall')destroyWallPlayers();
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));
   document.getElementById(pageId).classList.add('active');el.classList.add('active');
+  currentPage=pageId;
   if(pageId==='pageDevices')loadDevices();
   if(pageId==='pageContainers')loadContainers();
   if(pageId==='pageRealParams')loadRealParams();
@@ -872,31 +873,92 @@ function installApp(id){
 // ==================== 群控窗 (投屏) ====================
 let wallItems=[];
 let wallAutoFilled=false;
+const wallCells=new Map();   // adbAddr -> {el,canvas,player}  复用单元格，避免重连
 class WallPlayer{
-  constructor(canvas,adbAddr){this.canvas=canvas;this.ctx=canvas.getContext('2d');this.decoder=null;this.buffer=new Uint8Array(0);this.lastStart=-1;this.nalCache=[];this.ws=null;this.adbAddr=adbAddr;this.statusEl=null;this.reconnectDelay=1000;this.reconnectTimer=null;this.destroyed=false;this._initDecoder()}
+  constructor(canvas,adbAddr){this.canvas=canvas;this.ctx=canvas.getContext('2d');this.decoder=null;this.buffer=new Uint8Array(0);this.lastStart=-1;this.nalCache=[];this.ws=null;this.adbAddr=adbAddr;this.reconnectDelay=1000;this.reconnectTimer=null;this.destroyed=false;this.maxQueue=30;this.dropUntilKey=false;this._dropStart=0;this._resyncing=false;this._initDecoder()}
   _initDecoder(){if(typeof VideoDecoder==='undefined')return;this.ts=0;try{this.decoder=new VideoDecoder({output:(frame)=>{try{if(this.canvas.width!==frame.displayWidth)this.canvas.width=frame.displayWidth;if(this.canvas.height!==frame.displayHeight)this.canvas.height=frame.displayHeight;this.ctx.drawImage(frame,0,0)}catch(e){}frame.close()},error:(e)=>{console.error('decode error',e)}});this.decoder.configure({codec:'avc1.42C01E',optimizeForLatency:true})}catch(e){}}
-  _setStatus(cls,text){if(this.statusEl){this.statusEl.className='wc-status '+cls;this.statusEl.textContent=text}}
-  connect(){if(this.destroyed)return;if(this.ws)this.disconnect();this._setStatus('st-connecting','连接中...');const host=window.location.hostname||'localhost';this.ws=new WebSocket('ws://'+host+':9000/stream?adb_addr='+encodeURIComponent(this.adbAddr));this.ws.binaryType='arraybuffer';this.ws.onopen=()=>{this.reconnectDelay=1000;this._setStatus('st-connected','投屏中')};this.ws.onmessage=(e)=>{this.buffer=this._concat(this.buffer,new Uint8Array(e.data));this._parse()};this.ws.onclose=()=>{this.ws=null;if(!this.destroyed)this._scheduleReconnect()};this.ws.onerror=()=>{if(this.ws){try{this.ws.close()}catch{}this.ws=null}}}
-  _scheduleReconnect(){if(this.destroyed||this.reconnectTimer)return;this._setStatus('st-reconnecting',Math.round(this.reconnectDelay/1000)+'s后重连');this.reconnectTimer=setTimeout(()=>{this.reconnectTimer=null;if(!this.destroyed){this.reconnectDelay=Math.min(this.reconnectDelay*1.5,15000);this.connect()}},this.reconnectDelay)}
+  connect(){if(this.destroyed)return;if(this.ws)this.disconnect();const host=window.location.hostname||'localhost';this.ws=new WebSocket('ws://'+host+':9000/stream?adb_addr='+encodeURIComponent(this.adbAddr));this.ws.binaryType='arraybuffer';this.ws.onopen=()=>{this.reconnectDelay=1000};this.ws.onmessage=(e)=>{this.buffer=this._concat(this.buffer,new Uint8Array(e.data));this._parse()};this.ws.onclose=()=>{this.ws=null;if(!this.destroyed)this._scheduleReconnect()};this.ws.onerror=()=>{if(this.ws){try{this.ws.close()}catch{}this.ws=null}}}
+  _scheduleReconnect(){if(this.destroyed||this.reconnectTimer)return;this.reconnectTimer=setTimeout(()=>{this.reconnectTimer=null;if(!this.destroyed){this.reconnectDelay=Math.min(this.reconnectDelay*1.5,15000);this.connect()}},this.reconnectDelay)}
   _parse(){let pos=0;while(pos<this.buffer.length-3){let sl=0;if(this.buffer[pos]===0&&this.buffer[pos+1]===0&&this.buffer[pos+2]===1)sl=3;else if(pos<this.buffer.length-4&&this.buffer[pos]===0&&this.buffer[pos+1]===0&&this.buffer[pos+2]===0&&this.buffer[pos+3]===1)sl=4;if(sl>0){if(this.lastStart>=0){const nalData=this.buffer.slice(this.lastStart,pos);const nalType=nalData[sl]&0x1F;this.nalCache.push(nalData);if(nalType===5||nalType===1)this._flush()}this.lastStart=pos;pos+=sl}else{pos++}}if(this.lastStart>=0){this.buffer=this.buffer.slice(this.lastStart);this.lastStart=0}}
-  _flush(){if(this.nalCache.length===0||!this.decoder)return;let hasIdr=false;for(const n of this.nalCache){const sl=(n[0]===0&&n[1]===0&&n[2]===0)?4:3;if((n[sl]&0x1F)===5){hasIdr=true;break}}const total=this.nalCache.reduce((s,u)=>s+u.length,0);const f=new Uint8Array(total);let off=0;for(const n of this.nalCache){f.set(n,off);off+=n.length}this.nalCache=[];const ts=this.ts;this.ts+=100000;try{this.decoder.decode(new EncodedVideoChunk({type:hasIdr?'key':'delta',timestamp:ts,duration:100000,data:f}))}catch(e){}}
-  disconnect(){if(this.reconnectTimer){clearTimeout(this.reconnectTimer);this.reconnectTimer=null}if(this.ws){try{this.ws.close()}catch{}this.ws=null}this.buffer=new Uint8Array(0);this.nalCache=[];this.lastStart=-1}
+  _flush(){
+    if(this.nalCache.length===0||!this.decoder)return;
+    let hasIdr=false;
+    for(const n of this.nalCache){const sl=(n[0]===0&&n[1]===0&&n[2]===0)?4:3;if((n[sl]&0x1F)===5){hasIdr=true;break}}
+    // 背压：解码排队严重时丢弃到下一个关键帧，避免画面延迟持续累积（越用越卡）
+    if(this.decoder.decodeQueueSize>this.maxQueue){this.dropUntilKey=true;if(!this._dropStart)this._dropStart=Date.now()}
+    if(this.dropUntilKey){
+      if(hasIdr){this.dropUntilKey=false;this._dropStart=0}
+      else{
+        this.nalCache=[];
+        // 安全阀：screenrecord 关键帧间隔约 10s，久等不到就重连强制拿新 IDR，避免长时间卡住
+        if(this._dropStart&&Date.now()-this._dropStart>3000){this._dropStart=0;this._forceResync()}
+        return;
+      }
+    }
+    const total=this.nalCache.reduce((s,u)=>s+u.length,0);
+    const f=new Uint8Array(total);let off=0;for(const n of this.nalCache){f.set(n,off);off+=n.length}
+    this.nalCache=[];
+    const ts=this.ts;this.ts+=100000;
+    try{this.decoder.decode(new EncodedVideoChunk({type:hasIdr?'key':'delta',timestamp:ts,duration:100000,data:f}))}catch(e){}
+  }
+  _forceResync(){
+    if(this.destroyed||this._resyncing)return;
+    this._resyncing=true;
+    this.dropUntilKey=false;
+    try{if(this.decoder){this.decoder.reset();this.decoder.configure({codec:'avc1.42C01E',optimizeForLatency:true})}}catch(e){}
+    this.disconnect();
+    this.reconnectTimer=setTimeout(()=>{this.reconnectTimer=null;this._resyncing=false;if(!this.destroyed)this.connect()},300);
+  }
+  disconnect(){if(this.reconnectTimer){clearTimeout(this.reconnectTimer);this.reconnectTimer=null}if(this.ws){try{this.ws.close()}catch{}this.ws=null}this.buffer=new Uint8Array(0);this.nalCache=[];this.lastStart=-1;this.dropUntilKey=false}
   destroy(){this.destroyed=true;this.disconnect();if(this.decoder){try{this.decoder.close()}catch{}this.decoder=null}}
   _concat(a,b){const c=new Uint8Array(a.length+b.length);c.set(a);c.set(b,a.length);return c}
 }
 function wallSendTouch(adbAddr,action,params){api('/api/screen/touch','POST',{adb_addr:adbAddr,action,...params}).catch(()=>{})}
 function resizeWall(){document.getElementById('wallGrid').className='wall-grid wall-'+document.getElementById('wallGridSize').value;renderWall()}
-function renderWall(){
-  const grid=document.getElementById('wallGrid');const size=parseInt(document.getElementById('wallGridSize').value);const max=size*size;let html='';
-  for(let i=0;i<max;i++){const item=wallItems[i];
-    if(item){html+='<div class="wall-cell" id="wc-'+i+'"><div class="wc-label"><div class="wc-meta">'+(item.apiUrl?'<div class="wc-api" title="'+esc(item.apiUrl)+'">'+esc(item.apiUrl)+'</div>':'')+'<div class="wc-name" title="'+esc(item.name)+'">'+esc(item.name)+'</div></div><span class="wc-close" data-remove="'+i+'">×</span></div><canvas data-wall-idx="'+i+'"></canvas><div class="wc-toolbar"><span class="wc-tb-btn" data-tb="back" data-idx="'+i+'">返回</span><span class="wc-tb-btn" data-tb="home" data-idx="'+i+'">主页</span><span class="wc-tb-btn" data-tb="recent" data-idx="'+i+'">最近</span><span class="wc-tb-btn" data-tb="input" data-idx="'+i+'">输入</span></div></div>'}
-    else{html+='<div class="wall-cell" id="wc-'+i+'"><div class="wc-placeholder"><span>空位</span></div></div>'}
+function makeWallCell(item){
+  let c=wallCells.get(item.adbAddr);
+  const el=c?c.el:document.createElement('div');
+  if(!c){
+    el.className='wall-cell';
+    el.innerHTML='<div class="wc-label"><div class="wc-meta"><div class="wc-api"></div><div class="wc-name"></div></div><span class="wc-close">×</span></div><canvas></canvas><div class="wc-toolbar"><span class="wc-tb-btn" data-tb="back">返回</span><span class="wc-tb-btn" data-tb="home">主页</span><span class="wc-tb-btn" data-tb="recent">最近</span><span class="wc-tb-btn" data-tb="input">输入</span></div>';
   }
-  grid.innerHTML=html;
-  for(let i=0;i<max;i++){const item=wallItems[i];if(item){const cell=document.getElementById('wc-'+i);const canvas=cell.querySelector('canvas');const statusEl=cell.querySelector('[data-status]');if(canvas&&(!item.player||item.player.canvas!==canvas)){if(item.player)item.player.destroy();const p=new WallPlayer(canvas,item.adbAddr);p.statusEl=statusEl;p.connect();item.player=p;item.canvas=canvas}}}
+  const apiEl=el.querySelector('.wc-api');
+  if(item.apiUrl){apiEl.style.display='';apiEl.textContent=item.apiUrl;apiEl.title=item.apiUrl}else{apiEl.style.display='none'}
+  const nmEl=el.querySelector('.wc-name');nmEl.textContent=item.name;nmEl.title=item.name;
+  el.dataset.adb=item.adbAddr;
+  el.querySelector('.wc-close').dataset.removeAdb=item.adbAddr;
+  el.querySelectorAll('.wc-tb-btn').forEach(b=>b.dataset.adb=item.adbAddr);
+  if(!c){
+    const canvas=el.querySelector('canvas');
+    canvas.dataset.adb=item.adbAddr;
+    const p=new WallPlayer(canvas,item.adbAddr);p.connect();
+    wallCells.set(item.adbAddr,{el:el,canvas:canvas,player:p});
+  }
+  return el;
+}
+function makeWallPlaceholder(){const el=document.createElement('div');el.className='wall-cell';el.innerHTML='<div class="wc-placeholder"><span>空位</span></div>';return el}
+function renderWall(){
+  const grid=document.getElementById('wallGrid');
+  const size=parseInt(document.getElementById('wallGridSize').value)||3,max=size*size;
+  const alive=new Set();
+  for(let i=0;i<max&&i<wallItems.length;i++)alive.add(wallItems[i].adbAddr);
+  // 移除已不在墙上的单元格（销毁 player / 关闭 WS）
+  for(const pair of Array.from(wallCells)){
+    const adb=pair[0],c=pair[1];
+    if(!alive.has(adb)){c.player.destroy();if(c.el.parentNode)c.el.parentNode.removeChild(c.el);wallCells.delete(adb)}
+  }
+  // 复用已有单元格：移动 DOM 不会重置 canvas 画面与播放器，避免整块重建导致重连
+  const frag=document.createDocumentFragment();
+  for(let i=0;i<max;i++){const item=wallItems[i];frag.appendChild(item?makeWallCell(item):makeWallPlaceholder())}
+  grid.replaceChildren(frag);
   document.getElementById('wallCounter').textContent=wallItems.length+' 个容器';
 }
-function clearWall(){wallItems.forEach(it=>{if(it.player)it.player.destroy()});wallItems=[];renderWall()}
+function destroyWallPlayers(){
+  // 离开群控窗时调用：关闭所有 WS 与解码器，停止后台占用（隐藏页面仍在解码会拖慢整体）
+  for(const pair of Array.from(wallCells)){pair[1].player.destroy();wallCells.delete(pair[0])}
+  const grid=document.getElementById('wallGrid');if(grid)grid.innerHTML='';
+}
+function clearWall(){wallItems=[];destroyWallPlayers();renderWall()}
 // 首次进入群控窗：若有已启动(running)的容器，默认放入 2 个
 function autoFillWall(){
   if(wallItems.length){wallAutoFilled=true;return}
@@ -906,12 +968,12 @@ function autoFillWall(){
   let added=0;
   for(const c of running){
     if(wallItems.length>=max||added>=2)break;
-    wallItems.push({name:c.name,adbAddr:c.adb_addr,apiUrl:c.device_url||'',player:null,canvas:null});
+    wallItems.push({name:c.name,adbAddr:c.adb_addr,apiUrl:c.device_url||''});
     added++;
   }
   if(added)wallAutoFilled=true;
 }
-function removeFromWall(idx){const it=wallItems[idx];if(it&&it.player)it.player.destroy();wallItems.splice(idx,1);renderWall()}
+function removeFromWall(adb){const i=wallItems.findIndex(w=>w.adbAddr===adb);if(i<0)return;wallItems.splice(i,1);renderWall()}
 function showAddToWallModal(){document.getElementById('wallContainerList').innerHTML='<div style="padding:12px;color:#8899aa">加载中...</div>';loadContainers().then(renderWallContainerList);document.getElementById('wallSearch').value='';showModal('addToWallModal')}
 function renderWallContainerList(){
   const kw=(document.getElementById('wallSearch').value||'').toLowerCase();
@@ -925,8 +987,8 @@ function renderWallContainerList(){
 function toggleWallCbs(v){document.querySelectorAll('#wallContainerList .wall-cb:not(:disabled)').forEach(cb=>cb.checked=v)}
 function addSelectedToWall(){const size=parseInt(document.getElementById('wallGridSize').value);const max=size*size;const cbs=document.querySelectorAll('#wallContainerList .wall-cb:checked:not(:disabled)');let added=0;cbs.forEach(cb=>{if(wallItems.length>=max)return;wallItems.push({name:cb.value,adbAddr:cb.dataset.adb,apiUrl:cb.dataset.url||'',player:null,canvas:null});added++});closeModal('addToWallModal');renderWall();toast(added?('已添加 '+added+' 个'):'未添加','info')}
 document.addEventListener('click',function(e){
-  if(e.target.dataset.remove!==undefined)removeFromWall(parseInt(e.target.dataset.remove));
-  if(e.target.dataset.tb){const item=wallItems[parseInt(e.target.dataset.idx)];if(!item)return;const tb=e.target.dataset.tb;
+  if(e.target.dataset.removeAdb!==undefined){removeFromWall(e.target.dataset.removeAdb);return}
+  if(e.target.dataset.tb){const item=wallItems.find(w=>w.adbAddr===e.target.dataset.adb);if(!item)return;const tb=e.target.dataset.tb;
     if(tb==='back')wallSendTouch(item.adbAddr,'key',{keycode:'4'});
     else if(tb==='home')wallSendTouch(item.adbAddr,'key',{keycode:'3'});
     else if(tb==='recent')wallSendTouch(item.adbAddr,'key',{keycode:'187'});
@@ -942,11 +1004,11 @@ function wallNorm(canvas,clientX,clientY){
   if(nx<0||nx>1||ny<0||ny>1)return null;
   return {nx:nx,ny:ny};
 }
-document.addEventListener('mousedown',function(e){if(!e.target.matches('canvas[data-wall-idx]'))return;e.target._ts={cx:e.clientX,cy:e.clientY,t:Date.now()}});
-document.addEventListener('mousemove',function(e){if(e.target.matches('canvas[data-wall-idx]')&&e.target._ts)e.target._tm=true});
+document.addEventListener('mousedown',function(e){if(!e.target.matches('canvas[data-adb]'))return;e.target._ts={cx:e.clientX,cy:e.clientY,t:Date.now()}});
+document.addEventListener('mousemove',function(e){if(e.target.matches('canvas[data-adb]')&&e.target._ts)e.target._tm=true});
 document.addEventListener('mouseup',function(e){
-  if(!e.target.matches('canvas[data-wall-idx]'))return;const s=e.target._ts;if(!s)return;e.target._ts=null;
-  const item=wallItems[parseInt(e.target.dataset.wallIdx)];if(!item)return;
+  if(!e.target.matches('canvas[data-adb]'))return;const s=e.target._ts;if(!s)return;e.target._ts=null;
+  const item=wallItems.find(w=>w.adbAddr===e.target.dataset.adb);if(!item)return;
   const p1=wallNorm(e.target,s.cx,s.cy);if(!p1)return;
   const dist=Math.hypot(e.clientX-s.cx,e.clientY-s.cy);
   if(dist<8&&(Date.now()-s.t)<500){wallSendTouch(item.adbAddr,'tap',{nx:p1.nx,ny:p1.ny})}

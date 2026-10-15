@@ -8,8 +8,8 @@ ADB = os.environ.get('ADB_PATH') or (
     r"C:\Users\wusi0\AppData\Local\Android\Sdk\platform-tools\adb.exe"
     if os.name == 'nt' else 'adb')
 SCREEN_LIMIT = int(os.environ.get('SCREEN_LIMIT', '180'))          # 单段最长录制秒数
-SCREEN_MAX = int(os.environ.get('SCREEN_MAX', '640'))              # 输出最长边（等比缩放）
-SCREEN_BITRATE = int(os.environ.get('SCREEN_BITRATE', '300000'))  # 码率 bps
+SCREEN_MAX = int(os.environ.get('SCREEN_MAX', '480'))              # 输出最长边（等比缩放）
+SCREEN_BITRATE = int(os.environ.get('SCREEN_BITRATE', '150000'))  # 码率 bps
 DEFAULT_SIZE = (360, 640)                                          # 取不到分辨率时兜底(9:16)
 active_streams = {}
 
@@ -118,8 +118,8 @@ async def stream_worker(ws, adb_addr):
                 print(f'[stream] {adb_addr} stderr: {err.decode(errors="replace")}', flush=True)
 
             restart_count += 1
-            print(f'[stream] {adb_addr} screenrecord ended, restarting in 1s...', flush=True)
-            await asyncio.sleep(1)
+            print(f'[stream] {adb_addr} screenrecord ended, restarting in 0.2s...', flush=True)
+            await asyncio.sleep(0.2)
 
     except Exception as e:
         print(f'[stream] {adb_addr} error: {e}', flush=True)

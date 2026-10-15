@@ -10,7 +10,7 @@ ENV PYTHONUNBUFFERED=1 \
     DB_PATH=/app/data/data.db \
     UPLOAD_DIR=/app/uploads \
     APP_UPLOAD_DIR=/app/app_uploads \
-    PORT=5001 \
+    PORT=9111 \
     RELAY_PORT=9000
 
 WORKDIR /app
@@ -75,7 +75,7 @@ RUN if [ -f /app/data.db ]; then cp /app/data.db /app/seed/data.db; fi \
     && sed -i 's/\r$//' /app/docker-entrypoint.sh \
     && chmod +x /app/docker-entrypoint.sh
 
-EXPOSE 5001 9000
+EXPOSE 9111 9000
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["waitress-serve", "--host=0.0.0.0", "--port=5001", "--threads=24", "app:app"]
+CMD ["waitress-serve", "--host=0.0.0.0", "--port=9111", "--threads=24", "app:app"]

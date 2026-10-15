@@ -4,7 +4,7 @@
 
 | 服务 | 说明 | 端口 |
 | --- | --- | --- |
-| `web`   | Flask 应用（waitress 托管）：设备/容器/真机参数/代理池管理 | `5001` |
+| `web`   | Flask 应用（waitress 托管）：设备/容器/真机参数/代理池管理 | `9111` |
 | `relay` | 投屏中继（WebSocket + `adb screenrecord`），群控窗实时画面 | `9000` |
 
 两个服务使用同一个镜像 `myt-manager:2.1.0`，镜像内已安装 `adb`。
@@ -16,7 +16,7 @@
 - Docker Desktop / Docker Engine + Docker Compose v2+
 - **Linux 容器**模式（Windows 上需开启 Docker Desktop 的 Linux containers）
 - 宿主机能访问设备/盒子所在网段（容器通过 NAT 出去）
-- 浏览器能访问宿主机 `5001`、`9000` 端口
+- 浏览器能访问宿主机 `9111`、`9000` 端口
 
 ---
 
@@ -33,7 +33,7 @@ docker compose ps
 docker compose logs -f
 
 # 4. 访问
-#    Web 控制台：http://<宿主机IP>:5001  （首次访问跳转登录页）
+#    Web 控制台：http://<宿主机IP>:9111  （首次访问跳转登录页）
 #    投屏页面随群控窗自动使用 :9000
 ```
 
@@ -77,7 +77,7 @@ docker compose up -d --build   # 拉取最新代码后重建
 | `UPLOAD_DIR`      | `/app/uploads`          | 真机参数文件目录 |
 | `APP_UPLOAD_DIR`  | `/app/app_uploads`      | APK 目录 |
 | `ADB_PATH`        | `/usr/bin/adb`          | adb 可执行文件路径 |
-| `PORT`            | `5001`                  | Web 服务端口 |
+| `PORT`            | `9111`                  | Web 服务端口 |
 | `RELAY_PORT`      | `9000`                  | 投屏中继端口 |
 | `SECRET_KEY`      | `change-me-in-production` | JWT 签名密钥，**生产务必修改**；修改后已登录用户需重新登录 |
 | `TOKEN_TTL`       | `604800`（7 天）         | 登录 token 有效期（秒） |
@@ -101,7 +101,7 @@ docker compose up -d --build   # 拉取最新代码后重建
 - 登录成功后浏览器写入 HttpOnly Cookie（`myt_token`），前端请求自动携带；接口也支持 `Authorization: Bearer <token>`（便于后续对接第三方客户端）。
 - 顶部导航右侧显示当前用户，可「修改密码」「退出」。
 - **安全保护**：不能删除当前登录账号；始终保留至少一个可用的管理员账号（否则拒绝降级/禁用/删除）。
-- 投屏中继（`9000`）当前**不鉴权**，仅 `5001` 的页面与 API 受保护。
+- 投屏中继（`9000`）当前**不鉴权**，仅 `9111` 的页面与 API 受保护。
 
 首次启动自动创建默认管理员：**admin / admin123**。
 
@@ -117,7 +117,7 @@ docker compose up -d --build   # 拉取最新代码后重建
   web:
     network_mode: host      # 此时 ports 映射失效，直接用宿主端口
     environment:
-      PORT: "5001"
+      PORT: "9111"
 ```
 
 > Windows / macOS 的 Docker Desktop 对 `network_mode: host` 支持有限，Linux 宿主推荐此方式。
@@ -135,7 +135,7 @@ docker compose up -d --build   # 拉取最新代码后重建
 部分设备首次 `adb connect` 需要在设备端确认授权。可在 `relay` 容器内手动执行一次 `adb connect`，设备端确认后即可。
 
 ### 4. 端口被占用
-修改 `docker-compose.yml` 中 `ports` 左侧宿主端口即可，例如 `"15001:5001"`。
+修改 `docker-compose.yml` 中 `ports` 左侧宿主端口即可，例如 `"15001:9111"`。
 
 ### 5. 镜像体积较大
 真机参数文件（`uploads/`）与 APK（`app_uploads/`）已在 `.dockerignore` 中排除，不打进镜像，运行期由卷挂载提供，镜像仅含代码 + adb。
@@ -180,7 +180,7 @@ chcon -Rt svirt_sandbox_file_t ./data ./uploads ./app_uploads
 
 ### 3. 防火墙放行端口
 ```bash
-firewall-cmd --permanent --add-port=5001/tcp
+firewall-cmd --permanent --add-port=9111/tcp
 firewall-cmd --permanent --add-port=9000/tcp
 firewall-cmd --reload
 ```
