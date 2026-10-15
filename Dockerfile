@@ -15,14 +15,53 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# ==== 构建期可调参数（弱网 / 代理 / 内网 mirror 环境用 --build-arg 传入）====
+# 代理：也可直接用 Docker 客户端环境变量 HTTP_PROXY/HTTPS_PROXY/NO_PROXY
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+# 内网 apt 源（默认官方源），例如 mirrors.aliyun.com / mirrors.tuna.tsinghua.edu.cn
+ARG APT_MIRROR=deb.debian.org
+# 内网 pip 源，例如 https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
+
 # 安装 adb（用于投屏/触控），并预创建运行期目录
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends adb \
-    && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /app/data /app/uploads /app/app_uploads /app/seed
+# 弱网/代理环境下 apt 偶发失败（exit 100），这里做多次重试；并支持切换内网 mirror
+RUN set -eux; \
+    mirror="${APT_MIRROR:-deb.debian.org}"; \
+    if [ -n "$mirror" ] && [ "$mirror" != "deb.debian.org" ]; then \
+        for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do \
+            [ -f "$f" ] && sed -i "s|deb.debian.org|$mirror|g" "$f" || true; \
+        done; \
+    fi; \
+    ok=0; \
+    for i in 1 2 3 4 5; do \
+        if apt-get -o Acquire::Retries=3 update \
+           && apt-get -o Acquire::Retries=3 install -y --no-install-recommends adb; then \
+            ok=1; break; \
+        fi; \
+        echo ">>> apt attempt $i failed, retrying in 5s..."; \
+        rm -rf /var/lib/apt/lists/*; \
+        sleep 5; \
+    done; \
+    [ "$ok" = "1" ] || { echo ">>> apt-get failed after retries"; exit 1; }; \
+    rm -rf /var/lib/apt/lists/*; \
+    mkdir -p /app/data /app/uploads /app/app_uploads /app/seed
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# pip 安装同样支持内网源与重试
+RUN set -eux; \
+    pip_args="--no-cache-dir"; \
+    if [ -n "${PIP_INDEX_URL:-}" ]; then pip_args="$pip_args --index-url ${PIP_INDEX_URL}"; fi; \
+    if [ -n "${PIP_TRUSTED_HOST:-}" ]; then pip_args="$pip_args --trusted-host ${PIP_TRUSTED_HOST}"; fi; \
+    ok=0; \
+    for i in 1 2 3 4 5; do \
+        if pip install $pip_args -r requirements.txt; then ok=1; break; fi; \
+        echo ">>> pip attempt $i failed, retrying in 5s..."; sleep 5; \
+    done; \
+    [ "$ok" = "1" ] || { echo ">>> pip install failed after retries"; exit 1; }
 
 COPY . .
 
