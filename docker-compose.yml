@@ -74,6 +74,7 @@ services:
       - "9000"
     environment:
       RELAY_PORT: "9000"
+      SECRET_KEY: change-me-in-production   # 必须与 web 服务一致，relay 据此校验登录 JWT
       ADB_PATH: /usr/bin/adb
       SCREEN_MAX: "480"          # 投屏输出最长边（按设备分辨率等比缩放，越小越流畅）
       SCREEN_BITRATE: "150000"   # 投屏码率 bps

@@ -79,6 +79,7 @@ SCHEMA = [
         proxy_id TEXT DEFAULT '',
         resolution TEXT DEFAULT '',
         data_path TEXT DEFAULT '',
+        screen_status TEXT DEFAULT '',
         created TEXT DEFAULT '',
         updated TEXT DEFAULT '',
         UNIQUE(device_ip, name)
@@ -160,6 +161,14 @@ SCHEMA = [
         created TEXT DEFAULT '',
         updated TEXT DEFAULT ''
     )''',
+    '''CREATE TABLE IF NOT EXISTS operation_logs (
+        id TEXT PRIMARY KEY,
+        op_type TEXT NOT NULL,
+        target TEXT DEFAULT '',
+        detail TEXT DEFAULT '',
+        status TEXT DEFAULT '',
+        created TEXT DEFAULT ''
+    )''',
 ]
 
 
@@ -169,6 +178,8 @@ def _ensure_columns(conn):
         return {r[1] for r in conn.execute(f'PRAGMA table_info({table})').fetchall()}
     if 'screen_net' not in cols('devices'):
         conn.execute("ALTER TABLE devices ADD COLUMN screen_net TEXT DEFAULT 'wan'")
+    if 'screen_status' not in cols('containers'):
+        conn.execute("ALTER TABLE containers ADD COLUMN screen_status TEXT DEFAULT ''")
 
 
 def init_db():
@@ -184,7 +195,7 @@ def rebuild_db():
     """重建数据库：删除所有表后重新创建。"""
     conn = get_db()
     for t in ['devices', 'containers', 'real_params', 'proxies',
-              'container_configs', 'app_library', 'install_logs', 'users']:
+              'container_configs', 'app_library', 'install_logs', 'operation_logs', 'users']:
         conn.execute(f'DROP TABLE IF EXISTS {t}')
     conn.commit()
     conn.close()
@@ -437,6 +448,32 @@ def list_install_logs(app_id=None):
     if app_id:
         return rows('SELECT * FROM install_logs WHERE app_id=? ORDER BY created DESC', (app_id,))
     return rows('SELECT * FROM install_logs ORDER BY created DESC')
+
+
+def add_operation_log(log):
+    log.setdefault('id', gen_id())
+    log.setdefault('created', now())
+    execute('''INSERT INTO operation_logs
+        (id,op_type,target,detail,status,created)
+        VALUES (?,?,?,?,?,?)''',
+        (log['id'], log.get('op_type', ''), log.get('target', ''),
+         log.get('detail', ''), log.get('status', ''), log['created']))
+    return log
+
+
+def list_operation_logs(op_type=None, kw=None, limit=500):
+    sql = 'SELECT * FROM operation_logs'
+    where, params = [], []
+    if op_type:
+        where.append('op_type=?'); params.append(op_type)
+    if kw:
+        where.append('(target LIKE ? OR detail LIKE ? OR status LIKE ?)')
+        params += [f'%{kw}%', f'%{kw}%', f'%{kw}%']
+    if where:
+        sql += ' WHERE ' + ' AND '.join(where)
+    sql += ' ORDER BY created DESC LIMIT ?'
+    params.append(limit)
+    return rows(sql, tuple(params))
 
 
 # ==================== users ====================

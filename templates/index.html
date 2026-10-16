@@ -82,6 +82,8 @@ tr:hover td{background:#1e2e3e}
 .wall-cell .wc-label .wc-api{display:block;color:#ff4d4f;font-size:11px;font-weight:700;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .wall-cell .wc-label .wc-name{color:#ffa500;font-size:11px;font-weight:700;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .wall-cell .wc-label .wc-close{color:#ff6b6b;cursor:pointer;font-size:14px;line-height:1;padding:0 4px}
+.wall-cell .wc-label .wc-adb{color:#9fb3c8;font-size:10px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wall-pager{display:flex;align-items:center;justify-content:center;gap:6px;padding:10px}
 .wall-cell .wc-placeholder{display:flex;align-items:center;justify-content:center;height:100%;color:#3a4a5a;font-size:12px}
 .wall-cell .wc-toolbar{position:absolute;bottom:0;left:0;right:0;padding:4px 6px;background:linear-gradient(0deg,#000000cc,transparent);z-index:3;display:flex;gap:4px;justify-content:center;opacity:0;transition:opacity .2s}
 .wall-cell:hover .wc-toolbar{opacity:1}
@@ -100,7 +102,9 @@ tr:hover td{background:#1e2e3e}
 <div class="nav-tab" onclick="switchPage('pageProxies',this)">代理池</div>
 <div class="nav-tab" onclick="switchPage('pageApps',this)">应用管理</div>
 <div class="nav-tab" onclick="switchPage('pageScreenWall',this)">群控窗</div>
+<div class="nav-tab" onclick="switchPage('pageLogs',this)">日志查看</div>
 <div class="nav-tab" id="navUsers" style="display:none" onclick="switchPage('pageUsers',this)">用户管理</div>
+<button class="btn btn-sm btn-outline" style="margin:9px 0 0 14px" onclick="refreshCurrentPage()" title="刷新当前页">⟳ 刷新</button>
 <div class="nav-user">
   <span id="curUserName">-</span>
   <span id="curUserRole" class="urole" style="display:none"></span>
@@ -139,6 +143,9 @@ tr:hover td{background:#1e2e3e}
 <input class="search-box" id="containerSearch" placeholder="搜索容器名称/设备IP/镜像" oninput="renderContainers()">
 <select id="containerDeviceFilter" onchange="renderContainers()" style="width:180px"></select>
 <button class="btn btn-sm btn-outline" onclick="syncContainers()">同步容器</button>
+<button class="btn btn-sm btn-outline" onclick="probeScreen()">检测投屏</button>
+<button class="btn btn-sm btn-outline" id="autoSyncBtn" onclick="toggleAutoSync()">自动同步:关</button>
+<span class="hint" id="autoSyncInfo"></span>
 <button class="btn btn-sm btn-primary" onclick="showCreateContainerModal()">+ 创建容器</button>
 </div></div>
 <div id="containerList"></div>
@@ -165,13 +172,27 @@ tr:hover td{background:#1e2e3e}
 <div class="card">
 <div class="card-header"><h3>代理池 (Socks5)</h3>
 <div class="flex">
-<span class="hint">状态锁定防止多实例占用同一代理</span>
+<span class="hint">状态(故障/正常) · 占用(全部/是/否) · 模糊搜索</span>
+<select id="proxyStatusFilter" onchange="proxyPage=0;renderProxies()" style="width:110px">
+  <option value="">状态：全部</option>
+  <option value="normal">正常</option>
+  <option value="fault">故障</option>
+</select>
+<select id="proxyOccFilter" onchange="proxyPage=0;renderProxies()" style="width:130px">
+  <option value="">占用：全部</option>
+  <option value="occ">是(已占用)</option>
+  <option value="free">否(空闲)</option>
+</select>
+<input id="proxySearch" type="text" class="input" placeholder="搜索 名称/IP/实例" oninput="proxyPage=0;renderProxies()" onkeydown="if(event.key==='Enter'){proxyPage=0;renderProxies()}" style="width:150px" />
+<button class="btn btn-sm btn-outline" onclick="clearProxySearch()" title="清除搜索">✕ 清除</button>
+<button class="btn btn-sm btn-outline" onclick="probeAllProxies()">全部探测</button>
 <button class="btn btn-sm btn-outline" onclick="showModal('importProxyModal')">批量导入</button>
 <button class="btn btn-sm btn-outline" onclick="showProxyModal()">+ 新增代理</button>
 <button class="btn btn-sm btn-warning" onclick="batchApplyProxies()">批量应用</button>
 <button class="btn btn-sm btn-danger" onclick="batchDeleteProxies()">批量删除</button>
 </div></div>
 <div id="proxyList"></div>
+<div id="proxyPager"></div>
 </div>
 </div>
 
@@ -196,8 +217,26 @@ tr:hover td{background:#1e2e3e}
 <span class="hint" id="wallCounter">0 个容器</span>
 </div></div>
 <div id="wallGrid" class="wall-grid wall-3"></div>
+<div id="wallPager"></div>
 </div>
 </div>
+
+<!-- ==================== 日志查看 ==================== -->
+<div id="pageLogs" class="page">
+<div class="card">
+<div class="card-header"><h3>操作日志</h3>
+<div class="flex">
+<select id="logType" onchange="loadLogs()" style="width:160px">
+  <option value="">全部类型</option>
+  <option value="install">安装应用</option>
+  <option value="proxy">代理配置</option>
+  <option value="realparam">真机参数</option>
+  <option value="adb_probe">adb探测</option>
+</select>
+<input class="search-box" id="logSearch" placeholder="搜索目标/详情" oninput="loadLogs()">
+</div></div>
+<div id="logList"></div>
+</div></div>
 
 <!-- ==================== 用户管理 ==================== -->
 <div id="pageUsers" class="page">
@@ -423,6 +462,7 @@ tr:hover td{background:#1e2e3e}
 // ==================== 基础工具 ====================
 let devices=[], allContainers=[], realParams=[], proxies=[], apps=[], users=[];
 let currentContainer=null, pickCb=null, pickMulti=true, pickSelected=new Set();
+let proxyPage=0; const PROXY_PAGE_SIZE=20;
 let CURRENT_USER=null;
 
 function toast(msg,type='info'){const t=document.getElementById('toast');t.textContent=msg;t.className='toast '+type;setTimeout(()=>{t.style.display='none'},3200)}
@@ -433,25 +473,37 @@ async function api(url,method='GET',body=null,isForm=false){
   const opt={method,headers:{}};
   if(body){ if(isForm){opt.body=body} else {opt.headers['Content-Type']='application/json';opt.body=JSON.stringify(body)} }
   const r=await fetch(url,opt);
-  if(r.status===401){ location.href='/login'; return {code:401,msg:'未登录或登录已过期'}; }
+  if(r.status===401){ destroyWallPlayers(); location.href='/login'; return {code:401,msg:'未登录或登录已过期'}; }
   if(r.status===403){ let m='无权限'; try{m=(await r.json()).msg||m}catch(e){} toast(m,'error'); return {code:403,msg:m}; }
   try{return await r.json()}catch(e){return {code:r.status,msg:'响应解析失败'}}
 }
 function switchSubTab(tabId,btn){const p=btn.closest('.modal');p.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));p.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById(tabId).classList.add('active');btn.classList.add('active')}
 let currentPage='pageDevices';
 function switchPage(pageId,el){
+  localStorage.setItem('myt_last_page', pageId);
   if(currentPage==='pageScreenWall'&&pageId!=='pageScreenWall')destroyWallPlayers();
+  if(currentPage==='pageContainers'&&pageId!=='pageContainers')pauseAutoSync();
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));
   document.getElementById(pageId).classList.add('active');el.classList.add('active');
   currentPage=pageId;
   if(pageId==='pageDevices')loadDevices();
-  if(pageId==='pageContainers')loadContainers();
+  if(pageId==='pageContainers'){loadContainers();if(localStorage.getItem('autoSync')==='1'&&!autoSyncTimer)startAutoSync(false);}
   if(pageId==='pageRealParams')loadRealParams();
   if(pageId==='pageProxies')loadProxies();
   if(pageId==='pageApps')loadApps();
   if(pageId==='pageScreenWall'){loadContainers().then(()=>{autoFillWall();renderWall();});}
+  if(pageId==='pageLogs')loadLogs();
   if(pageId==='pageUsers')loadUsers();
+}
+function refreshCurrentPage(){
+  const loaders={
+    pageDevices:loadDevices, pageContainers:loadContainers, pageRealParams:loadRealParams,
+    pageProxies:loadProxies, pageApps:loadApps, pageLogs:loadLogs, pageUsers:loadUsers,
+    pageScreenWall:()=>{loadContainers().then(()=>{autoFillWall();renderWall();})}
+  };
+  const f=loaders[currentPage]; if(f)f();
+  toast('已刷新当前页','info');
 }
 function badge(status){
   const s=(status||'').toLowerCase();
@@ -566,15 +618,15 @@ function renderContainers(){
   const list=filteredContainers(),el=document.getElementById('containerList');
   if(!allContainers.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无容器，请先同步容器</div>';return}
   if(!list.length){el.innerHTML='<div style="text-align:center;padding:30px;color:#8899aa">无匹配容器</div>';return}
-  let h='<table><thead><tr><th>设备IP</th><th>容器名称</th><th>容器ID</th><th>状态</th><th>ADB地址</th><th>代理</th><th>真机参数</th><th>镜像</th><th>操作</th></tr></thead><tbody>';
+  let h='<table><thead><tr><th>设备IP</th><th>容器名称</th><th>容器ID</th><th>状态</th><th>投屏</th><th>ADB地址</th><th>代理</th><th>真机参数</th><th>镜像</th><th>操作</th></tr></thead><tbody>';
   list.forEach(c=>{
     const fp=realParams.find(f=>f.id===c.fp_id), px=proxies.find(p=>p.id===c.proxy_id);
     const img=c.image||'',shortimg=img.length>34?img.substring(0,34)+'...':img;
     h+=`<tr><td>${esc(c.device_ip)}</td>
     <td><span class="link" onclick="openDetail('${c.id}')" title="${esc(c.name)}">${esc(c.name.length>34?c.name.substring(0,34)+'...':c.name)}</span></td>
     <td style="font-size:11px;color:#8899aa">${esc(c.short_id||c.id.substring(0,12))}</td>
-    <td>${badge(c.state)}</td><td style="font-size:12px">${esc(c.adb_addr||'-')}</td>
-    <td style="font-size:11px" title="${esc(c.s5_addr)}">${px?('<span class="badge badge-green">'+esc(px.name)+'</span>'):(c.s5_addr?'<span class="badge badge-gray" title="'+esc(c.s5_addr)+'">已配置</span>':'-')}</td>
+    <td>${badge(c.state)}</td><td>${screenBadge(c.screen_status)}</td><td style="font-size:12px">${esc(c.adb_addr||'-')}</td>
+    <td style="font-size:11px" title="${esc(c.s5_addr)}">${px?(px.status==='fault'?'<span class="badge badge-red" title="线路故障">'+esc(px.name)+'·故障</span>':'<span class="badge badge-green">'+esc(px.name)+'</span>'):(c.s5_addr?'<span class="badge badge-gray" title="'+esc(c.s5_addr)+'">已配置</span>':'-')}</td>
     <td style="font-size:11px">${fp?('<span class="badge badge-blue">'+esc(fp.name)+'</span>'):'-'}</td>
     <td class="text-truncate" title="${esc(img)}" style="font-size:11px;color:#8899aa">${esc(shortimg)}</td>
     <td><button class="btn btn-sm btn-outline" onclick="openDetail('${c.id}')">管理</button>
@@ -583,6 +635,62 @@ function renderContainers(){
   h+='</tbody></table>';el.innerHTML=h;
 }
 async function syncContainers(){toast('正在同步容器...','info');const d=await api('/api/containers/sync','POST',{});toast(d.msg||'同步完成',d.code===200?'success':'error');loadContainers();loadDevices()}
+function screenBadge(s){
+  if(s==='ok')return '<span class="badge badge-green">正常</span>';
+  if(s==='fail')return '<span class="badge badge-red">异常</span>';
+  return '<span class="badge badge-gray">未检</span>';
+}
+async function probeScreen(){
+  toast('正在检测投屏能力(adb 连通)...','info');
+  const d=await api('/api/containers/probe_screen','POST',{});
+  if(d.code===200)toast('检测完成，共 '+Object.keys(d.data||{}).length+' 个运行容器','success');
+  else toast(d.msg||'检测失败','error');
+  loadContainers();
+}
+// ---- 自动同步（每 3 分钟）----
+let autoSyncTimer=null,autoSyncCountdown=0;const AUTO_SYNC_INTERVAL=180;
+function toggleAutoSync(){
+  if(autoSyncTimer){stopAutoSync();toast('已关闭自动同步','info')}
+  else{startAutoSync(true);toast('已开启自动同步（每 3 分钟）','success')}
+}
+function startAutoSync(runNow){
+  if(autoSyncTimer)clearInterval(autoSyncTimer);
+  localStorage.setItem('autoSync','1');
+  autoSyncCountdown=AUTO_SYNC_INTERVAL;
+  if(runNow)syncContainers();
+  autoSyncTimer=setInterval(()=>{autoSyncCountdown--;if(autoSyncCountdown<=0){syncContainers();autoSyncCountdown=AUTO_SYNC_INTERVAL}updateAutoSyncUI()},1000);
+  updateAutoSyncUI();
+}
+function stopAutoSync(){
+  localStorage.removeItem('autoSync');
+  if(autoSyncTimer){clearInterval(autoSyncTimer);autoSyncTimer=null;}
+  updateAutoSyncUI();
+}
+function pauseAutoSync(){ // 离开容器页暂停定时器，但保留开启偏好
+  if(autoSyncTimer){clearInterval(autoSyncTimer);autoSyncTimer=null;}
+  updateAutoSyncUI();
+}
+function updateAutoSyncUI(){
+  const b=document.getElementById('autoSyncBtn');if(!b)return;
+  const on=localStorage.getItem('autoSync')==='1';
+  if(on){b.textContent=autoSyncTimer?'自动同步:开':'自动同步:暂停';b.classList.add('btn-primary');b.classList.remove('btn-outline');
+    document.getElementById('autoSyncInfo').textContent=autoSyncTimer?('下次同步 '+autoSyncCountdown+'s'):'';}
+  else{b.textContent='自动同步:关';b.classList.remove('btn-primary');b.classList.add('btn-outline');document.getElementById('autoSyncInfo').textContent='';}
+}
+// ---- 操作日志 ----
+async function loadLogs(){
+  const t=document.getElementById('logType').value,kw=document.getElementById('logSearch').value;
+  const d=await api('/api/logs?type='+encodeURIComponent(t)+'&kw='+encodeURIComponent(kw));
+  const list=d.data||[];const el=document.getElementById('logList');
+  if(!list.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无日志</div>';return}
+  const tm={install:'安装应用',proxy:'代理配置',realparam:'真机参数',adb_probe:'adb探测'};
+  let h='<table><thead><tr><th>时间</th><th>类型</th><th>目标</th><th>详情</th><th>状态</th></tr></thead><tbody>';
+  list.forEach(r=>{
+    const st=r.status==='success'?'<span class="badge badge-green">成功</span>':(r.status==='fail'?'<span class="badge badge-red">失败</span>':(r.status?('<span class="badge badge-gray">'+esc(r.status)+'</span>'):'-'));
+    h+='<tr><td style="font-size:11px;color:#8899aa">'+esc(r.created)+'</td><td>'+esc(tm[r.op_type]||r.op_type)+'</td><td>'+esc(r.target)+'</td><td class="text-truncate" title="'+esc(r.detail)+'" style="font-size:12px">'+esc(r.detail)+'</td><td>'+st+'</td></tr>';
+  });
+  h+='</tbody></table>';el.innerHTML=h;
+}
 function showCreateContainerModal(){
   const sel=document.getElementById('cc_device');sel.innerHTML=devices.map(d=>`<option value="${d.id}">${esc(d.name||d.ip)} (${esc(d.ip)})</option>`).join('');
   document.getElementById('cc_name').value='';document.getElementById('cc_index').value='0';
@@ -627,7 +735,13 @@ function populateDetailSelects(){
   document.getElementById('detailFpSelect').innerHTML='<option value="">-- 选择真机参数 --</option>'+
     realParams.filter(f=>f.status==='idle'||f.id===currentContainer.fp_id).map(f=>`<option value="${f.id}">${esc(f.name)} (${esc(f.model||f.brand||'')})</option>`).join('');
   document.getElementById('detailProxySelect').innerHTML='<option value="">-- 选择代理 --</option>'+
-    proxies.filter(p=>p.status==='idle'||p.id===currentContainer.proxy_id).map(p=>`<option value="${p.id}">${esc(p.name)} (${esc(p.ip)}:${esc(p.port)})</option>`).join('');
+    proxies.map(p=>{
+      const isCur=p.id===currentContainer.proxy_id;
+      const appliedOther=p.in_use && p.instance_id!==currentContainer.id;
+      const tag=isCur?('已应用·本容器'):appliedOther?('已应用·'+(p.instance_name||p.instance_id)):(p.status==='fault'?'故障':'空闲');
+      const disabled=(!isCur && (appliedOther || p.status==='fault'));
+      return `<option value="${p.id}" ${disabled?'disabled':''}>${esc(p.name)} (${esc(p.ip)}:${esc(p.port)}) [${tag}]</option>`;
+    }).join('');
   document.getElementById('detailAppSelect').innerHTML='<option value="">-- 选择应用 --</option>'+
     apps.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('');
 }
@@ -739,19 +853,44 @@ function batchApplyParams(){
 
 // ==================== 代理池 ====================
 async function loadProxies(){
-  const d=await api('/api/proxies');proxies=d.data||[];renderProxies();loadStats();return proxies;
+  const d=await api('/api/proxies');proxies=d.data||[];proxyPage=0;renderProxies();loadStats();return proxies;
 }
+function clearProxySearch(){
+  const e=document.getElementById('proxySearch'); if(e)e.value='';
+  proxyPage=0; renderProxies();
+}
+
 function renderProxies(){
   const el=document.getElementById('proxyList');
-  if(!proxies.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无代理，请添加</div>';return}
+  const sf=(document.getElementById('proxyStatusFilter')||{}).value||'';
+  const of=(document.getElementById('proxyOccFilter')||{}).value||'';
+  const kw=((document.getElementById('proxySearch')||{}).value||'').trim().toLowerCase();
+  // 状态：fault=故障 / 其余=正常；占用：free=否(空闲) / occ=是(已占用)；kw=关键词(名称/IP/端口/实例/备注)
+  const filtered=proxies.filter(p=>{
+    if(sf==='fault'&&p.status!=='fault')return false;
+    if(sf==='normal'&&p.status==='fault')return false;
+    if(of==='free'&&p.in_use)return false;
+    if(of==='occ'&&!p.in_use)return false;
+    if(kw){
+      const hay=(p.name+' '+p.ip+' '+p.port+' '+(p.instance_name||'')+' '+(p.instance_id||'')+' '+(p.notes||'')+' '+(p.region||'')+' '+(p.isp||'')).toLowerCase();
+      if(!hay.includes(kw))return false;
+    }
+    return true;
+  });
+  const pages=Math.max(1,Math.ceil(filtered.length/PROXY_PAGE_SIZE));
+  if(proxyPage>=pages)proxyPage=pages-1; if(proxyPage<0)proxyPage=0;
+  const start=proxyPage*PROXY_PAGE_SIZE;
+  const pageItems=filtered.slice(start,start+PROXY_PAGE_SIZE);
+  if(!filtered.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">'+(sf||of||kw?'当前筛选条件下暂无代理':'暂无代理，请添加')+'</div>';renderProxyPager(pages);return}
   let h='<table><thead><tr><th class="checkcol"><input type="checkbox" onchange="toggleAll(\'px-cb\',this.checked)"></th>'
     +'<th>名称</th><th>地址</th><th>用户名</th><th>类型</th><th>状态</th><th>占用实例</th><th>延迟</th><th>地区</th><th>ISP</th><th>last_login_time</th><th>last_offline_time</th><th>操作</th></tr></thead><tbody>';
-  proxies.forEach(p=>{
+  pageItems.forEach(p=>{
+    const st=p.status==='fault'?'<span class="badge badge-red">故障</span>':'<span class="badge badge-green">正常</span>';
     h+=`<tr id="px-row-${p.id}"><td class="checkcol"><input type="checkbox" class="px-cb" value="${p.id}"></td>
     <td>${esc(p.name||'-')}</td><td>${esc(p.ip)}:${esc(p.port)}</td><td>${esc(p.user||'-')}</td>
     <td><span class="badge badge-gray">${esc(p.type||'socks5')}</span></td>
-    <td>${p.in_use?badge('online'):badge('idle')}</td>
-    <td style="font-size:11px">${esc(p.instance_name||'-')}</td>
+    <td>${st}</td>
+    <td style="font-size:11px">${p.in_use?(esc(p.instance_name||p.instance_id)):'<span class="badge badge-gray">空闲</span>'}</td>
     <td class="px-latency" style="font-size:11px">${esc(p.latency||'-')}</td>
     <td class="px-region" style="font-size:11px">${esc(p.region||'-')}</td>
     <td class="px-isp" style="font-size:11px">${esc(p.isp||'-')}</td>
@@ -764,6 +903,24 @@ function renderProxies(){
     <button class="btn btn-sm btn-danger" onclick="deleteProxy('${p.id}')">删除</button></td></tr>`;
   });
   h+='</tbody></table>';el.innerHTML=h;
+  renderProxyPager(pages);
+}
+function renderProxyPager(pages){
+  const el=document.getElementById('proxyPager');if(!el)return;
+  if(pages<=1){el.innerHTML='';return;}
+  let h='<div class="wall-pager">';
+  h+='<button class="btn btn-sm btn-outline" '+(proxyPage<=0?'disabled':'')+' onclick="proxyPrev()">‹ 上一页</button>';
+  h+='<span class="hint" style="margin:0 10px">第 '+(proxyPage+1)+' / '+pages+' 页（共 '+proxies.length+' 条）</span>';
+  h+='<button class="btn btn-sm btn-outline" '+(proxyPage>=pages-1?'disabled':'')+' onclick="proxyNext()">下一页 ›</button>';
+  h+='</div>';el.innerHTML=h;
+}
+function proxyPrev(){if(proxyPage>0){proxyPage--;renderProxies()}}
+function proxyNext(){proxyPage++;renderProxies()}
+async function probeAllProxies(){
+  toast('已触发全部线路探测，稍候自动刷新...','info');
+  const d=await api('/api/proxies/probe_all','POST',{});
+  if(d.code===200){setTimeout(()=>loadProxies(),3000);}
+  else toast(d.msg||'触发失败','error');
 }
 function showProxyModal(){
   ['px_id','px_name','px_ip','px_port','px_user','px_pwd'].forEach(id=>document.getElementById(id).value='');
@@ -873,14 +1030,14 @@ function installApp(id){
 }
 
 // ==================== 群控窗 (投屏) ====================
-let wallItems=[];
+let wallItems=[];let wallPage=0;
 let wallAutoFilled=false;
 const wallCells=new Map();   // adbAddr -> {el,canvas,player}  复用单元格，避免重连
 class WallPlayer{
   constructor(canvas,adbAddr){this.canvas=canvas;this.ctx=canvas.getContext('2d');this.decoder=null;this.buffer=new Uint8Array(0);this.lastStart=-1;this.nalCache=[];this.ws=null;this.adbAddr=adbAddr;this.reconnectDelay=1000;this.reconnectTimer=null;this.destroyed=false;this.maxQueue=30;this.dropUntilKey=false;this._dropStart=0;this._resyncing=false;this._initDecoder()}
   _initDecoder(){if(typeof VideoDecoder==='undefined')return;this.ts=0;try{this.decoder=new VideoDecoder({output:(frame)=>{try{if(this.canvas.width!==frame.displayWidth)this.canvas.width=frame.displayWidth;if(this.canvas.height!==frame.displayHeight)this.canvas.height=frame.displayHeight;this.ctx.drawImage(frame,0,0)}catch(e){}frame.close()},error:(e)=>{console.error('decode error',e)}});this.decoder.configure({codec:'avc1.42C01E',optimizeForLatency:true})}catch(e){}}
   _drawStatus(text,color){try{const c=this.ctx;if(!this.canvas.width)this.canvas.width=300;if(!this.canvas.height)this.canvas.height=400;c.fillStyle='#000';c.fillRect(0,0,this.canvas.width,this.canvas.height);c.fillStyle=color||'#8899aa';c.font='12px sans-serif';c.textBaseline='middle';c.fillText(text,8,this.canvas.height/2);}catch(e){}}
-  connect(){if(this.destroyed)return;if(this.ws)this.disconnect();this._drawStatus('连接中…','#8899aa');const wproto=(window.location.protocol==='https:')?'wss://':'ws://';this.ws=new WebSocket(wproto+window.location.host+'/ws/screen?adb_addr='+encodeURIComponent(this.adbAddr));this.ws.binaryType='arraybuffer';this.ws.onopen=()=>{this.reconnectDelay=1000;if(!this.decoder){this._drawStatus('⚠ 浏览器不支持 WebCodecs（请使用 https + Chrome/Edge）','#ff6b6b')}else{this.ctx.clearRect(0,0,this.canvas.width,this.canvas.height)}};this.ws.onmessage=(e)=>{this.buffer=this._concat(this.buffer,new Uint8Array(e.data));this._parse()};this.ws.onclose=(ev)=>{this.ws=null;if(this.destroyed)return;if(ev&&ev.code===4002){this._drawStatus('设备不可达（adb 连接失败）','#ff6b6b');return}this._drawStatus('重连中…','#8899aa');this._scheduleReconnect()};this.ws.onerror=()=>{if(this.ws){try{this.ws.close()}catch{}this.ws=null}}}
+  connect(){if(this.destroyed)return;if(this.ws)this.disconnect();this._drawStatus('连接中…','#8899aa');const wproto=(window.location.protocol==='https:')?'wss://':'ws://';this.ws=new WebSocket(wproto+window.location.host+'/ws/screen?adb_addr='+encodeURIComponent(this.adbAddr));this.ws.binaryType='arraybuffer';this.ws.onopen=()=>{this.reconnectDelay=1000;if(!this.decoder){this._drawStatus('⚠ 浏览器不支持 WebCodecs（请使用 https + Chrome/Edge）','#ff6b6b')}else{this.ctx.clearRect(0,0,this.canvas.width,this.canvas.height)}};this.ws.onmessage=(e)=>{this.buffer=this._concat(this.buffer,new Uint8Array(e.data));this._parse()};this.ws.onclose=(ev)=>{this.ws=null;if(this.destroyed)return;const code=ev&&ev.code;if(code===4002){this._drawStatus('设备不可达（adb 连接失败）','#ff6b6b');return}if(code===4001){this._drawStatus('登录已过期，请重新登录','#ff6b6b');return}if(code===4000){this._drawStatus('参数缺失','#ff6b6b');return}this._drawStatus('重连中…','#8899aa');this._scheduleReconnect()};this.ws.onerror=()=>{if(this.ws){try{this.ws.close()}catch{}this.ws=null}}}
   _scheduleReconnect(){if(this.destroyed||this.reconnectTimer)return;this.reconnectTimer=setTimeout(()=>{this.reconnectTimer=null;if(!this.destroyed){this.reconnectDelay=Math.min(this.reconnectDelay*1.5,15000);this.connect()}},this.reconnectDelay)}
   _parse(){let pos=0;while(pos<this.buffer.length-3){let sl=0;if(this.buffer[pos]===0&&this.buffer[pos+1]===0&&this.buffer[pos+2]===1)sl=3;else if(pos<this.buffer.length-4&&this.buffer[pos]===0&&this.buffer[pos+1]===0&&this.buffer[pos+2]===0&&this.buffer[pos+3]===1)sl=4;if(sl>0){if(this.lastStart>=0){const nalData=this.buffer.slice(this.lastStart,pos);const nalType=nalData[sl]&0x1F;this.nalCache.push(nalData);if(nalType===5||nalType===1)this._flush()}this.lastStart=pos;pos+=sl}else{pos++}}if(this.lastStart>=0){this.buffer=this.buffer.slice(this.lastStart);this.lastStart=0}}
   _flush(){
@@ -917,17 +1074,18 @@ class WallPlayer{
   _concat(a,b){const c=new Uint8Array(a.length+b.length);c.set(a);c.set(b,a.length);return c}
 }
 function wallSendTouch(adbAddr,action,params){api('/api/screen/touch','POST',{adb_addr:adbAddr,action,...params}).catch(()=>{})}
-function resizeWall(){document.getElementById('wallGrid').className='wall-grid wall-'+document.getElementById('wallGridSize').value;renderWall()}
+function resizeWall(){wallPage=0;document.getElementById('wallGrid').className='wall-grid wall-'+document.getElementById('wallGridSize').value;renderWall()}
 function makeWallCell(item){
   let c=wallCells.get(item.adbAddr);
   const el=c?c.el:document.createElement('div');
   if(!c){
     el.className='wall-cell';
-    el.innerHTML='<div class="wc-label"><div class="wc-meta"><div class="wc-api"></div><div class="wc-name"></div></div><span class="wc-close">×</span></div><canvas></canvas><div class="wc-toolbar"><span class="wc-tb-btn" data-tb="back">返回</span><span class="wc-tb-btn" data-tb="home">主页</span><span class="wc-tb-btn" data-tb="recent">最近</span><span class="wc-tb-btn" data-tb="input">输入</span><span class="wc-tb-btn" data-tb="popup">弹窗</span></div>';
+    el.innerHTML='<div class="wc-label"><div class="wc-meta"><div class="wc-api"></div><div class="wc-name"></div><div class="wc-adb"></div></div><span class="wc-close">×</span></div><canvas></canvas><div class="wc-toolbar"><span class="wc-tb-btn" data-tb="back">返回</span><span class="wc-tb-btn" data-tb="home">主页</span><span class="wc-tb-btn" data-tb="recent">最近</span><span class="wc-tb-btn" data-tb="input">输入</span><span class="wc-tb-btn" data-tb="popup">弹窗</span></div>';
   }
   const apiEl=el.querySelector('.wc-api');
   if(item.apiUrl){apiEl.style.display='';apiEl.textContent=item.apiUrl;apiEl.title=item.apiUrl}else{apiEl.style.display='none'}
   const nmEl=el.querySelector('.wc-name');nmEl.textContent=item.name;nmEl.title=item.name;
+  const adbEl=el.querySelector('.wc-adb');if(adbEl){adbEl.textContent='adb: '+item.adbAddr;adbEl.title=item.adbAddr}
   el.dataset.adb=item.adbAddr;
   el.querySelector('.wc-close').dataset.removeAdb=item.adbAddr;
   el.querySelectorAll('.wc-tb-btn').forEach(b=>b.dataset.adb=item.adbAddr);
@@ -942,28 +1100,46 @@ function makeWallCell(item){
 function makeWallPlaceholder(){const el=document.createElement('div');el.className='wall-cell';el.innerHTML='<div class="wc-placeholder"><span>空位</span></div>';return el}
 function renderWall(){
   const grid=document.getElementById('wallGrid');
-  const size=parseInt(document.getElementById('wallGridSize').value)||3,max=size*size;
-  const alive=new Set();
-  for(let i=0;i<max&&i<wallItems.length;i++)alive.add(wallItems[i].adbAddr);
-  // 移除已不在墙上的单元格（销毁 player / 关闭 WS）
+  const size=parseInt(document.getElementById('wallGridSize').value)||3,pageSize=size*size;
+  const pages=Math.max(1,Math.ceil(wallItems.length/pageSize));
+  if(wallPage>=pages)wallPage=pages-1; if(wallPage<0)wallPage=0;
+  const start=wallPage*pageSize;
+  const pageItems=wallItems.slice(start,start+pageSize);
+  const alive=new Set(pageItems.map(i=>i.adbAddr));
+  // 移除已不在当前页的单元格（销毁 player / 关闭 WS）
   for(const pair of Array.from(wallCells)){
     const adb=pair[0],c=pair[1];
     if(!alive.has(adb)){c.player.destroy();if(c.el.parentNode)c.el.parentNode.removeChild(c.el);wallCells.delete(adb)}
   }
   // 复用已有单元格：移动 DOM 不会重置 canvas 画面与播放器，避免整块重建导致重连
   const frag=document.createDocumentFragment();
-  for(let i=0;i<max;i++){const item=wallItems[i];frag.appendChild(item?makeWallCell(item):makeWallPlaceholder())}
+  for(let i=0;i<pageSize;i++){const item=pageItems[i];frag.appendChild(item?makeWallCell(item):makeWallPlaceholder())}
   grid.replaceChildren(frag);
-  document.getElementById('wallCounter').textContent=wallItems.length+' 个容器';
+  document.getElementById('wallCounter').textContent=wallItems.length+' 个容器（第 '+(wallPage+1)+'/'+pages+' 页）';
+  renderWallPager(pages,pageSize);
 }
+function renderWallPager(pages,pageSize){
+  const el=document.getElementById('wallPager');
+  if(!el)return;
+  if(wallItems.length<=pageSize){el.innerHTML='';return;}
+  let h='<div class="wall-pager">';
+  h+='<button class="btn btn-sm btn-outline" '+(wallPage<=0?'disabled':'')+' onclick="wallPrev()">‹ 上一页</button>';
+  h+='<span class="hint" style="margin:0 10px">第 '+(wallPage+1)+' / '+pages+' 页</span>';
+  h+='<button class="btn btn-sm btn-outline" '+(wallPage>=pages-1?'disabled':'')+' onclick="wallNext()">下一页 ›</button>';
+  h+='</div>';
+  el.innerHTML=h;
+}
+function wallPrev(){if(wallPage>0){wallPage--;renderWall()}}
+function wallNext(){wallPage++;renderWall()}
 function destroyWallPlayers(){
   // 离开群控窗时调用：关闭所有 WS 与解码器，停止后台占用（隐藏页面仍在解码会拖慢整体）
   for(const pair of Array.from(wallCells)){pair[1].player.destroy();wallCells.delete(pair[0])}
   const grid=document.getElementById('wallGrid');if(grid)grid.innerHTML='';
 }
-function clearWall(){wallItems=[];destroyWallPlayers();renderWall()}
+function clearWall(){wallItems=[];wallPage=0;destroyWallPlayers();renderWall()}
 // 首次进入群控窗：若有已启动(running)的容器，默认放入 2 个
 function autoFillWall(){
+  wallPage=0;
   if(wallItems.length){wallAutoFilled=true;return}
   if(wallAutoFilled)return;
   const size=parseInt(document.getElementById('wallGridSize').value)||3,max=size*size;
@@ -1035,6 +1211,7 @@ function renderCurrentUser(){
 }
 async function doLogout(){
   if(!confirm('确定退出登录?'))return;
+  destroyWallPlayers();
   await api('/api/auth/logout','POST',{});
   location.href='/login';
 }
@@ -1108,7 +1285,15 @@ async function deleteUser(id){
 }
 
 // ==================== 初始化 ====================
-loadCurrentUser().then(renderCurrentUser).then(()=>loadDevices()).then(()=>loadRealParams()).then(()=>loadProxies()).then(()=>loadApps()).then(()=>loadContainers());
+(function(){
+  const lp=localStorage.getItem('myt_last_page');
+  const lpEl=lp?document.querySelector('.nav-tab[onclick*="'+lp+'"]'):null;
+  const target=lpEl?lp:'pageContainers';
+  const targetEl=lpEl||document.querySelector('.nav-tab[onclick*="pageContainers"]');
+  loadCurrentUser().then(renderCurrentUser)
+    .then(()=>loadDevices()).then(()=>loadRealParams()).then(()=>loadProxies()).then(()=>loadApps()).then(()=>loadContainers())
+    .then(()=>switchPage(target, targetEl));
+})();
 </script>
 </body>
 </html>

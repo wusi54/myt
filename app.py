@@ -13,12 +13,15 @@ import re
 import io
 import json
 import time
+import random
 import uuid
 import socket
 import hashlib
 import sqlite3
 import threading
 import subprocess
+
+ADB = os.environ.get('ADB_PATH') or 'adb'
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 
@@ -302,6 +305,9 @@ def api_device_update(dev_id):
 
 @app.route('/api/devices/<int:dev_id>', methods=['DELETE'])
 def api_device_delete(dev_id):
+    for c in db.list_containers():
+        if c['device_id'] == dev_id:
+            _release_container_proxy(c)
     db.delete_device(dev_id)
     db.execute('DELETE FROM containers WHERE device_id=?', (dev_id,))
     return ok(None, '已删除')
@@ -321,6 +327,8 @@ def api_device_probe(dev_id):
         hv = cli.host_ver(dev['ip'])
         host_ver = hv.get('data') or hv.get('message') or ''
     db.update_device(dev_id, status=status, container_count=count, host_ver=str(host_ver))
+    db.add_operation_log({'op_type': 'adb_probe', 'target': dev['ip'], 'status': status,
+                          'detail': '容器数 ' + str(count)})
     return ok(db.get_device(dev_id))
 
 
@@ -444,6 +452,60 @@ def api_device_import():
     return ok({'added': added}, f'已导入 {added} 台设备')
 
 
+@app.route('/api/containers/probe_screen', methods=['POST'])
+def api_containers_probe_screen():
+    """逐个容器探测投屏能力：用 adb 实际连接判断运行中容器是否可投屏（写回 screen_status）。
+
+    注意：设备端若配置了全局出向代理(domain_mode=2)，会劫持 adb 回传/控制流，
+    导致 adb 显示 offline —— 此时投屏确实不可用（需排除 adb 流量或改用 WebRTC 通道）。
+    """
+    d = request.json or {}
+    dev_id = d.get('device_id')
+    cons = db.list_containers()
+    if dev_id:
+        cons = [c for c in cons if str(c.get('device_id')) == str(dev_id)]
+    targets = [c for c in cons if c.get('adb_addr') and str(c.get('state', '')).lower() == 'running']
+    results = {}
+
+    # 先并行对各个 adb_addr 发起 connect（已连接的会返回 already connected；离线/配置代理设备保持 offline），
+    # 再统一用 devices 取状态。并行 + 短超时避免逐个离线设备串行等待(可达数十秒)。
+    addrs = sorted({c['adb_addr'] for c in targets})
+    if addrs:
+        with ThreadPoolExecutor(max_workers=min(16, len(addrs))) as ex:
+            futs = [ex.submit(subprocess.run, [ADB, 'connect', a], capture_output=True, timeout=5) for a in addrs]
+            for f in futs:
+                try:
+                    f.result(timeout=5)
+                except Exception:
+                    pass
+    states = {}
+    try:
+        out = subprocess.run([ADB, 'devices'], capture_output=True, timeout=20).stdout.decode(errors='replace')
+        for line in out.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) >= 2:
+                states[parts[0]] = parts[1]
+    except Exception:
+        pass
+
+    for c in targets:
+        st = states.get(c['adb_addr'])
+        screen = 'ok' if st == 'device' else ('fail' if st in ('offline', 'unauthorized', 'unknown') else '')
+        try:
+            db.update_container(c['id'], screen_status=screen)
+        except Exception:
+            pass
+        results[c['id']] = screen
+    return ok(results, f'已检测 {len(results)} 个运行中的容器')
+
+
+@app.route('/api/logs', methods=['GET'])
+def api_logs():
+    t = request.args.get('type') or ''
+    kw = request.args.get('kw') or ''
+    return ok(db.list_operation_logs(t or None, kw or None))
+
+
 # ==================== 容器管理 ====================
 def _sync_one_device(dev):
     cli = client_for(dev)
@@ -480,6 +542,7 @@ def _sync_one_device(dev):
     # 清理该设备下已消失的容器
     for row in db.list_containers():
         if row['device_id'] == dev['id'] and row['id'] not in seen:
+            _release_container_proxy(row)
             db.delete_container(row['id'])
     return len(data)
 
@@ -580,6 +643,7 @@ def _container_action(cid, action):
     if action == 'remove':
         res = cli.remove(dev['ip'], c['name'])
         if res.get('code') == 200:
+            _release_container_proxy(c)
             db.delete_container(cid)
         return jsonify(res)
     fn = getattr(cli, action)
@@ -652,6 +716,7 @@ def api_container_release_fp(cid):
         _release_fp(c['fp_id'])
         db.update_container(cid, fp_id='')
         db.delete_container_config(c['device_ip'], c['name'], 'real_param')
+        db.add_operation_log({'op_type': 'realparam', 'target': c['name'], 'detail': '释放真机参数', 'status': 'success'})
     return ok(None, '已释放真机参数')
 
 
@@ -675,8 +740,43 @@ def _release_proxy(proxy_id, stop=True):
                 client_for(dev).s5_stop(dev['ip'], c['name'])
             except Exception:
                 pass
-    db.update_proxy(proxy_id, status='idle', in_use=0, instance_id='',
-                    instance_name='', last_offline_time=db.now())
+    # 故障线路释放实例后保留故障状态（不改变探测结论）；健康线路释放后恢复为空闲
+    keep_fault = (p['status'] == 'fault')
+    fields = {'status': 'fault' if keep_fault else 'idle', 'in_use': 0,
+              'instance_id': '', 'instance_name': ''}
+    if not keep_fault:
+        fields['last_offline_time'] = db.now()
+    db.update_proxy(proxy_id, **fields)
+
+
+def _release_container_proxy(c):
+    """容器被删除/移除前，释放其占用的代理与真机参数，保持代理池/参数池占用一致。"""
+    pid = c.get('proxy_id')
+    if pid:
+        _release_proxy(pid, stop=True)
+    fid = c.get('fp_id')
+    if fid:
+        try:
+            db.update_real_param(fid, status='idle', in_use=0, instance_id='')
+        except Exception:
+            pass
+
+
+def reconcile_orphan_occupancy():
+    """清理代理池/参数池中 instance_id 指向已不存在容器的孤儿占用（历史遗留数据）。"""
+    live_ids = {c['id'] for c in db.list_containers()}
+    fixed = 0
+    for p in db.list_proxies():
+        if p['in_use'] and p.get('instance_id') and p['instance_id'] not in live_ids:
+            keep_fault = (p['status'] == 'fault')
+            db.update_proxy(p['id'], status=('fault' if keep_fault else 'idle'),
+                            in_use=0, instance_id='', instance_name='')
+            fixed += 1
+    for f in db.list_real_params():
+        if f['in_use'] and f.get('instance_id') and f['instance_id'] not in live_ids:
+            db.update_real_param(f['id'], status='idle', in_use=0, instance_id='')
+            fixed += 1
+    return fixed
 
 
 @app.route('/api/containers/<cid>/release_proxy', methods=['POST'])
@@ -688,6 +788,7 @@ def api_container_release_proxy(cid):
         _release_proxy(c['proxy_id'], stop=True)
         db.update_container(cid, proxy_id='', s5_addr='', s5_status=0)
         db.delete_container_config(c['device_ip'], c['name'], 'proxy')
+        db.add_operation_log({'op_type': 'proxy', 'target': c['name'], 'detail': '释放代理', 'status': 'success'})
     return ok(None, '已释放代理')
 
 
@@ -710,6 +811,8 @@ def api_container_install_apk(cid):
                               'status': 'installing'})
     status, msg = cli.install_apk(dev['ip'], c['name'], apk_path, a['filename'])
     db.execute('UPDATE install_logs SET status=?,message=? WHERE id=?', (status, msg, log['id']))
+    db.add_operation_log({'op_type': 'install', 'target': c['name'],
+                          'detail': '安装 ' + a['name'] + ' (' + c['device_ip'] + ')', 'status': status})
     return ok({'status': status, 'message': msg}, '安装完成' if status == 'success' else '安装失败')
 
 
@@ -811,6 +914,8 @@ def api_real_param_upload():
                                   'path': path, 'size': len(raw)}], ensure_ascii=False),
         })
         added.append({'id': rec['id'], 'name': rec['name'], 'md5': md5})
+    db.add_operation_log({'op_type': 'realparam', 'target': '参数库',
+                          'detail': f'导入 {len(added)} 条，跳过 {len(skipped)} 条', 'status': 'success'})
     return ok({'added': added, 'skipped': skipped, 'added_count': len(added),
                'skipped_count': len(skipped)},
               f'导入 {len(added)} 条，跳过 {len(skipped)} 条')
@@ -920,6 +1025,12 @@ def _do_apply_fp(fp_id, cid):
                              instance_id=cid, instance_name=c['name'], last_login_time=ts)
         db.update_container(cid, fp_id=fp_id)
         db.set_container_config(c['device_ip'], c['name'], 'real_param', fp_id, fp['name'])
+        db.add_operation_log({'op_type': 'realparam', 'target': c['name'],
+                              'detail': '应用真机参数 ' + (fp['name'] or fp_id), 'status': 'success'})
+    else:
+        db.add_operation_log({'op_type': 'realparam', 'target': c['name'],
+                              'detail': '应用真机参数 ' + (fp['name'] or fp_id) + ' 失败: ' + str(res.get('message', '')),
+                              'status': 'fail'})
     return jsonify(res)
 
 
@@ -1069,6 +1180,8 @@ def _do_apply_proxy(proxy_id, cid):
     p = db.get_proxy(proxy_id)
     if not p:
         return err('代理不存在', 404)
+    if p['status'] == 'fault':
+        return err('该代理线路故障，不可应用')
     if p['in_use'] and p['instance_id'] != cid:
         return err(f"代理已被容器 {p['instance_name'] or p['instance_id']} 占用")
     dev = db.get_device(c['device_id'])
@@ -1082,6 +1195,13 @@ def _do_apply_proxy(proxy_id, cid):
                         instance_id=cid, instance_name=c['name'], last_login_time=ts)
         db.update_container(cid, proxy_id=proxy_id, s5_addr=f"socks5://{p['ip']}:{p['port']}", s5_status=1)
         db.set_container_config(c['device_ip'], c['name'], 'proxy', proxy_id, p['name'])
+        db.add_operation_log({'op_type': 'proxy', 'target': c['name'],
+                              'detail': '应用代理 ' + (p['name'] or proxy_id), 'status': 'success'})
+    else:
+        db.add_operation_log({'op_type': 'proxy', 'target': c['name'],
+                              'detail': '应用代理 ' + (p['name'] or proxy_id) + ' 失败: ' + str(res.get('message', '')),
+                              'status': 'fail'})
+        db.update_proxy(proxy_id, status='fault', last_offline_time=db.now())
     return jsonify(res)
 
 
@@ -1110,59 +1230,95 @@ def api_proxy_release(pid):
     return ok(None, '已释放')
 
 
+def _test_proxy_line(ip, port, user='', pwd=''):
+    """用 SOCKS5 出口实测：经该线路访问 cip.cc，成功即线路可用，并解析出口 IP/地区/运营商。
+    等价于 `curl -x socks5h://user:pass@ip:port cip.cc`。返回 dict。"""
+    import requests
+    from urllib.parse import quote
+    auth = f"{quote(user)}:{quote(pwd)}@" if user else ""
+    proxy = f"socks5h://{auth}{ip}:{port}"
+    px = {'http': proxy, 'https': proxy}
+
+    def _once():
+        t0 = time.time()
+        r = requests.get('http://cip.cc', proxies=px, timeout=15)
+        egress = region = isp = ''
+        for line in r.text.splitlines():
+            s = line.strip()
+            if s.startswith('IP'):
+                egress = s.split(':', 1)[1].strip()
+            elif s.startswith('地址'):
+                region = s.split(':', 1)[1].strip()
+            elif s.startswith('运营商'):
+                isp = s.split(':', 1)[1].strip()
+        if not egress:
+            raise Exception('cip.cc 未返回出口 IP')
+        return {'ok': True, 'egress': egress, 'region': region, 'isp': isp,
+                'latency': round((time.time() - t0) * 1000), 'errmsg': None}
+
+    last = None
+    for _ in range(3):  # 失败重试(间隔 4s)，规避瞬时限流导致误判
+        try:
+            return _once()
+        except Exception as e:
+            last = e
+            time.sleep(4)
+    return {'ok': False, 'egress': '', 'region': '', 'isp': '', 'latency': None, 'errmsg': str(last)}
+
+
 @app.route('/api/proxies/<pid>/test', methods=['POST'])
 def api_proxy_test(pid):
-    import struct
     p = db.get_proxy(pid)
     if not p:
         return err('代理不存在', 404)
-    host, port = p['ip'], int(p['port'])
-    user, pwd = p.get('user', ''), p.get('pwd', '')
-    t0 = time.time()
-    errmsg = None
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(10)
-        sock.connect((host, port))
-        if user and pwd:
-            sock.sendall(struct.pack('!BB', 5, 2) + struct.pack('BB', 0, 2))
-        else:
-            sock.sendall(struct.pack('!BB', 5, 1) + struct.pack('B', 0))
-        ver, nauth = struct.unpack('!BB', sock.recv(2))
-        if nauth == 2 and user and pwd:
-            ub, pb = user.encode(), pwd.encode()
-            sock.sendall(struct.pack('!BB', 1, len(ub)) + ub + struct.pack('B', len(pb)) + pb)
-            sock.recv(2)
-        elif nauth != 0:
-            sock.close()
-            raise Exception('auth method rejected')
-        dst = b'www.baidu.com'
-        sock.sendall(struct.pack('!BBBB', 5, 1, 0, 3) + struct.pack('B', len(dst)) + dst + struct.pack('!H', 80))
-        resp = sock.recv(10)
-        if len(resp) < 2 or resp[1] != 0:
-            sock.close()
-            raise Exception('connect failed')
-        sock.sendall(b'GET / HTTP/1.0\r\nHost: www.baidu.com\r\n\r\n')
-        sock.recv(1024)
-        sock.close()
-    except Exception as e:
-        errmsg = str(e)
-    latency = round((time.time() - t0) * 1000) if not errmsg else None
-    region = isp = ''
-    try:
-        r = requests_get(f'http://ip-api.com/json/{host}?lang=zh-CN')
-        if r and r.get('status') == 'success':
-            region = f"{r.get('country', '')} {r.get('regionName', '')} {r.get('city', '')}".strip()
-            isp = r.get('isp', '')
-    except Exception:
-        pass
-    fields = {'region': region, 'isp': isp}
-    if latency is not None:
-        fields['latency'] = f'{latency}ms'
+    res = _test_proxy_line(p['ip'], p['port'], p.get('user', ''), p.get('pwd', ''))
+    fields = {'region': res['region'], 'isp': res['isp']}
+    if res['ok']:
+        fields['latency'] = f"{res['latency']}ms"
+        fields['status'] = 'online' if p['in_use'] else 'idle'
         db.update_proxy(pid, **fields)
-        return ok({'latency': f'{latency}ms', 'region': region, 'isp': isp})
-    db.update_proxy(pid, latency='', region=region, isp=isp)
-    return err(f'测试失败: {errmsg}', 500, {'region': region, 'isp': isp})
+        return ok({'latency': fields['latency'], 'region': res['region'], 'isp': res['isp'],
+                   'egress': res['egress'], 'status': fields['status']})
+    fields['latency'] = ''
+    fields['status'] = 'fault'
+    fields['last_offline_time'] = db.now()
+    db.update_proxy(pid, **fields)
+    return err(f"测试失败: {res['errmsg']}", 500, {'region': res['region'], 'isp': res['isp'], 'status': 'fault'})
+
+
+def _probe_all_proxies():
+    """后台批量探测所有代理线路：经 SOCKS5 出口实测 cip.cc。
+    成功→idle/online(记录出口 IP/地区/运营商/延迟)；失败→fault(真故障，可用于规避应用)。
+    并发限制为 5 以免短时间突发触发出口限流导致误判。"""
+    items = db.list_proxies()
+    if not items:
+        return
+
+    def _one(p):
+        res = _test_proxy_line(p['ip'], p['port'], p.get('user', ''), p.get('pwd', ''))
+        fields = {'region': res['region'], 'isp': res['isp']}
+        if res['ok']:
+            fields['latency'] = f"{res['latency']}ms"
+            fields['status'] = 'online' if p['in_use'] else 'idle'
+        else:
+            fields['latency'] = ''
+            fields['status'] = 'fault'
+            fields['last_offline_time'] = db.now()
+        try:
+            db.update_proxy(p['id'], **fields)
+        except Exception:
+            pass
+
+    # 串行 + 间隔，避免短时间突发触发出口限流把健康线路误判为故障
+    for p in items:
+        _one(p)
+        time.sleep(1.5)
+
+
+@app.route('/api/proxies/probe_all', methods=['POST'])
+def api_proxies_probe_all():
+    threading.Thread(target=_probe_all_proxies, daemon=True).start()
+    return ok(None, '已触发全部探测')
 
 
 def requests_get(url, timeout=5):
@@ -1244,6 +1400,8 @@ def api_app_install(aid):
         status, msg = client_for(dev).install_apk(dev['ip'], c['name'],
                                                   os.path.join(APP_UPLOAD_DIR, a['filename']), a['filename'])
         db.execute('UPDATE install_logs SET status=?,message=? WHERE id=?', (status, msg, log['id']))
+        db.add_operation_log({'op_type': 'install', 'target': c['name'],
+                              'detail': '安装 ' + a['name'] + ' (' + c['device_ip'] + ')', 'status': status})
         results.append({'container': c['name'], 'status': status, 'message': msg})
     return ok(results, '安装完成')
 
@@ -1532,6 +1690,54 @@ try:
         print(f'[migrate] 已修正 {_n} 个容器的 adb_addr')
 except Exception as _e:
     print(f'[migrate] adb_addr 修正跳过: {_e}')
+
+# 启动自愈：清理历史遗留的孤儿占用（容器已删除但代理/参数仍标记占用）
+try:
+    _m = reconcile_orphan_occupancy()
+    if _m:
+        print(f'[migrate] 已清理 {_m} 条孤儿占用(容器已删除)')
+except Exception as _e:
+    print(f'[migrate] 孤儿占用清理跳过: {_e}')
+
+
+# ==================== 代理线路定时探测（3~5 分钟随机）====================
+_PROBE_LOCK = '/tmp/myt_proxy_probe.lock'
+
+
+def _proxy_probe_loop():
+    while True:
+        try:
+            _probe_all_proxies()
+        except Exception:
+            pass
+        try:
+            os.utime(_PROBE_LOCK, None)
+        except Exception:
+            pass
+        time.sleep(random.randint(180, 300))
+
+
+def _start_proxy_probe():
+    # 多 worker / 重启时仅允许一个探测循环存活；lock 超过 10 分钟未刷新视为失效并接管
+    if os.path.exists(_PROBE_LOCK):
+        try:
+            if time.time() - os.path.getmtime(_PROBE_LOCK) < 600:
+                return
+        except Exception:
+            pass
+    try:
+        with open(_PROBE_LOCK, 'w') as f:
+            f.write(str(os.getpid()))
+    except Exception:
+        return
+    threading.Thread(target=_proxy_probe_loop, daemon=True).start()
+
+
+if os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
+    try:
+        _start_proxy_probe()
+    except Exception:
+        pass
 
 
 if __name__ == '__main__':
