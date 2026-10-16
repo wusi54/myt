@@ -1,4 +1,4 @@
-# 云phone设备管理平台 V2.2.0
+# 云phone设备管理平台 V2.2.1
 # 单镜像：同时用于 web(Flask/waitress) 与 relay(投屏WebSocket) 两个服务
 FROM python:3.11-slim
 

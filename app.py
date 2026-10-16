@@ -290,7 +290,7 @@ def api_device_update(dev_id):
         return err('设备不存在', 404)
     d = request.json or {}
     fields = {}
-    for k in ('ip', 'port', 'url', 'name', 'remark', 'status', 'screen_net'):
+    for k in ('ip', 'port', 'url', 'name', 'remark', 'status', 'screen_net', 'enabled'):
         if k in d:
             fields[k] = (d[k] or '').strip() if isinstance(d[k], str) else d[k]
     if ('ip' in fields) or ('port' in fields):
@@ -302,6 +302,16 @@ def api_device_update(dev_id):
             return err('已存在相同 IP:端口 的设备')
     db.update_device(dev_id, **fields)
     return ok(db.get_device(dev_id), '已更新')
+
+
+@app.route('/api/devices/<int:dev_id>/toggle', methods=['POST'])
+def api_device_toggle(dev_id):
+    dev = db.get_device(dev_id)
+    if not dev:
+        return err('设备不存在', 404)
+    new = 0 if dev['enabled'] else 1
+    db.update_device(dev_id, enabled=new)
+    return ok(db.get_device(dev_id), '已启用' if new else '已禁用')
 
 
 @app.route('/api/devices/<int:dev_id>', methods=['DELETE'])

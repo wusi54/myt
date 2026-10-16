@@ -53,6 +53,7 @@ SCHEMA = [
         systeminfo TEXT DEFAULT '',
         remark TEXT DEFAULT '',
         screen_net TEXT DEFAULT 'wan',
+        enabled INTEGER DEFAULT 1,
         created TEXT DEFAULT '',
         updated TEXT DEFAULT '',
         UNIQUE(ip, port)
@@ -178,6 +179,8 @@ def _ensure_columns(conn):
         return {r[1] for r in conn.execute(f'PRAGMA table_info({table})').fetchall()}
     if 'screen_net' not in cols('devices'):
         conn.execute("ALTER TABLE devices ADD COLUMN screen_net TEXT DEFAULT 'wan'")
+    if 'enabled' not in cols('devices'):
+        conn.execute("ALTER TABLE devices ADD COLUMN enabled INTEGER DEFAULT 1")
     if 'screen_status' not in cols('containers'):
         conn.execute("ALTER TABLE containers ADD COLUMN screen_status TEXT DEFAULT ''")
 

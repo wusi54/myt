@@ -502,7 +502,7 @@ function switchPage(pageId,el){
   if(pageId==='pageRealParams')loadRealParams();
   if(pageId==='pageProxies')loadProxies();
   if(pageId==='pageApps')loadApps();
-  if(pageId==='pageScreenWall'){loadContainers().then(()=>{autoFillWall();renderWall();wallSetPaused(false);});}
+  if(pageId==='pageScreenWall'){Promise.all([loadContainers(),loadDevices()]).then(()=>{autoFillWall();renderWall();wallSetPaused(false);});}
   if(pageId==='pageLogs')loadLogs();
   if(pageId==='pageUsers')loadUsers();
 }
@@ -510,7 +510,7 @@ function refreshCurrentPage(){
   const loaders={
     pageDevices:loadDevices, pageContainers:loadContainers, pageRealParams:loadRealParams,
     pageProxies:loadProxies, pageApps:loadApps, pageLogs:loadLogs, pageUsers:loadUsers,
-    pageScreenWall:()=>{loadContainers().then(()=>{autoFillWall();renderWall();})}
+    pageScreenWall:()=>{Promise.all([loadContainers(),loadDevices()]).then(()=>{autoFillWall();renderWall();})}
   };
   const f=loaders[currentPage]; if(f)f();
   toast('已刷新当前页','info');
@@ -533,12 +533,14 @@ async function loadDevices(){
   document.getElementById('containerDeviceFilter').innerHTML=opts;
   let h='<table><thead><tr><th>#</th><th>名称</th><th>IP</th><th>端口</th><th>API地址</th><th>状态</th><th>容器数</th><th>主机版本</th><th>操作</th></tr></thead><tbody>';
   devices.forEach(dev=>{
-    h+=`<tr><td>${dev.id}</td><td>${esc(dev.name||'-')}</td><td>${esc(dev.ip)}</td><td>${esc(dev.port)}</td>
+    const dis=!dev.enabled;
+    h+=`<tr${dis?' style="opacity:.5"':''}><td>${dev.id}</td><td>${esc(dev.name||'-')}${dis?' <span class="badge badge-danger">已禁用</span>':''}</td><td>${esc(dev.ip)}</td><td>${esc(dev.port)}</td>
     <td class="text-truncate" title="${esc(dev.url)}">${esc(dev.url||'-')}</td><td>${badge(dev.status)}</td>
     <td><span class="badge badge-gray">${dev.container_count||0}</span></td>
     <td style="font-size:11px;color:#8899aa" class="text-truncate" title="${esc(dev.host_ver)}">${esc(dev.host_ver||'-')}</td>
     <td><button class="btn btn-sm btn-outline" onclick="probeDevice(${dev.id})">检测</button>
     <button class="btn btn-sm btn-outline" onclick="editDevice(${dev.id})">编辑</button>
+    <button class="btn btn-sm ${dev.enabled?'btn-outline':'btn-primary'}" onclick="toggleDevice(${dev.id})">${dev.enabled?'禁用':'启用'}</button>
     <button class="btn btn-sm btn-danger" onclick="deleteDevice(${dev.id})">删除</button></td></tr>`;
   });
   h+='</tbody></table>';el.innerHTML=h;loadStats();
@@ -567,6 +569,8 @@ async function saveDevice(){
   toast(d.msg,d.code===200?'success':'error');if(d.code===200){closeModal('deviceModal');loadDevices()}
 }
 async function deleteDevice(id){if(!confirm('确定删除该设备及其容器缓存?'))return;const d=await api('/api/devices/'+id,'DELETE');toast(d.msg,d.code===200?'success':'error');loadDevices()}
+async function toggleDevice(id){const d=await api('/api/devices/'+id+'/toggle','POST',{});toast(d.msg,d.code===200?'success':'error');await loadDevices();wallItems=wallItems.filter(w=>!deviceDisabled((w.adbAddr||'').split(':')[0]));if(currentPage==='pageScreenWall')refreshCurrentPage()}
+function deviceDisabled(ip){const d=devices.find(x=>x.ip===ip);return d?!d.enabled:false}
 async function probeDevice(id){toast('检测中...','info');const d=await api('/api/devices/'+id+'/probe','POST',{});toast(d.code===200?('状态: '+d.data.status):(d.msg||'失败'),d.code===200?'success':'error');loadDevices()}
 async function probeAll(){toast('正在检测全部设备...','info');await api('/api/devices/probe_all','POST',{});toast('检测完成','success');loadDevices()}
 
@@ -1190,7 +1194,7 @@ function autoFillWall(){
   if(wallItems.length){wallAutoFilled=true;return}
   if(wallAutoFilled)return;
   const max=wallCols()*wallRows();
-  const running=allContainers.filter(c=>String(c.state||'').toLowerCase()==='running'&&c.adb_addr);
+  const running=allContainers.filter(c=>String(c.state||'').toLowerCase()==='running'&&c.adb_addr&&!deviceDisabled(c.device_ip));
   let added=0;
   for(const c of running){
     if(wallItems.length>=max||added>=2)break;
@@ -1217,8 +1221,8 @@ function renderWallContainerList(){
       +'<input type="checkbox" class="wall-device-cb" data-host="'+esc(host)+'" onchange="toggleWallDeviceAll(this)">'
       +'<span class="wall-device-name">'+esc(host)+'</span><span class="hint">'+items.length+' 个实例</span></div>'
       +'<div class="wall-device-body"'+(open?'':' style="display:none"')+'>';
-    items.forEach(c=>{const adb=c.adb_addr;const inWall=wallItems.some(w=>w.adbAddr===adb);const checked=(inWall||wallPending.has(adb))?'checked':'';const dis=inWall?'disabled':'';
-      html+='<label class="pick-item"><input type="checkbox" class="wall-cb" value="'+esc(c.name)+'" data-adb="'+esc(adb)+'" data-host="'+esc(host)+'" data-url="'+esc(c.device_url||'')+'" '+checked+' '+dis+' onchange="onWallInstanceChange(this)"><span>'+esc(c.name)+'</span><span class="hint" style="margin-left:auto">'+esc(c.device_url||'')+' · '+esc(adb)+'</span></label>'});
+    items.forEach(c=>{const adb=c.adb_addr;const inWall=wallItems.some(w=>w.adbAddr===adb);const devDis=deviceDisabled(c.device_ip);const checked=(inWall||wallPending.has(adb))?'checked':'';const dis=(inWall||devDis)?'disabled':'';const tag=devDis?' <span class="badge badge-danger">设备已禁用</span>':'';
+      html+='<label class="pick-item" style="'+(devDis?'opacity:.5':'')+'"><input type="checkbox" class="wall-cb" value="'+esc(c.name)+'" data-adb="'+esc(adb)+'" data-host="'+esc(host)+'" data-url="'+esc(c.device_url||'')+'" '+checked+' '+dis+' onchange="onWallInstanceChange(this)"><span>'+esc(c.name)+tag+'</span><span class="hint" style="margin-left:auto">'+esc(c.device_url||'')+' · '+esc(adb)+'</span></label>'});
     html+='</div></div>';
   }
   el.innerHTML=html;

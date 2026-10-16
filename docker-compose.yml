@@ -60,6 +60,7 @@ services:
       - ./app.py:/app/app.py:ro            # 后端逻辑热更新（改后 restart web 生效，避免重新构建镜像）
       - ./myt_client.py:/app/myt_client.py:ro
       - ./auth.py:/app/auth.py:ro
+      - ./db.py:/app/db.py:ro              # 数据访问层热更新（改表结构/迁移后 restart web 生效）
       - ./templates:/app/templates:ro      # 前端页面（含 screen.html 的 wss 改动）热更新
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9111/healthz',timeout=3).status==200 else 1)"]

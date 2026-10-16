@@ -22,7 +22,7 @@ import random
 import http.server
 import auth
 
-__version__ = '2.2.0-scrcpy'
+__version__ = '2.2.1-scrcpy'
 
 WS_PORT = int(os.environ.get('RELAY_PORT', '9000'))
 ADB = os.environ.get('ADB_PATH') or (
@@ -887,7 +887,8 @@ async def main():
     from websockets.asyncio.server import serve
     print(f'[relay][multithread {__version__}] Starting on ws://0.0.0.0:{WS_PORT}', flush=True)
     threading.Thread(target=_start_control_http, daemon=True).start()
-    async with serve(handler, '0.0.0.0', WS_PORT, ping_interval=30, ping_timeout=120):
+    async with serve(handler, '0.0.0.0', WS_PORT, ping_interval=30, ping_timeout=120,
+                     max_size=4 * 1024 * 1024, write_limit=4 * 1024 * 1024):
         await asyncio.Future()
 
 
