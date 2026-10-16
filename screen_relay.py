@@ -22,7 +22,7 @@ import random
 import http.server
 import auth
 
-__version__ = '2.1.0-multithread'
+__version__ = '2.2.0-scrcpy'
 
 WS_PORT = int(os.environ.get('RELAY_PORT', '9000'))
 ADB = os.environ.get('ADB_PATH') or (
