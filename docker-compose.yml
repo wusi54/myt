@@ -57,6 +57,9 @@ services:
       - ./data:/app/data:z                 # 数据库持久化（含 WAL）；:z 兼容宿主机 SELinux(CentOS)
       - ./uploads:/app/uploads:z           # 真机参数文件
       - ./app_uploads:/app/app_uploads:z   # APK 文件
+      - ./app.py:/app/app.py:ro            # 后端逻辑热更新（改后 restart web 生效，避免重新构建镜像）
+      - ./myt_client.py:/app/myt_client.py:ro
+      - ./auth.py:/app/auth.py:ro
       - ./templates:/app/templates:ro      # 前端页面（含 screen.html 的 wss 改动）热更新
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9111/healthz',timeout=3).status==200 else 1)"]
@@ -72,14 +75,16 @@ services:
     command: ["python", "screen_relay.py"]
     expose:
       - "9000"
+      - "9001"
     environment:
       RELAY_PORT: "9000"
       SECRET_KEY: change-me-in-production   # 必须与 web 服务一致，relay 据此校验登录 JWT
       ADB_PATH: /usr/bin/adb
-      SCREEN_MAX: "480"          # 投屏输出最长边（按设备分辨率等比缩放，越小越流畅）
-      SCREEN_BITRATE: "150000"   # 投屏码率 bps
+      SCREEN_MAX: "540"          # 投屏输出最长边（按设备分辨率等比缩放，越小越流畅/越省带宽）；720 会触发硬件解码偏蓝，取 480 稳妥
+      SCREEN_BITRATE: "100000"   # 投屏码率 bps（下调以降低带宽与解码负载）
     volumes:
       - ./screen_relay.py:/app/screen_relay.py:ro   # 投屏中继逻辑热更新（改后 restart relay 生效）
+      - ./scrcpy:/app/scrcpy:ro                     # scrcpy-server.jar（v5.0.1，随镜像 COPY 亦可）
     networks:
       - myt-net
 

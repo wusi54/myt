@@ -46,12 +46,13 @@ let dropUntilKey = false;   // 背压：解码排队过多时丢弃到下一个�
 // ===== 屏幕操作（触控/按键/输入）=====
 async function sendTouch(action, params){
   try{
-    await fetch('/api/screen/touch', {
+    const r = await fetch('/api/screen/touch', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify(Object.assign({adb_addr:adbAddr, action:action}, params||{}))
     });
-  }catch(e){ console.error('touch error', e); }
+    if(!r.ok) toast('控制失败: '+r.status, 'error');
+  }catch(e){ console.error('touch error', e); toast('控制请求未送达', 'error'); }
 }
 function sendKey(code){ sendTouch('key', {keycode:code}); }
 function sendText(){ const t = prompt('输入文字发送到设备:'); if(t) sendTouch('text', {text:t}); }

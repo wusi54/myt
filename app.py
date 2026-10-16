@@ -41,6 +41,7 @@ os.makedirs(APP_UPLOAD_DIR, exist_ok=True)
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
 app.config['MAX_CONTENT_LENGTH'] = 512 * 1024 * 1024
+app.config['TEMPLATES_AUTO_RELOAD'] = True   # 模板改动免重启即时生效(waitress 非 debug 模式默认缓存模板)
 app.secret_key = auth.SECRET_KEY
 
 db.init_db()
@@ -1231,8 +1232,9 @@ def api_proxy_release(pid):
 
 
 def _test_proxy_line(ip, port, user='', pwd=''):
-    """用 SOCKS5 出口实测：经该线路访问 cip.cc，成功即线路可用，并解析出口 IP/地区/运营商。
-    等价于 `curl -x socks5h://user:pass@ip:port cip.cc`。返回 dict。"""
+    """用 SOCKS5 出口实测：经该线路访问 myip.ipip.net，成功即线路可用，并解析出口 IP/地区/运营商。
+    等价于 `curl -x socks5h://user:pass@ip:port http://myip.ipip.net`。返回 dict。"""
+    import re
     import requests
     from urllib.parse import quote
     auth = f"{quote(user)}:{quote(pwd)}@" if user else ""
@@ -1241,18 +1243,26 @@ def _test_proxy_line(ip, port, user='', pwd=''):
 
     def _once():
         t0 = time.time()
-        r = requests.get('http://cip.cc', proxies=px, timeout=15)
+        r = requests.get('http://myip.ipip.net', proxies=px, timeout=15)
+        # myip.ipip.net 返回单行：当前 IP：1.2.3.4 	来自于：省 市 区县  运营商
         egress = region = isp = ''
         for line in r.text.splitlines():
             s = line.strip()
-            if s.startswith('IP'):
-                egress = s.split(':', 1)[1].strip()
-            elif s.startswith('地址'):
-                region = s.split(':', 1)[1].strip()
-            elif s.startswith('运营商'):
-                isp = s.split(':', 1)[1].strip()
+            if not s:
+                continue
+            m = re.search(r'IP[：:\s]+([0-9a-fA-F:.]+)', s)
+            if m and not egress:
+                egress = m.group(1)
+            if '来自于' in s:
+                tail = s.split('来自于', 1)[1].replace('\t', ' ').lstrip('：: ')
+                parts = tail.split()
+                if len(parts) >= 2:
+                    isp = parts[-1]
+                    region = ' '.join(parts[:-1])
+                elif parts:
+                    region = parts[0]
         if not egress:
-            raise Exception('cip.cc 未返回出口 IP')
+            raise Exception('myip.ipip.net 未返回出口 IP')
         return {'ok': True, 'egress': egress, 'region': region, 'isp': isp,
                 'latency': round((time.time() - t0) * 1000), 'errmsg': None}
 
@@ -1287,7 +1297,7 @@ def api_proxy_test(pid):
 
 
 def _probe_all_proxies():
-    """后台批量探测所有代理线路：经 SOCKS5 出口实测 cip.cc。
+    """后台批量探测所有代理线路：经 SOCKS5 出口实测 myip.ipip.net。
     成功→idle/online(记录出口 IP/地区/运营商/延迟)；失败→fault(真故障，可用于规避应用)。
     并发限制为 5 以免短时间突发触发出口限流导致误判。"""
     items = db.list_proxies()
@@ -1641,46 +1651,18 @@ def screen_config():
 def screen_touch():
     d = request.json or {}
     adb_addr = d.get('adb_addr', '')
-    action = d.get('action', 'tap')
     if not adb_addr:
         return err('missing adb_addr')
-
-    def to_dev(nx, ny):
-        """归一化坐标(0~1) -> 设备像素坐标。"""
-        w, h = adb_pool.device_size(adb_addr)
-        if not w or not h:
-            return None
-        return (int(round(float(nx) * w)), int(round(float(ny) * h)))
-
-    if action == 'tap':
-        if 'nx' in d and 'ny' in d:
-            pt = to_dev(d['nx'], d['ny'])
-            if not pt:
-                return err('无法获取设备分辨率', 500)
-            x, y = pt
-        else:
-            x, y = int(d.get('x', 0)), int(d.get('y', 0))
-        cmd = f'input tap {x} {y}'
-    elif action == 'swipe':
-        if 'nx' in d and 'ny' in d:
-            p1 = to_dev(d['nx'], d['ny'])
-            p2 = to_dev(d.get('nx2', d['nx']), d.get('ny2', d['ny']))
-            if not p1 or not p2:
-                return err('无法获取设备分辨率', 500)
-            x, y = p1
-            x2, y2 = p2
-        else:
-            x, y = int(d.get('x', 0)), int(d.get('y', 0))
-            x2, y2 = int(d.get('x2', x)), int(d.get('y2', y))
-        cmd = f'input swipe {x} {y} {x2} {y2} {int(d.get("duration", 300))}'
-    elif action == 'key':
-        cmd = f"input keyevent {d.get('keycode', '')}"
-    elif action == 'text':
-        cmd = f"input text {d.get('text', '')}"
-    else:
-        return err(f'unknown action: {action}')
-    okk = adb_pool.send(adb_addr, cmd)
-    return ok(None) if okk else err('adb send failed', 500)
+    # 转发给 relay 的 control http 执行（与 screenrecord 同一 adb server），
+    # 消除 web/relay 两个独立 adb 抢同一设备导致投屏被中断的问题。
+    try:
+        import requests
+        r = requests.post('http://relay:9001/control', json=d, timeout=15)
+        if r.ok:
+            return ok(None)
+        return err('relay control failed', 500)
+    except Exception as e:
+        return err(f'relay control error: {e}', 500)
 
 
 # 启动时按设备 url 修正历史容器的投屏(adb)地址（网关场景，幂等）
