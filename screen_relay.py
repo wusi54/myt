@@ -1,19 +1,20 @@
-"""多线程 + 队列 版投屏中继（dev_multithread_2.1.0 对比测试用）。
+"""多线程 + 队列 版投屏中继（dev_multithread_2.1.0）。
 
-与 asyncio 协程版的关键区别：
-- 每个 adb_addr 起 1 个「生产者线程」跑 screenrecord 并读 stdout，把 H.264 分片塞进一个
-  有界 queue.Queue（背压：队列满则丢弃分片，避免内存爆）；
+架构：
+- 每个 adb_addr 起 1 个「生产者线程」跑 scrcpy-server（nohup 独立运行）并读 annexb H.264 帧，
+  塞进一个有界 queue.Queue（背压：队列满则丢弃分片，避免内存爆）；
 - 另起 1 个「分发线程」从队列取分片，用 asyncio.run_coroutine_threadsafe 把同一分片
   扇出给所有订阅该设备的客户端 WebSocket；
 - 心跳、鉴权、token 过期剔除等都在各自线程里完成，事件循环只负责 WS 收发。
 
-协议/端口/WS 路径(?adb_addr=) 与旧版完全一致，便于同 asyncio 版做 AB 对比。
+协议/端口/WS 路径(?adb_addr=) 与旧版完全一致。
 """
 import os
 import re
 import time
 import json
 import asyncio
+import hashlib
 import threading
 import queue
 import subprocess
@@ -28,19 +29,16 @@ WS_PORT = int(os.environ.get('RELAY_PORT', '9000'))
 ADB = os.environ.get('ADB_PATH') or (
     r"C:\Users\wusi0\AppData\Local\Android\Sdk\platform-tools\adb.exe"
     if os.name == 'nt' else 'adb')
-SCREEN_LIMIT = int(os.environ.get('SCREEN_LIMIT', '180'))          # 单段最长录制秒数
 SCREEN_MAX = int(os.environ.get('SCREEN_MAX', '480'))              # 输出最长边（等比缩放）
 SCREEN_BITRATE = int(os.environ.get('SCREEN_BITRATE', '150000'))  # 码率 bps
-DEFAULT_SIZE = (360, 640)                                          # 取不到分辨率时兜底(9:16)
 
 QMAX = int(os.environ.get('RELAY_QMAX', '60'))        # 广播队列上限（分片）
 SEND_TIMEOUT = float(os.environ.get('RELAY_SEND_TIMEOUT', '2'))  # 保留(兼容环境变量)
 MAX_PENDING = int(os.environ.get('RELAY_MAX_PENDING', '30'))       # 单客户端最大在途帧，超过则丢帧限流
 
 # ---- scrcpy 单隧道采屏 ----
-# 用 scrcpy-server 取代 screenrecord：一条 adb reverse 隧道同时承载画面(annexb H.264)。
-# 控制(P2)将复用同一隧道。开关便于回退到 screenrecord。
-USE_SCRCPY = os.environ.get('RELAY_SCRCPY', '1') == '1'
+# 用 scrcpy-server 采屏：一条 adb reverse 隧道同时承载画面(annexb H.264)。
+# screenrecord 因存在 180s 单段录制上限已废弃，仅保留 scrcpy 路径。
 SCRCPY_VERSION = '5.0.1'                                  # 与 scrcpy-server.jar 严格匹配(server 强校验)
 
 
@@ -57,13 +55,93 @@ SCRCPY_SERVER_LOCAL = _scrcpy_server_path()
 DEVICE_SERVER_JAR = '/data/local/tmp/scrcpy-server.jar'
 SCRCPY_CODEC_H264 = 0x68323634                            # "h264" ASCII，大端 codec_id
 # 剥离 SPS 的 color VUI：scrcpy 标 BT.601矩阵+BT.709传输，浏览器(尤其硬件解码)偏蓝；
-# 剥掉后浏览器用默认色彩转换(与早年 screenrecord 一致、显示正常)。RELAY_STRIP_VUI=0 可关闭。
+# 剥掉后浏览器用默认色彩转换、显示正常。RELAY_STRIP_VUI=0 可关闭。
 SCRCPY_STRIP_VUI = os.environ.get('RELAY_STRIP_VUI', '0') == '1'
+
+# ---- scrcpy 设备端独立运行（detached）----
+# 用 nohup 让 scrcpy-server 脱离 adb shell 会话独立运行：adb 短暂断开/重连时，采集进程
+# 不随之消失，relay 只需重建 reverse 隧道并重新 accept 续流，避免每次都 push+重启 server。
+SCRCPY_DETACHED = os.environ.get('RELAY_SCRCPY_DETACHED', '1') == '1'
+# 设备端 server 启动/回连握手的最长等待(秒)；超过则判定 server 未起来，需重新拉起
+SCRCPY_HANDSHAKE_TIMEOUT = int(os.environ.get('RELAY_SCRCPY_HANDSHAKE_TIMEOUT', '20'))
+# 帧循环读超时(秒)：静止画面不产帧，读超时仅当作"无新帧继续等"，绝不据此判故障
+SCRCPY_FRAME_TIMEOUT = float(os.environ.get('RELAY_SCRCPY_FRAME_TIMEOUT', '1.0'))
+# 稳定 scid：同一 adb_addr 派生固定 scid，server 常驻后隧道重建能对上号，不重复起实例
+SCRCPY_DETACHED_LOG = os.environ.get('RELAY_SCRCPY_LOG', '/data/local/tmp')
 
 streams = {}                 # adb_addr -> Stream
 lock = threading.Lock()      # 保护 streams 字典
-SIZE_CACHE = {}              # adb_addr -> (size_tuple, expire_ts)
-SIZE_CACHE_TTL = 300
+epochs = {}                  # adb_addr -> 当前生效的代际号；旧 Stream 据此判断自己是否已过期
+_epoch_lock = threading.Lock()
+
+# ---- 设备端 Agent 部署（方向 A：scrcpy 采集 + WebSocket 出站）----
+# Agent 是 Go 编译的单二进制，部署到设备 /data/local/tmp/myt-agent 常驻运行。
+# relay 负责：检测 Agent 存活 → 不在则 push + 启动（带 relay 出站地址参数）。
+# 画面数据由 Agent 经 WebSocket 出站到 relay 的 /agent 端点，彻底绕开不稳定的 adb 隧道。
+# USE_AGENT=1 启用方向 A（默认）；设为 0 回退到传统 adb reverse 模式。
+USE_AGENT = os.environ.get('RELAY_USE_AGENT', '1') == '1'
+AGENT_BIN_PATH = os.environ.get('AGENT_BIN_PATH') or '/app/agent/myt-agent-arm64'
+AGENT_DEVICE_PATH = os.environ.get('AGENT_DEVICE_PATH') or '/data/local/tmp/myt-agent'
+# relay 对 Agent 暴露的出站地址（Agent 主动连这里）；不含路径，路径由 Agent 内部拼 /agent
+AGENT_RELAY_HOST = os.environ.get('AGENT_RELAY_HOST', '')
+# Agent 上行流认证密钥（relay 与 Agent 之间约定的共享密钥）
+AGENT_TOKEN = os.environ.get('AGENT_TOKEN', '')
+
+
+def _agent_running(adb_addr):
+    """设备端 Agent 是否在运行。"""
+    try:
+        r = subprocess.run([ADB, '-s', adb_addr, 'shell', 'pgrep', '-f', 'myt-agent'],
+                           capture_output=True, timeout=8)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _deploy_agent(adb_addr):
+    """推送并启动设备端 Agent（幂等：已运行则跳过）。返回出站 relay 地址。
+
+    推送两个文件：
+      1. Agent 二进制（myt-agent-arm64）
+      2. scrcpy-server.jar（Agent 启动时依赖，用于采集）
+    """
+    if not os.path.exists(AGENT_BIN_PATH):
+        print(f'[agent] 本机无 Agent 二进制 {AGENT_BIN_PATH}，跳过部署', flush=True)
+        return False
+    try:
+        # 1. push Agent 二进制
+        subprocess.run([ADB, '-s', adb_addr, 'push', AGENT_BIN_PATH, AGENT_DEVICE_PATH],
+                       capture_output=True, timeout=60)
+        # 1.1 push scrcpy-server.jar（Agent 采集依赖）
+        jar_local = SCRCPY_SERVER_LOCAL
+        jar_device = DEVICE_SERVER_JAR
+        if os.path.exists(jar_local):
+            subprocess.run([ADB, '-s', adb_addr, 'push', jar_local, jar_device],
+                           capture_output=True, timeout=60)
+        else:
+            print(f'[agent] 本机无 scrcpy-server {jar_local}，Agent 可能无法采集', flush=True)
+        # 2. 授权 + 启动（后台常驻）
+        relay_url = ''
+        if AGENT_RELAY_HOST:
+            relay_url = AGENT_RELAY_HOST
+        # Agent 出站 URL：带 token 鉴权（AGENT_TOKEN）
+        token_q = f'&token={AGENT_TOKEN}' if AGENT_TOKEN else ''
+        launch = (f"chmod 755 {AGENT_DEVICE_PATH} && "
+                  f"nohup {AGENT_DEVICE_PATH} -relay '{relay_url}/agent?adb_addr={adb_addr}{token_q}' "
+                  f">/data/local/tmp/myt-agent.log 2>&1 </dev/null &")
+        subprocess.run([ADB, '-s', adb_addr, 'shell', launch], capture_output=True, timeout=10)
+        print(f'[agent] 已部署 Agent 到 {adb_addr}, relay={relay_url}', flush=True)
+        return True
+    except Exception as e:
+        print(f'[agent] 部署 Agent 到 {adb_addr} 失败: {e}', flush=True)
+        return False
+
+
+def _ensure_agent(adb_addr):
+    """确保设备端 Agent 存活：不在则部署启动。"""
+    if _agent_running(adb_addr):
+        return True
+    return _deploy_agent(adb_addr)
 
 
 def _token_from_request(ws):
@@ -81,11 +159,6 @@ def _token_from_request(ws):
         if part.startswith('myt_token='):
             return part[len('myt_token='):]
     return None
-
-
-def _even(v):
-    v = int(round(v))
-    return v - (v % 2) or 2
 
 
 DEVICE_SIZE_CACHE = {}   # adb_addr -> (expire_ts, (w, h))；分辨率极少变化，缓存避免每次 tap 都 wm size
@@ -119,23 +192,6 @@ def get_device_size(adb_addr):
     if physical:
         DEVICE_SIZE_CACHE[adb_addr] = (now + 300, physical)
     return physical
-
-
-def scaled_size(adb_addr):
-    """按设备分辨率等比缩放到最长边 SCREEN_MAX，宽高取偶数（H.264 要求）。"""
-    cached = SIZE_CACHE.get(adb_addr)
-    if cached and cached[1] > time.time():
-        return cached[0]
-    size = get_device_size(adb_addr)
-    if not size:
-        return DEFAULT_SIZE
-    w, h = size
-    if max(w, h) <= 0:
-        return DEFAULT_SIZE
-    k = min(1.0, SCREEN_MAX / max(w, h))
-    out = (_even(w * k), _even(h * k))
-    SIZE_CACHE[adb_addr] = (out, time.time() + SIZE_CACHE_TTL)
-    return out
 
 
 def _sps_strip_vui(sps):
@@ -243,7 +299,7 @@ def _strip_frame_sps_vui(data):
 
 
 class Stream:
-    """同一 adb_addr 的共享投屏流：一个 screenrecord 进程 + 多线程 + 队列广播。"""
+    """同一 adb_addr 的共享投屏流：一个 scrcpy-server 采集 + 多线程 + 队列广播。"""
 
     def __init__(self, adb_addr, loop):
         self.adb_addr = adb_addr
@@ -254,18 +310,29 @@ class Stream:
         self.pending_lock = threading.Lock()
         self._pending = {}            # ws -> 在途帧数(防止半开/慢客户端堆积)
         self.stop = threading.Event()
-        self.kick = threading.Event()         # 触发重启 screenrecord 以吐 IDR（后加入观众）
+        self.kick = threading.Event()         # 触发重启以吐 IDR（后加入观众）
         self.last_start = 0.0
         self.backoff = 0.0                  # 失败退避时间(秒)，成功出流后归零
-        self._last_sr_err = ''
         self._max_size = SCREEN_MAX         # scrcpy max_size（输出最长边）
         self._want_resize = False           # 运行中热切换分辨率标志
+        # 稳定 scid：同一 adb_addr 派生固定 scid，设备端 server 常驻后可复用/续流，
+        # 不因 adb 抖动重复起新实例（多个实例会叠加采屏压垮 adbd）。
+        # 注意：scrcpy-server 用 Integer.parseInt(value, 16) 解析 scid，且必须 <= 0x7fffffff，
+        # 否则溢出抛 NumberFormatException 导致 server 秒退。故取 md5 前 8 位并清最高位。
+        self.scid = '%08x' % (int(hashlib.md5(adb_addr.encode('utf-8')).hexdigest()[:8], 16) & 0x7fffffff)
+        self._server_alive = False          # 设备端 scrcpy-server 是否已被拉起(detached)
+        # 代际号：用于防止「旧 Stream 的收尾 kill 误杀新 Stream 刚启动的 server」。
+        # 新 Stream 建立时全局 epoch 递增，旧 Stream 的 kill/cleanup 发现 epoch 过期则跳过。
+        with _epoch_lock:
+            epochs[adb_addr] = epochs.get(adb_addr, 0) + 1
+            self._epoch = epochs[adb_addr]
+        self._stopped = False               # 本 Stream 是否已彻底停止（防止重复收尾）
         self.producer = None
         self.dispatcher = None
         self.heartbeat = None
 
     def start(self):
-        base = self._produce_scrcpy if USE_SCRCPY else self._produce
+        base = self._produce_scrcpy
 
         def _guard():
             # 崩溃自恢复：producer 任何未捕获异常都打印堆栈并重启，避免线程一死该格永久黑屏
@@ -291,12 +358,20 @@ class Stream:
         self.dispatcher.start()
         self.heartbeat.start()
 
+    def start_agent(self):
+        """Agent 上行流模式：只启动 dispatcher（帧来自设备端 Agent 的 WebSocket，非 adb）。
+        producer/heartbeat 不启动——不依赖 adb。
+        """
+        self.dispatcher = threading.Thread(target=self._dispatch, daemon=True,
+                                          name=f'disp-{self.adb_addr}')
+        self.dispatcher.start()
+
     # ---- 订阅管理 ----
     def add_sub(self, ws):
         with self.sub_lock:
             first = len(self.subs) == 0
             self.subs.add(ws)
-        # 后加入者错过当前 IDR，重启 screenrecord 让其快速出画（0.3s 去抖）
+        # 后加入者错过当前 IDR，请求重启让其快速出画（0.3s 去抖）
         if not first and self.last_start and (time.time() - self.last_start) > 0.3:
             self.kick.set()
 
@@ -305,11 +380,23 @@ class Stream:
             self.subs.discard(ws)
             empty = len(self.subs) == 0
         if empty:
+            # 仅置 stop：server 的清理交给 producer 线程 finally 同步处理。
+            # 不能在这里异步 kill——否则会与「前端重连后新 Stream 的 launch」发生竞态，
+            # 异步 kill 可能晚于新 launch 才执行，把刚启动的新 server 杀掉。
             self.stop.set()
 
     def _subs_snapshot(self):
         with self.sub_lock:
             return list(self.subs)
+
+    def feed_frame(self, payload):
+        """Agent 上行流入口：设备端 Agent 经 WebSocket 推送的 H.264 帧直接入队。
+        复用现有 _dispatch 分发线程扇出给浏览器订阅者（绕开 adb 隧道）。
+        """
+        try:
+            self.q.put(payload, timeout=2)
+        except queue.Full:
+            pass
 
     def _heartbeat(self):
         while not self.stop.is_set():
@@ -317,131 +404,56 @@ class Stream:
             if self.stop.is_set():
                 break
             try:
+                # 超时放宽到 15s：5s 会 SIGKILL 掉正在握手的 adb 进程，留下半开传输
                 subprocess.run([ADB, 'connect', self.adb_addr],
-                               capture_output=True, timeout=5)
+                               capture_output=True, timeout=15)
             except Exception:
                 pass
 
     def _fail_backoff(self, err):
-        """screenrecord/adb 失败后退避重试：offline/closed 时先 reconnect，再按指数退避(2..30s)，
-        避免对掉线设备 0.2s 猛锤而制造重连风暴。"""
+        """单设备失败后的处理策略：**告警 + 等待**，不执行任何全局破坏性动作。
+
+        ⚠ 设计约束：绝不调用 `adb kill-server`。
+          kill-server 会瞬间断开本机**所有**设备的 adb 连接，把本来健康的设备一起拖下线。
+          修复动作严格限定在当前这一个 addr：adb disconnect -> adb connect。
+
+        等待策略在旧实现基础上加严：
+          - 退避起点 2s -> 15s，上限 30s -> 120s：避免对着刚断开的设备猛锤；
+          - 每次等待叠加 ±30% 随机抖动：防止多台设备「同频重试」，把唯一的 adb daemon 挤死。
+        """
         e = (err or '').lower()
         offline = ('offline' in e) or ('closed' in e) or ('not found' in e) or ('timed out' in e) or ('refused' in e)
         if offline:
+            # 告警：明确是单设备掉线，且只对该设备做 disconnect -> connect
+            print(f'[alarm] {self.adb_addr} adb 掉线 ({err}) -> 仅对本设备 disconnect/connect 后等待重试，'
+                  f'不执行 kill-server', flush=True)
             try:
-                subprocess.run([ADB, 'disconnect', self.adb_addr], capture_output=True, timeout=5)
+                subprocess.run([ADB, 'disconnect', self.adb_addr], capture_output=True, timeout=10)
             except Exception:
                 pass
+            time.sleep(1.0)
             try:
-                subprocess.run([ADB, 'connect', self.adb_addr], capture_output=True, timeout=10)
+                subprocess.run([ADB, 'connect', self.adb_addr], capture_output=True, timeout=15)
             except Exception:
                 pass
-        if self.backoff <= 0:
-            self.backoff = 2.0
         else:
-            self.backoff = min(self.backoff * 2, 30.0)
-        print(f'[stream] {self.adb_addr} backoff {self.backoff:.0f}s (offline={offline})', flush=True)
-        time.sleep(self.backoff)
-
-    def _produce(self):
-        """生产者线程：adb connect -> screenrecord -> 读 stdout 入队；失败时退避重试，不掉线猛锤。"""
-        while not self.stop.is_set():
-            if not self.subs:
-                time.sleep(0.2)
-                continue
-            # adb connect（阻塞调用，放在线程里不阻塞事件循环）；失败则退避重试并保持 WS，不制造重连风暴
-            connected = False
-            for attempt in range(1, 3):
-                if self.stop.is_set() or not self.subs:
-                    return
-                try:
-                    r = subprocess.run([ADB, 'connect', self.adb_addr],
-                                       capture_output=True, timeout=5)
-                    out = (r.stdout or b'').decode(errors='replace')
-                except Exception as e:
-                    out = ''
-                    print(f'[stream] {self.adb_addr} adb connect exception: {e}', flush=True)
-                if 'connected' in out or 'already' in out:
-                    connected = True
-                    break
-                print(f'[stream] {self.adb_addr} adb connect failed (attempt {attempt}/2): {out.strip()}', flush=True)
-                time.sleep(2)
-            if not connected:
-                print(f'[stream] {self.adb_addr} adb connect failed after retries', flush=True)
-                self._fail_backoff(out)   # 退避重试并保持 WS，设备恢复后自动续流
-                continue
-
-            out_size = scaled_size(self.adb_addr)
-            print(f'[stream] {self.adb_addr} output {out_size[0]}x{out_size[1]} @ {SCREEN_BITRATE}bps', flush=True)
-
-            eof = False
-            while not self.stop.is_set() and self.subs:
-                # 清掉设备上可能残留的上一轮 screenrecord，避免 "already running" 导致新进程秒退
-                try:
-                    subprocess.run([ADB, '-s', self.adb_addr, 'shell', 'pkill', '-f', 'screenrecord'],
-                                   capture_output=True, timeout=5)
-                except Exception:
-                    pass
-                try:
-                    proc = subprocess.Popen(
-                        [ADB, '-s', self.adb_addr, 'exec-out', 'screenrecord',
-                         '--output-format=h264', '--size', f'{out_size[0]}x{out_size[1]}',
-                         '--bit-rate', str(SCREEN_BITRATE), '--time-limit', str(SCREEN_LIMIT), '-'],
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                except Exception as e:
-                    print(f'[stream] {self.adb_addr} screenrecord start error: {e}', flush=True)
-                    self._fail_backoff(str(e))
-                    continue
-                self.last_start = time.time()
-                self.kick.clear()
-                print(f'[stream] {self.adb_addr} screenrecord started', flush=True)
-                try:
-                    while not self.stop.is_set():
-                        if not self.subs:
-                            break
-                        if self.kick.is_set():
-                            print(f'[stream] {self.adb_addr} kick -> restart for IDR', flush=True)
-                            break
-                        chunk = proc.stdout.read(65536)
-                        if not chunk:
-                            eof = True
-                            print(f'[stream] {self.adb_addr} stdout EOF', flush=True)
-                            break
-                        self.backoff = 0.0   # 真正读到数据才归零退避；持续离线的设备会退避到 30s，避免每 2s 猛锤 flaky 网关
-                        try:
-                            self.q.put(chunk, timeout=2)   # 队列满则等待(背压)
-                        except queue.Full:
-                            pass                          # 或丢弃：分发者落后时避免堆积
-                finally:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                    try:
-                        proc.wait(timeout=5)
-                    except Exception:
-                        pass
-                    # 诊断：screenrecord 秒退时把设备端报错打出来（同一错误去重，避免刷屏）
-                    try:
-                        err = (proc.stderr.read(8192) or b'').decode(errors='replace')
-                    except Exception:
-                        err = ''
-                    err = err.strip()
-                    if err and err != self._last_sr_err:
-                        self._last_sr_err = err
-                        print(f'[stream] {self.adb_addr} screenrecord stderr: {err!r}', flush=True)
-                if self.stop.is_set() or not self.subs:
-                    break
-                if eof:
-                    # 设备掉线/管道断开 -> 退避重试(含 reconnect)，保持 WS 不制造重连风暴
-                    self._fail_backoff(self._last_sr_err)
-                else:
-                    time.sleep(0.2)   # kick 等正常重启，短暂等待
-            # 内层退出：可能是无订阅者/被停止 -> 外层 while 再判断
+            # 画面中断但 adb 判定在线：只告警 + 等待，让设备/网络自行恢复
+            print(f'[alarm] {self.adb_addr} 画面中断 ({err}) -> 告警并等待重试，不做全局动作', flush=True)
+        if self.backoff <= 0:
+            self.backoff = 15.0
+        else:
+            self.backoff = min(self.backoff * 2, 120.0)
+        # ±30% 抖动：打散多设备的重试时刻，避免重连风暴
+        wait = max(1.0, self.backoff * random.uniform(0.7, 1.3))
+        print(f'[stream] {self.adb_addr} backoff wait {wait:.0f}s (offline={offline})', flush=True)
+        time.sleep(wait)
 
     # ---- scrcpy 单隧道采屏 ----
     def _scrcpy_cleanup(self):
-        """清理设备上残留的 scrcpy server 与反向隧道；残留会叠加采屏压垮 adbd。"""
+        """清理设备上残留的 scrcpy server 与反向隧道；残留会叠加采屏压垮 adbd。
+        若本 Stream 已被新 Stream 取代（epoch 过期），跳过，避免误杀新 server。"""
+        if self._is_stale():
+            return
         try:
             subprocess.run([ADB, '-s', self.adb_addr, 'shell', 'pkill', '-f',
                             'com.genymobile.scrcpy.Server'], capture_output=True, timeout=8)
@@ -463,21 +475,87 @@ class Stream:
             buf += c
         return buf
 
+    def _is_stale(self):
+        """本 Stream 是否已被新 Stream 取代（epoch 过期）。旧 Stream 的 kill/cleanup 应跳过。"""
+        with _epoch_lock:
+            return epochs.get(self.adb_addr, 0) != self._epoch
+
+    def _scrcpy_kill_server(self):
+        """杀掉本 scid 对应的 scrcpy-server 进程（含 nohup 包装的 shell 与 app_process）。
+
+        注意：
+        - `pkill -f <scid>` 匹配完整命令行，会同时命中 nohup 的 sh 包装进程和
+          app_process（两者命令行都含 scid=xxx），能彻底清理。
+        - 若本 Stream 已被新 Stream 取代（epoch 过期），跳过 kill，避免误杀新 server。
+        """
+        if self._is_stale():
+            return
+        try:
+            subprocess.run([ADB, '-s', self.adb_addr, 'shell', 'pkill', '-f', self.scid],
+                           capture_output=True, timeout=8)
+        except Exception:
+            pass
+        self._server_alive = False
+
+    def _launch_scrcpy_server(self):
+        """幂等启动 scrcpy-server：先杀本 scid 旧实例，再启动，保证设备端单实例。
+
+        关键：launch 自身幂等（先 kill 后起），任何调用点都不会导致重复启动叠加。
+        SCRCPY_DETACHED=1 时用 `nohup sh -c '...' &` 使其脱离 adb shell 会话独立运行。
+
+        注意：必须用 `sh -c '...'` 包裹命令——`CLASSPATH=... app_process` 里的环境变量
+        赋值是 shell 语法，直接 `nohup CLASSPATH=... app_process` 会让 nohup 把
+        `CLASSPATH=...` 当成可执行命令名，导致 server 启动即失败（秒退、从未存活）。
+        """
+        # 幂等 + 防竞态：先杀旧实例；若本 Stream 已过期则直接返回（不启动）
+        if self._is_stale():
+            return
+        self._scrcpy_kill_server()
+        cmd = ('CLASSPATH=%s app_process / com.genymobile.scrcpy.Server %s '
+               'scid=%s log_level=warn video=true audio=false '
+               'control=false send_device_meta=false send_stream_meta=true '
+               'send_frame_meta=true max_size=%d video_bit_rate=%d') % (
+            DEVICE_SERVER_JAR, SCRCPY_VERSION, self.scid, self._max_size, SCREEN_BITRATE)
+        logfile = os.path.join(SCRCPY_DETACHED_LOG, 'scrcpy_%s.log' % self.scid)
+        if SCRCPY_DETACHED:
+            shell = "nohup sh -c '%s' >%s 2>&1 </dev/null &" % (cmd, logfile)
+            subprocess.run([ADB, '-s', self.adb_addr, 'shell', shell],
+                           capture_output=True, timeout=10)
+            self._server_alive = True
+        else:
+            logf = open('/tmp/scrcpy_server_%s.log' % self.scid, 'ab')
+            subprocess.Popen([ADB, '-s', self.adb_addr, 'shell', cmd],
+                             stdout=logf, stderr=logf)
+            self._server_alive = True
+
     def _produce_scrcpy(self):
-        """生产者线程：adb reverse 隧道启动 scrcpy-server，读 annexb H.264 帧入队。
-        scrcpy 单隧道承载画面(控制 P2 复用)；关键帧自带 SPS/PPS，媒体帧直接入队(零转换)。"""
+        """生产者线程：adb reverse 隧道 + scrcpy-server 采屏，读 annexb H.264 帧入队。
+
+        稳定性设计（修复频繁断开重连）：
+        - scid 固定、hostport 固定：隧道地址可预期，不随机漂移；
+        - 每次循环前 pkill 本 scid 旧实例再 launch：保证设备端单实例，避免多实例抢隧道；
+        - 帧流用「读缓冲区」解析：TCP 分包时读一半超时绝不丢字节，杜绝帧头错位；
+        - 帧读超时只当作"静止画面无新帧"继续等，绝不据此判故障重启。
+        """
+        sockname = 'scrcpy_' + self.scid
+        # 固定 hostport（从 scid 派生）：端口不再随机漂移，避免 TIME_WAIT 累积与
+        # server 重连时地址不可预期的问题。
+        hostport = 47000 + (int(self.scid, 16) % 15000)
         while not self.stop.is_set():
+            # 旧 Stream 被新 Stream 取代后，本 producer 应立即退出，不再 launch/kill
+            if self._is_stale():
+                break
             if not self.subs:
                 time.sleep(0.2)
                 continue
-            # adb connect
+            # ---- adb connect（失败才退避，不杀 server）----
             connected = False
             out = ''
             for attempt in range(1, 3):
                 if self.stop.is_set() or not self.subs:
                     return
                 try:
-                    r = subprocess.run([ADB, 'connect', self.adb_addr], capture_output=True, timeout=5)
+                    r = subprocess.run([ADB, 'connect', self.adb_addr], capture_output=True, timeout=15)
                     out = (r.stdout or b'').decode(errors='replace')
                 except Exception as e:
                     out = ''
@@ -491,17 +569,14 @@ class Stream:
                 self._fail_backoff(out)
                 continue
 
-            # 推送 server jar（每次重试都确保在位，版本必须匹配）
+            # ---- 推送 server jar（jar 小，始终 push 保证版本一致）----
             try:
                 subprocess.run([ADB, '-s', self.adb_addr, 'push', SCRCPY_SERVER_LOCAL, DEVICE_SERVER_JAR],
                                capture_output=True, timeout=30)
             except Exception as e:
                 print(f'[stream] {self.adb_addr} scrcpy push server error: {e}', flush=True)
 
-            self._scrcpy_cleanup()
-            scid = '%08x' % random.randint(1, 0x7fffffff)
-            sockname = 'scrcpy_' + scid
-            hostport = 47000 + random.randint(0, 15000)
+            # ---- reverse 隧道 + 本地监听（固定 hostport）----
             try:
                 subprocess.run([ADB, '-s', self.adb_addr, 'reverse',
                                 f'localabstract:{sockname}', f'tcp:{hostport}'],
@@ -521,38 +596,37 @@ class Stream:
                     srv.close()
                 except Exception:
                     pass
-                self._scrcpy_cleanup()
                 self._fail_backoff(str(e))
                 continue
-            srv.settimeout(30)
-            # 默认(非 tunnel_forward)：server 主动回连抽象 socket；无 dummy byte
-            server_cmd = [ADB, '-s', self.adb_addr, 'shell', 'CLASSPATH=' + DEVICE_SERVER_JAR,
-                          'app_process', '/', 'com.genymobile.scrcpy.Server', SCRCPY_VERSION,
-                          'scid=' + scid, 'log_level=warn', 'video=true', 'audio=false',
-                          'control=false', 'send_device_meta=false', 'send_stream_meta=true',
-                          'send_frame_meta=true', 'max_size=%d' % self._max_size,
-                          'video_bit_rate=%d' % SCREEN_BITRATE]
-            logf = open('/tmp/scrcpy_server_%s.log' % self.adb_addr.replace(':', '_').replace('.', '_'), 'ab')
+            srv.settimeout(SCRCPY_HANDSHAKE_TIMEOUT)
+
+            # ---- 启动 server（每次干净重建，单实例）----
             self.last_start = time.time()
             self.kick.clear()
             try:
-                proc = subprocess.Popen(server_cmd, stdout=logf, stderr=logf)
+                self._launch_scrcpy_server()
             except Exception as e:
                 print(f'[stream] {self.adb_addr} scrcpy server start error: {e}', flush=True)
-                logf.close()
                 try:
                     srv.close()
                 except Exception:
                     pass
-                self._scrcpy_cleanup()
                 self._fail_backoff(str(e))
                 continue
-            print(f'[stream] {self.adb_addr} scrcpy server starting (scid={scid} port={hostport})', flush=True)
+            if self._is_stale():
+                # launch 期间被新 Stream 取代：立即放弃，不 accept、不误杀
+                try:
+                    srv.close()
+                except Exception:
+                    pass
+                break
+            print(f'[stream] {self.adb_addr} scrcpy server launched (scid={self.scid})', flush=True)
+
             conn = None
-            resized = False          # 务必在 try 外初始化：早期异常(accept/codec 超时)时下面 if resized 才不会 UnboundLocalError 崩线程
+            resized = False
             try:
                 conn, _ = srv.accept()          # server 主动回连 -> video socket
-                conn.settimeout(30)
+                conn.settimeout(SCRCPY_HANDSHAKE_TIMEOUT)
                 cid = self._recvn(conn, 4)
                 if len(cid) < 4 or int.from_bytes(cid, 'big') != SCRCPY_CODEC_H264:
                     raise EOFError('unexpected codec %s' % cid.hex())
@@ -563,6 +637,14 @@ class Stream:
                 sh_ = int.from_bytes(sess[8:12], 'big')
                 print(f'[stream] {self.adb_addr} scrcpy started {sw}x{sh_}', flush=True)
                 resized = False
+                # 握手完成后切回帧读超时（静止画面容忍）
+                conn.settimeout(SCRCPY_FRAME_TIMEOUT)
+                # ---- 帧流读取：读缓冲区方案 ----
+                # scrcpy 帧 = 12 字节头(val+size) + size 字节 payload，是连续字节流。
+                # 绝不能用"读满 n 字节否则丢弃"的方式读帧头：TCP 分包时若读一半超时，
+                # 已读的半截帧头被丢弃，后续字节流错位 -> 花屏/卡死/误判断流。
+                # 改为累积到 rbuf，从 rbuf 解析完整帧；读超时只代表"暂无新数据"继续等。
+                rbuf = b''
                 while not self.stop.is_set():
                     if not self.subs:
                         break
@@ -574,26 +656,38 @@ class Stream:
                     if self.kick.is_set():
                         # scrcpy 关键帧频繁，新订阅者很快拿到 IDR，无需重启 server
                         self.kick.clear()
-                    hdr = self._recvn(conn, 12)
-                    if len(hdr) < 12:
-                        raise EOFError('short frame header')
-                    val = int.from_bytes(hdr[0:8], 'big')
-                    size = int.from_bytes(hdr[8:12], 'big')
-                    config = (val >> 62) & 1
-                    if size == 0:
-                        continue
-                    payload = self._recvn(conn, size)
-                    if len(payload) < size:
-                        raise EOFError('short frame payload')
-                    if config:
-                        continue   # 配置包(SPS/PPS)：关键帧已内联，跳过
-                    if SCRCPY_STRIP_VUI:
-                        payload = _strip_frame_sps_vui(payload)   # 剥离 SPS color VUI，修正偏蓝
-                    self.backoff = 0.0
                     try:
-                        self.q.put(payload, timeout=2)
-                    except queue.Full:
-                        pass
+                        chunk = conn.recv(65536)
+                    except socket.timeout:
+                        # 静止画面不产帧：暂无新数据，继续等（已读字节保留在 rbuf，不丢弃）
+                        continue
+                    if not chunk:
+                        raise EOFError('connection closed')
+                    rbuf += chunk
+                    self.backoff = 0.0
+                    # 从缓冲区解析完整帧（可能一次解析多帧）
+                    while len(rbuf) >= 12:
+                        val = int.from_bytes(rbuf[0:8], 'big')
+                        size = int.from_bytes(rbuf[8:12], 'big')
+                        config = (val >> 62) & 1
+                        # 异常 size 防护：单帧过大视为字节流已错位，主动重连
+                        if size <= 0 or size > 8 * 1024 * 1024:
+                            raise EOFError('bad frame size %d' % size)
+                        if len(rbuf) < 12 + size:
+                            break   # 帧未收全，等更多数据
+                        payload = rbuf[12:12 + size]
+                        rbuf = rbuf[12 + size:]
+                        if config:
+                            continue   # 配置包(SPS/PPS)：关键帧已内联，跳过
+                        if SCRCPY_STRIP_VUI:
+                            payload = _strip_frame_sps_vui(payload)   # 剥离 SPS color VUI，修正偏蓝
+                        try:
+                            self.q.put(payload, timeout=2)
+                        except queue.Full:
+                            pass
+            except socket.timeout as e:
+                # accept 超时：server 未回连（可能启动失败/残留冲突），下一轮重新拉起
+                print(f'[stream] {self.adb_addr} scrcpy accept timeout: {e}', flush=True)
             except Exception as e:
                 print(f'[stream] {self.adb_addr} scrcpy stream error: {type(e).__name__}: {e}', flush=True)
             finally:
@@ -606,19 +700,16 @@ class Stream:
                     srv.close()
                 except Exception:
                     pass
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-                try:
-                    logf.close()
-                except Exception:
-                    pass
-                self._scrcpy_cleanup()
+                # server 残留清理：detached 下 pkill 本 scid，避免多实例叠加抢隧道
+                if SCRCPY_DETACHED:
+                    self._scrcpy_kill_server()
+                else:
+                    self._scrcpy_cleanup()
             if self.stop.is_set() or not self.subs:
                 break
             if resized:
-                time.sleep(0.2)   # 热切换分辨率：立即用新 max_size 重启，不退避
+                # 分辨率切换：finally 已杀 server，下一轮 launch 会用新 max_size 重启
+                time.sleep(0.2)
                 continue
             self._fail_backoff('scrcpy stream ended')
 
@@ -725,6 +816,10 @@ async def handler(ws):
             req_ms = max(240, min(1080, int(max_size_raw)))
         except Exception:
             req_ms = None
+    # 方向 A：确保设备端 Agent 存活（Agent 出站推帧，绕开 adb 隧道）
+    # 部署 Agent 是阻塞操作（push + 启动），放到线程避免阻塞事件循环
+    if USE_AGENT:
+        threading.Thread(target=_ensure_agent, args=(adb_addr,), daemon=True).start()
     with lock:
         s = streams.get(adb_addr)
         if s is None:
@@ -732,7 +827,10 @@ async def handler(ws):
             if req_ms:
                 s._max_size = req_ms
             streams[adb_addr] = s
-            s.start()
+            if USE_AGENT:
+                s.start_agent()   # Agent 模式：只启动 dispatcher，等 Agent 上行帧
+            else:
+                s.start()         # 传统模式：adb producer
         elif req_ms and req_ms != s._max_size:
             # 已存在的流：请求不同分辨率 -> 热切换(重启 producer 用新 max_size)
             s._max_size = req_ms
@@ -742,7 +840,7 @@ async def handler(ws):
         # 同时：① 读取客户端下发的控制指令(文本帧) ② 等待关闭。
         # 视频帧由分发线程经本 WS 下发，与这里的 recv 互不阻塞。
         # 控制指令由 relay 用「同一个 adb server / 已建立的连接」下发 input，
-        # 避免 web 容器另起 adb 连接与 screenrecord 抢占设备导致投屏中断。
+        # 避免 web 容器另起 adb 连接与 scrcpy 采集抢占设备导致投屏中断。
         while True:
             try:
                 msg = await ws.recv()
@@ -757,7 +855,7 @@ async def handler(ws):
                     if d.get('type') == 'control':
                         await _handle_control(adb_addr, msg)
                     elif d.get('type') == 'request_idr':
-                        # 墙端解码器卡顿/恢复时请求一次新关键帧：重启 screenrecord 即可，不重连
+                        # 墙端解码器卡顿/恢复时请求一次新关键帧：请求 IDR 即可，不重连
                         s.kick.set()
     finally:
         try:
@@ -768,6 +866,51 @@ async def handler(ws):
             s.remove_sub(ws)
             if not s.subs and streams.get(adb_addr) is s:
                 streams.pop(adb_addr, None)
+
+
+async def agent_handler(ws):
+    """Agent 上行流端点：设备端 Agent 经 WebSocket 主动出站推送 H.264 帧。
+
+    路径: /agent?adb_addr=xxx&token=xxx
+    协议: 二进制帧（annexb H.264，12字节头+payload 已被 Agent 拆好，直接是 payload）。
+    说明: 这是方向 A 的核心——画面数据不经过 adb 隧道，由 Agent 出站推送。
+    认证: 用独立 Agent 共享密钥（AGENT_TOKEN），不用用户 JWT——Agent 是设备端受信组件。
+    """
+    from urllib.parse import urlparse, parse_qs
+    path = ws.request.path if hasattr(ws, 'request') else '/'
+    qs = parse_qs(urlparse(path).query)
+    adb_addr = (qs.get('adb_addr') or [''])[0]
+    if not adb_addr:
+        await ws.close(4000, 'missing_adb_addr')
+        return
+    # Agent 认证：独立共享密钥（AGENT_TOKEN）
+    token = (qs.get('token') or [''])[0]
+    if AGENT_TOKEN and token != AGENT_TOKEN:
+        print('[relay][agent] bad agent token, closing', flush=True)
+        await ws.close(4001, 'unauthorized')
+        return
+
+    print(f'[relay][agent] agent connected adb_addr={adb_addr}', flush=True)
+    loop = asyncio.get_running_loop()
+    with lock:
+        s = streams.get(adb_addr)
+        if s is None:
+            s = Stream(adb_addr, loop)
+            streams[adb_addr] = s
+            s.start_agent()   # 只启动 dispatcher，不启动 producer/heartbeat
+    try:
+        while True:
+            try:
+                msg = await ws.recv()
+            except Exception:
+                break
+            if isinstance(msg, (bytes, bytearray)):
+                s.feed_frame(bytes(msg))
+            # 文本消息忽略（保留扩展，如控制指令）
+    finally:
+        print(f'[relay][agent] agent disconnected adb_addr={adb_addr}', flush=True)
+        # Agent 断开：标记流停止，让 dispatcher 退出，避免残留
+        s.stop.set()
 
 
 def build_input_cmd(adb_addr, d):
@@ -825,7 +968,7 @@ async def _handle_control(adb_addr, msg):
 
 
 class _ControlHTTPHandler(http.server.BaseHTTPRequestHandler):
-    """供 web 容器(及弹窗页)转发控制指令：与 screenrecord 同一 adb server，避免抢设备。"""
+    """供 web 容器(及弹窗页)转发控制指令：与 scrcpy 采集同一 adb server，避免抢设备。"""
 
     def do_POST(self):
         if self.path.rstrip('/') != '/control':
@@ -887,7 +1030,16 @@ async def main():
     from websockets.asyncio.server import serve
     print(f'[relay][multithread {__version__}] Starting on ws://0.0.0.0:{WS_PORT}', flush=True)
     threading.Thread(target=_start_control_http, daemon=True).start()
-    async with serve(handler, '0.0.0.0', WS_PORT, ping_interval=30, ping_timeout=120,
+
+    async def router(ws):
+        """按路径分发：/agent 走 Agent 上行流，其余走浏览器投屏。"""
+        path = ws.request.path if hasattr(ws, 'request') else '/'
+        if path.startswith('/agent'):
+            await agent_handler(ws)
+        else:
+            await handler(ws)
+
+    async with serve(router, '0.0.0.0', WS_PORT, ping_interval=30, ping_timeout=120,
                      max_size=4 * 1024 * 1024, write_limit=4 * 1024 * 1024):
         await asyncio.Future()
 

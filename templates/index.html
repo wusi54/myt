@@ -218,10 +218,11 @@ tr:hover td{background:#1e2e3e}
 <div class="card">
 <div class="card-header"><h3>群控窗</h3>
 <div class="flex">
-<select id="wallCols" style="width:66px" onchange="resizeWall()" title="列数">
-<option value="4">4列</option><option value="5" selected>5列</option></select>
-<select id="wallRows" style="width:66px" onchange="resizeWall()" title="行数">
-<option value="1">1行</option><option value="2" selected>2行</option><option value="3">3行</option><option value="4">4行</option></select>
+<select id="wallCols" style="width:86px" onchange="resizeWall()" title="列数（自适应：按每格最小宽度自动排布）">
+<option value="auto">自适应列</option>
+<option value="1">1列</option><option value="2">2列</option><option value="3">3列</option><option value="4">4列</option><option value="5" selected>5列</option><option value="6">6列</option><option value="7">7列</option><option value="8">8列</option><option value="9">9列</option><option value="10">10列</option></select>
+<select id="wallRows" style="width:86px" onchange="resizeWall()" title="行数">
+<option value="1">1行</option><option value="2" selected>2行</option><option value="3">3行</option><option value="4">4行</option><option value="5">5行</option><option value="6">6行</option><option value="7">7行</option><option value="8">8行</option><option value="9">9行</option><option value="10">10行</option></select>
 <button class="btn btn-sm btn-primary" onclick="showAddToWallModal()">+ 添加容器</button>
 <button class="btn btn-sm btn-outline" onclick="clearWall()">清空</button>
 <span class="hint" id="wallCounter">0 个容器</span>
@@ -491,7 +492,7 @@ function switchSubTab(tabId,btn){const p=btn.closest('.modal');p.querySelectorAl
 let currentPage='pageDevices';
 function switchPage(pageId,el){
   localStorage.setItem('myt_last_page', pageId);
-  if(currentPage==='pageScreenWall'&&pageId!=='pageScreenWall')wallSetPaused(true);
+  if(currentPage==='pageScreenWall'&&pageId!=='pageScreenWall')destroyWallPlayers();
   if(currentPage==='pageContainers'&&pageId!=='pageContainers')pauseAutoSync();
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));
@@ -502,7 +503,7 @@ function switchPage(pageId,el){
   if(pageId==='pageRealParams')loadRealParams();
   if(pageId==='pageProxies')loadProxies();
   if(pageId==='pageApps')loadApps();
-  if(pageId==='pageScreenWall'){Promise.all([loadContainers(),loadDevices()]).then(()=>{autoFillWall();renderWall();wallSetPaused(false);});}
+  if(pageId==='pageScreenWall'){Promise.all([loadContainers(),loadDevices()]).then(()=>{autoFillWall();renderWall();});}
   if(pageId==='pageLogs')loadLogs();
   if(pageId==='pageUsers')loadUsers();
 }
@@ -1050,15 +1051,15 @@ let wallDeviceOpen={};        // 设备(host) -> 展开态
 let wallPending=new Set();    // 添加弹窗内已勾选、待加入的 adb
 const wallCells=new Map();   // adbAddr -> {el,canvas,player}  复用单元格，避免重连
 class WallPlayer{
-  constructor(canvas,adbAddr,maxSize){this.maxSize=maxSize||720;this.paused=false;this.canvas=canvas;this.ctx=canvas.getContext('2d');this.decoder=null;this.buffer=new Uint8Array(0);this.lastStart=-1;this.nalCache=[];this.ws=null;this.adbAddr=adbAddr;this.reconnectDelay=1000;this.reconnectTimer=null;this.destroyed=false;this.maxQueue=30;this.dropUntilKey=false;this._dropStart=0;this._resyncing=false;this._initDecoder()}
+  constructor(canvas,adbAddr,maxSize){this.maxSize=maxSize||720;this.paused=false;this.canvas=canvas;this.ctx=canvas.getContext('2d');this.decoder=null;this.buffer=new Uint8Array(0);this.lastStart=-1;this.nalCache=[];this.ws=null;this.adbAddr=adbAddr;this.reconnectDelay=1000;this.reconnectTimer=null;this.destroyed=false;this.maxQueue=30;this.dropUntilKey=false;this._dropStart=0;this._resyncing=false;this.reconnects=0;this._initDecoder()}
   _initDecoder(){if(typeof VideoDecoder==='undefined')return;this.ts=0;try{this.decoder=new VideoDecoder({output:(frame)=>{try{if(!this._csLogged){this._csLogged=1;try{console.log('[wall]',this.adbAddr,'frame.colorSpace=',JSON.stringify(frame.colorSpace))}catch(_){}}if(this.canvas.width!==frame.displayWidth)this.canvas.width=frame.displayWidth;if(this.canvas.height!==frame.displayHeight)this.canvas.height=frame.displayHeight;const n=performance.now();if(n-(this._lastDraw||0)>=70){this._lastDraw=n;this.ctx.drawImage(frame,0,0)}}catch(e){}frame.close()},error:(e)=>{console.error('decode error',e)}});this.decoder.configure({codec:'avc1.42C01E',optimizeForLatency:true})}catch(e){}}
   _drawStatus(text,color){try{const c=this.ctx;if(!this.canvas.width)this.canvas.width=300;if(!this.canvas.height)this.canvas.height=400;c.fillStyle='#000';c.fillRect(0,0,this.canvas.width,this.canvas.height);c.fillStyle=color||'#8899aa';c.font='12px sans-serif';c.textBaseline='middle';c.fillText(text,8,this.canvas.height/2);}catch(e){}}
-  connect(){if(this.destroyed)return;if(this.ws)this.disconnect();this._clearLoadTimer();this._drawStatus('连接中…','#8899aa');const wproto=(window.location.protocol==='https:')?'wss://':'ws://';this.ws=new WebSocket(wproto+window.location.host+'/ws/screen?adb_addr='+encodeURIComponent(this.adbAddr)+'&max_size='+(this.maxSize||480));this.ws.binaryType='arraybuffer';this.ws.onopen=()=>{this.reconnectDelay=1000;if(!this.decoder){this._drawStatus('⚠ 浏览器不支持 WebCodecs（请使用 https + Chrome/Edge）','#ff6b6b')}else{this._drawStatus('连接中…','#8899aa');this._armLoadTimer()}};this.ws.onmessage=(e)=>{if(this.paused)return;this._armLoadTimer();this.buffer=this._concat(this.buffer,new Uint8Array(e.data));this._parse()};this.ws.onclose=(ev)=>{this.ws=null;this._clearLoadTimer();if(this.destroyed)return;const code=ev&&ev.code;if(code===4002){this._drawStatus('设备不可达（adb 连接失败）','#ff6b6b');return}if(code===4001){this._drawStatus('登录已过期，请重新登录','#ff6b6b');return}if(code===4000){this._drawStatus('参数缺失','#ff6b6b');return}this._drawStatus('重连中…','#8899aa');this._scheduleReconnect()};this.ws.onerror=()=>{if(this.ws){try{this.ws.close()}catch{}this.ws=null}}}
+  connect(){if(this.destroyed)return;if(this.ws)this.disconnect();this._clearLoadTimer();this._drawStatus('连接中…','#8899aa');const wproto=(window.location.protocol==='https:')?'wss://':'ws://';this.ws=new WebSocket(wproto+window.location.host+'/ws/screen?adb_addr='+encodeURIComponent(this.adbAddr)+'&max_size='+(this.maxSize||480));this.ws.binaryType='arraybuffer';this.ws.onopen=()=>{this.reconnectDelay=1000;this.reconnects=0;if(!this.decoder){this._drawStatus('⚠ 浏览器不支持 WebCodecs（请使用 https + Chrome/Edge）','#ff6b6b')}else{this._drawStatus('连接中…','#8899aa');this._armLoadTimer()}};this.ws.onmessage=(e)=>{if(this.paused)return;this._armLoadTimer();this.buffer=this._concat(this.buffer,new Uint8Array(e.data));this._parse()};this.ws.onclose=(ev)=>{this.ws=null;this._clearLoadTimer();if(this.destroyed)return;const code=ev&&ev.code;if(code===4002){this._drawStatus('设备不可达（adb 连接失败）','#ff6b6b');return}if(code===4001){this._drawStatus('登录已过期，请重新登录','#ff6b6b');return}if(code===4000){this._drawStatus('参数缺失','#ff6b6b');return}this._drawStatus('重连中…','#8899aa');this._scheduleReconnect()};this.ws.onerror=()=>{if(this.ws){try{this.ws.close()}catch{}this.ws=null}}}
   _clearLoadTimer(){if(this._loadTimer){clearTimeout(this._loadTimer);this._loadTimer=null}}
   _armLoadTimer(){this._clearLoadTimer();this._loadTimer=setTimeout(()=>{if(this.destroyed||!this.ws)return;this._drawStatus('连接中… 设备响应较慢','#ffa500');this._loadTimer=setTimeout(()=>{if(this.destroyed||!this.ws)return;this._drawStatus('连接失败，重试中…','#ff6b6b');try{this.ws.close()}catch(_){}},12000)},8000)}
   setMaxSize(ms){this.maxSize=parseInt(ms)||480;try{if(this.ws)this.disconnect()}catch(e){};this._drawStatus('切换分辨率 '+this.maxSize+'…','#8899aa');this.connect()}
   setPaused(p){if(p===this.paused)return;this.paused=p;if(!p){this.buffer=new Uint8Array(0);this.lastStart=-1;this.nalCache=[];this.dropUntilKey=true;this._dropStart=0;this._drawStatus('恢复中…','#8899aa');try{this.requestIdr&&this.requestIdr()}catch(e){}}}
-  _scheduleReconnect(){if(this.destroyed||this.reconnectTimer)return;this.reconnectTimer=setTimeout(()=>{this.reconnectTimer=null;if(!this.destroyed){this.reconnectDelay=Math.min(this.reconnectDelay*1.5,15000);this.connect()}},this.reconnectDelay)}
+  _scheduleReconnect(){if(this.destroyed||this.reconnectTimer)return;const cap=Math.min(this.reconnectDelay*1.5,15000);const jitter=cap*0.2*Math.random();this.reconnectTimer=setTimeout(()=>{this.reconnectTimer=null;if(!this.destroyed){this.reconnectDelay=cap;this.reconnects++;this.connect()}},this.reconnectDelay+jitter)}
   _parse(){let pos=0;while(pos<this.buffer.length-3){let sl=0;if(this.buffer[pos]===0&&this.buffer[pos+1]===0&&this.buffer[pos+2]===1)sl=3;else if(pos<this.buffer.length-4&&this.buffer[pos]===0&&this.buffer[pos+1]===0&&this.buffer[pos+2]===0&&this.buffer[pos+3]===1)sl=4;if(sl>0){if(this.lastStart>=0){const nalData=this.buffer.slice(this.lastStart,pos);const nalType=nalData[sl]&0x1F;this.nalCache.push(nalData);if(nalType===5||nalType===1)this._flush()}this.lastStart=pos;pos+=sl}else{pos++}}if(this.lastStart>=0){this.buffer=this.buffer.slice(this.lastStart);this.lastStart=0}}
   _flush(){
     if(this.nalCache.length===0||!this.decoder)return;
@@ -1119,15 +1120,38 @@ function wallSendTouch(adbAddr,action,params){
     .then(d=>{ if(!d||d.code!==200) toast('控制失败: '+(d&&d.msg||d&&d.code||'未知'),'error'); })
     .catch(e=>{ toast('控制请求未送达: '+e,'error'); });
 }
-function wallCols(){return parseInt(document.getElementById('wallCols').value)||5}
+// 自适应列：按每格最小宽度（220px）推算列数，再以设备数封顶，避免出现大量空占位
+function wallAutoCols(){
+  try{
+    const g=document.getElementById('wallGrid');
+    const w=(g&&g.clientWidth)||document.body.clientWidth||800;
+    const n=(typeof wallItems!=='undefined'&&wallItems.length)||0;
+    if(!n)return 5;
+    const c=Math.floor(w/220);
+    return Math.max(1,Math.min(10,Math.min(Math.max(c,1),n)));
+  }catch(e){return 5}
+}
+function wallCols(){
+  const el=document.getElementById('wallCols');const v=el?el.value:'5';
+  if(v==='auto')return wallAutoCols();
+  return parseInt(v)||5}
 function wallRows(){return parseInt(document.getElementById('wallRows').value)||2}
 function resizeWall(){wallPage=0;renderWall()}
+// 自适应模式下，窗口尺寸变化后去抖重排（仅在群控墙实际可见时重算）
+var _autoResizeTimer=null;
+window.addEventListener('resize',function(){
+  try{
+    const el=document.getElementById('wallCols');if(!el||el.value!=='auto')return;
+    const g=document.getElementById('wallGrid');if(!g||!g.clientWidth)return;
+    clearTimeout(_autoResizeTimer);_autoResizeTimer=setTimeout(resizeWall,300);
+  }catch(e){}
+});
 function makeWallCell(item){
   let c=wallCells.get(item.adbAddr);
   const el=c?c.el:document.createElement('div');
   if(!c){
     el.className='wall-cell';
-    el.innerHTML='<div class="wc-label"><div class="wc-meta"><div class="wc-api"></div><div class="wc-name"></div><div class="wc-adb"></div></div><span class="wc-close">×</span></div><canvas></canvas><div class="wc-toolbar"><span class="wc-tb-btn" data-tb="back">返回</span><span class="wc-tb-btn" data-tb="home">主页</span><span class="wc-tb-btn" data-tb="recent">最近</span><select class="wc-tb-res" title="分辨率"><option value="540">540</option><option value="720" selected>720</option></select><input class="wc-tb-input" type="text" placeholder="回车发送"><span class="wc-tb-btn" data-tb="popup">弹窗</span></div>';
+    el.innerHTML='<div class="wc-label"><div class="wc-meta"><div class="wc-api"></div><div class="wc-name"></div><div class="wc-adb"></div></div><span class="wc-close">×</span></div><canvas></canvas><div class="wc-toolbar"><span class="wc-tb-btn" data-tb="back">返回</span><span class="wc-tb-btn" data-tb="home">主页</span><span class="wc-tb-btn" data-tb="recent">最近</span><select class="wc-tb-res" title="分辨率（默认 540；部分设备升到 720 以上会触发硬件解码偏蓝）"><option value="240">240</option><option value="360">360</option><option value="480">480</option><option value="540" selected>540</option><option value="720">720</option><option value="1080">1080</option></select><input class="wc-tb-input" type="text" placeholder="回车发送"><span class="wc-tb-btn" data-tb="popup">弹窗</span></div>';
   }
   const apiEl=el.querySelector('.wc-api');
   if(item.apiUrl){apiEl.style.display='';apiEl.textContent=item.apiUrl;apiEl.title=item.apiUrl}else{apiEl.style.display='none'}
@@ -1137,7 +1161,7 @@ function makeWallCell(item){
   el.querySelector('.wc-close').dataset.removeAdb=item.adbAddr;
   el.querySelectorAll('.wc-tb-btn').forEach(b=>b.dataset.adb=item.adbAddr);
   const tbRes=el.querySelector('.wc-tb-res'),tbInp=el.querySelector('.wc-tb-input');
-  if(tbRes){tbRes.dataset.adb=item.adbAddr;const _pl=wallCells.get(item.adbAddr);tbRes.value=String((_pl&&_pl.player&&_pl.player.maxSize)||720)}
+  if(tbRes){tbRes.dataset.adb=item.adbAddr;const _pl=wallCells.get(item.adbAddr);tbRes.value=String((_pl&&_pl.player&&_pl.player.maxSize)||540)}
   if(tbInp)tbInp.dataset.adb=item.adbAddr;
   if(!c){
     const canvas=el.querySelector('canvas');

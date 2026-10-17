@@ -83,6 +83,10 @@ services:
       ADB_PATH: /usr/bin/adb
       SCREEN_MAX: "540"          # 投屏输出最长边（按设备分辨率等比缩放，越小越流畅/越省带宽）；720 会触发硬件解码偏蓝，取 480 稳妥
       SCREEN_BITRATE: "100000"   # 投屏码率 bps（下调以降低带宽与解码负载）
+      RELAY_STRIP_VUI: "1"       # 剥离 scrcpy SPS 的 color VUI，避免浏览器按 BT.709 解释导致画面偏蓝
+      RELAY_SCRCPY_DETACHED: "1" # scrcpy-server 用 nohup 独立运行，adb 短暂断开不消失（避免频繁 push+重启）
+      RELAY_SCRCPY_HANDSHAKE_TIMEOUT: "20"   # server 回连握手最长等待秒数
+      RELAY_SCRCPY_FRAME_TIMEOUT: "1.0"      # 帧读超时(静止画面无新帧，只等待不判故障)
     volumes:
       - ./screen_relay.py:/app/screen_relay.py:ro   # 投屏中继逻辑热更新（改后 restart relay 生效）
       - ./scrcpy:/app/scrcpy:ro                     # scrcpy-server.jar（v5.0.1，随镜像 COPY 亦可）
