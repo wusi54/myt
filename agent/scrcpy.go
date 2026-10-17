@@ -56,7 +56,9 @@ func (s *ScrcpyServer) Start() error {
 	}
 
 	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Env = append(cmd.Env, "CLASSPATH="+s.JarPath)
+	// 关键：必须在继承父进程环境的基础上追加 CLASSPATH，
+	// 否则 app_process 丢失 PATH 等环境变量导致启动失败
+	cmd.Env = append(os.Environ(), "CLASSPATH="+s.JarPath)
 	// 输出到日志文件，避免阻塞
 	logf, err := openLogFile("/data/local/tmp/scrcpy-agent.log")
 	if err == nil {
