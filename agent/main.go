@@ -18,6 +18,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -106,6 +107,8 @@ func runOnce(relayURL string, maxSize, bitrate int, jarPath string) {
 			log.Printf("[agent] 帧流中断: %v，准备重连", err)
 			// relay 连接可能也断了，重新连
 			relay.Close()
+			// 退避：避免采集持续失败时形成紧密重启循环
+			time.Sleep(2 * time.Second)
 			if err2 := connectRelayWithRetry(relay); err2 != nil {
 				log.Printf("[agent] relay 重连失败: %v", err2)
 				return
@@ -148,12 +151,17 @@ func pumpFrames(reader interface {
 	for {
 		n, err := reader.Read(tmp)
 		if err != nil {
-			return err
+			return fmt.Errorf("读帧失败: %w", err)
 		}
 		if n > 0 {
 			buf = append(buf, tmp[:n]...)
 			// 解析完整帧并转发（帧格式：8字节 pts/config + 4字节 size + payload）
-			buf = relay.ForwardFrames(buf, &frames)
+			buf, err = relay.ForwardFrames(buf, &frames)
+			if err != nil {
+				// 写失败（broken pipe / 写超时）必须中断循环，
+				// 否则 Agent 会一直往死连接写，既不恢复又刷爆日志
+				return err
+			}
 		}
 	}
 }

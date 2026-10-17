@@ -2,11 +2,16 @@ package main
 
 import (
 	"encoding/binary"
+	"fmt"
 	"log"
 	"net/url"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+// writeTimeout 单次写帧超时：防止对「已断但未收到 RST」的半开连接无限阻塞。
+const writeTimeout = 5 * time.Second
 
 // RelayConn 维护与 relay 服务器的 WebSocket 出站连接。
 type RelayConn struct {
@@ -52,14 +57,18 @@ func (r *RelayConn) SendControl(msg string) error {
 //	之后是 size 字节的 payload（annexb H.264）
 //
 // 返回未消费完的剩余字节（不足一帧时保留，等下次数据）。
-func (r *RelayConn) ForwardFrames(buf []byte, frames *int) []byte {
+//
+// ⚠ 写失败必须返回 error 让上层中断并触发重连。
+//   旧实现「只打日志、循环继续」会导致 relay 断开后 Agent 卡在死连接上
+//   不停写 broken pipe（每秒数十条日志刷爆设备存储）且永不恢复。
+func (r *RelayConn) ForwardFrames(buf []byte, frames *int) ([]byte, error) {
 	for len(buf) >= 12 {
 		val := binary.BigEndian.Uint64(buf[0:8])
 		size := binary.BigEndian.Uint32(buf[8:12])
 		if int(size) > 8*1024*1024 {
 			// 异常 size，字节流错位，丢弃重建
 			log.Printf("[agent] 异常帧 size=%d，丢弃缓冲", size)
-			return nil
+			return nil, nil
 		}
 		if len(buf) < 12+int(size) {
 			break // 帧未收全，等更多数据
@@ -73,12 +82,18 @@ func (r *RelayConn) ForwardFrames(buf []byte, frames *int) []byte {
 		}
 
 		// 转发给 relay（二进制帧）
-		if r.conn != nil {
-			if err := r.conn.WriteMessage(websocket.BinaryMessage, payload); err != nil {
-				log.Printf("[agent] 转发帧失败: %v", err)
-			}
+		if r.conn == nil {
+			return buf, fmt.Errorf("relay 连接为空")
+		}
+		// 写超时：避免半开连接上无限阻塞（对端已关但本端未收到 RST）
+		if err := r.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+			return buf, err
+		}
+		if err := r.conn.WriteMessage(websocket.BinaryMessage, payload); err != nil {
+			// 不再循环重试写同一条死连接：直接上抛，由上层断线重连
+			return buf, fmt.Errorf("转发帧失败: %w", err)
 		}
 		*frames++
 	}
-	return buf
+	return buf, nil
 }
