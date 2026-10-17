@@ -91,6 +91,8 @@ AGENT_TOKEN = os.environ.get('AGENT_TOKEN', '')
 def _agent_running(adb_addr):
     """设备端 Agent 是否在运行。"""
     try:
+        # 先 connect（网关映射地址需先建立连接）
+        subprocess.run([ADB, 'connect', adb_addr], capture_output=True, timeout=15)
         r = subprocess.run([ADB, '-s', adb_addr, 'shell', 'pgrep', '-f', 'myt-agent'],
                            capture_output=True, timeout=8)
         return r.returncode == 0
@@ -109,15 +111,28 @@ def _deploy_agent(adb_addr):
         print(f'[agent] 本机无 Agent 二进制 {AGENT_BIN_PATH}，跳过部署', flush=True)
         return False
     try:
-        # 1. push Agent 二进制
-        subprocess.run([ADB, '-s', adb_addr, 'push', AGENT_BIN_PATH, AGENT_DEVICE_PATH],
-                       capture_output=True, timeout=60)
+        # 0. 先 adb connect（adb_addr 是网关映射地址，必须 connect 后才能 push）
+        rc = subprocess.run([ADB, 'connect', adb_addr], capture_output=True, timeout=15)
+        cout = (rc.stdout or b'').decode('utf-8', 'replace').strip()
+        if rc.returncode != 0 and 'connected' not in cout and 'already' not in cout:
+            print(f'[agent] adb connect {adb_addr} 失败: {cout}', flush=True)
+            return False
+        # 1. push Agent 二进制（检查返回码，失败即暴露真实原因）
+        r = subprocess.run([ADB, '-s', adb_addr, 'push', AGENT_BIN_PATH, AGENT_DEVICE_PATH],
+                           capture_output=True, timeout=60)
+        if r.returncode != 0:
+            err = (r.stderr or r.stdout or b'').decode('utf-8', 'replace').strip()
+            print(f'[agent] push Agent 到 {adb_addr} 失败: {err}', flush=True)
+            return False
         # 1.1 push scrcpy-server.jar（Agent 采集依赖）
         jar_local = SCRCPY_SERVER_LOCAL
         jar_device = DEVICE_SERVER_JAR
         if os.path.exists(jar_local):
-            subprocess.run([ADB, '-s', adb_addr, 'push', jar_local, jar_device],
-                           capture_output=True, timeout=60)
+            r2 = subprocess.run([ADB, '-s', adb_addr, 'push', jar_local, jar_device],
+                                capture_output=True, timeout=60)
+            if r2.returncode != 0:
+                err = (r2.stderr or r2.stdout or b'').decode('utf-8', 'replace').strip()
+                print(f'[agent] push scrcpy-server 到 {adb_addr} 失败: {err}', flush=True)
         else:
             print(f'[agent] 本机无 scrcpy-server {jar_local}，Agent 可能无法采集', flush=True)
         # 2. 授权 + 启动（后台常驻）
@@ -129,7 +144,11 @@ def _deploy_agent(adb_addr):
         launch = (f"chmod 755 {AGENT_DEVICE_PATH} && "
                   f"nohup {AGENT_DEVICE_PATH} -relay '{relay_url}/agent?adb_addr={adb_addr}{token_q}' "
                   f">/data/local/tmp/myt-agent.log 2>&1 </dev/null &")
-        subprocess.run([ADB, '-s', adb_addr, 'shell', launch], capture_output=True, timeout=10)
+        r3 = subprocess.run([ADB, '-s', adb_addr, 'shell', launch], capture_output=True, timeout=10)
+        if r3.returncode != 0:
+            err = (r3.stderr or r3.stdout or b'').decode('utf-8', 'replace').strip()
+            print(f'[agent] 启动 Agent 到 {adb_addr} 失败: {err}', flush=True)
+            return False
         print(f'[agent] 已部署 Agent 到 {adb_addr}, relay={relay_url}', flush=True)
         return True
     except Exception as e:
@@ -894,7 +913,8 @@ async def agent_handler(ws):
     loop = asyncio.get_running_loop()
     with lock:
         s = streams.get(adb_addr)
-        if s is None:
+        if s is None or (s.stop.is_set() and s.producer is None):
+            # 新建 Stream（不存在，或是 Agent 模式下已 stop 的旧 Stream 残留）
             s = Stream(adb_addr, loop)
             streams[adb_addr] = s
             s.start_agent()   # 只启动 dispatcher，不启动 producer/heartbeat
@@ -909,8 +929,14 @@ async def agent_handler(ws):
             # 文本消息忽略（保留扩展，如控制指令）
     finally:
         print(f'[relay][agent] agent disconnected adb_addr={adb_addr}', flush=True)
-        # Agent 断开：标记流停止，让 dispatcher 退出，避免残留
+        # Agent 断开：停止 dispatcher，并从 streams 移除（Agent 模式无 producer）
         s.stop.set()
+        with lock:
+            if streams.get(adb_addr) is s:
+                streams.pop(adb_addr, None)
+        # 自愈：Agent 断开后，后台重新部署 Agent（Agent 会自动重连 /agent）
+        # 避免「Agent 断了就永远黑屏，直到浏览器重连才恢复」
+        threading.Thread(target=_ensure_agent, args=(adb_addr,), daemon=True).start()
 
 
 def build_input_cmd(adb_addr, d):
