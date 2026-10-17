@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -17,6 +18,8 @@ const writeTimeout = 5 * time.Second
 type RelayConn struct {
 	URL  string
 	conn *websocket.Conn
+	done chan struct{} // 读协程退出（连接已不可用）时关闭
+	once sync.Once
 }
 
 // Connect 建立到 relay 的 WebSocket 连接。
@@ -30,11 +33,46 @@ func (r *RelayConn) Connect() error {
 		return err
 	}
 	r.conn = conn
+	r.done = make(chan struct{})
+	r.once = sync.Once{}
+	// ⚠ 必须启动读协程：gorilla 只在读路径里回复 ping。
+	// 不读 -> 永不回 pong -> relay(ping_interval=30s/ping_timeout=120s) 判定超时并踢掉连接。
+	go r.readLoop()
 	return nil
+}
+
+// readLoop 持续读取并丢弃来自 relay 的消息。
+// 作用有二：① 让 gorilla 自动回复 ping/pong 维持心跳；② 对端关闭时立刻感知。
+func (r *RelayConn) readLoop() {
+	defer r.markDone()
+	for {
+		if r.conn == nil {
+			return
+		}
+		if _, _, err := r.conn.NextReader(); err != nil {
+			log.Printf("[agent] relay 读循环结束: %v", err)
+			return
+		}
+	}
+}
+
+func (r *RelayConn) markDone() {
+	if r.done != nil {
+		r.once.Do(func() { close(r.done) })
+	}
+}
+
+// Closed 返回连接关闭信号。
+func (r *RelayConn) Closed() <-chan struct{} {
+	if r.done == nil {
+		return nil
+	}
+	return r.done
 }
 
 // Close 关闭连接。
 func (r *RelayConn) Close() {
+	r.markDone()
 	if r.conn != nil {
 		r.conn.Close()
 	}
@@ -63,6 +101,13 @@ func (r *RelayConn) SendControl(msg string) error {
 //   不停写 broken pipe（每秒数十条日志刷爆设备存储）且永不恢复。
 func (r *RelayConn) ForwardFrames(buf []byte, frames *int) ([]byte, error) {
 	for len(buf) >= 12 {
+		// 读协程已退出 = 连接不可用（含被 relay 心跳超时踢掉），立即上抛触发重连，
+		// 不要等到写失败才发现
+		select {
+		case <-r.Closed():
+			return buf, fmt.Errorf("relay 连接已关闭")
+		default:
+		}
 		val := binary.BigEndian.Uint64(buf[0:8])
 		size := binary.BigEndian.Uint32(buf[8:12])
 		if int(size) > 8*1024*1024 {
