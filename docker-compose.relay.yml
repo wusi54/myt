@@ -1,0 +1,50 @@
+# 独立 relay 公共服务 —— 投屏中继（方向 A：Agent 上行流 + 浏览器下行流）
+#
+# 架构：
+#   云手机 Agent ──ws://<relay公网>:8111/agent?adb_addr=xxx──▶ relay(本服务)
+#   浏览器       ──ws://<relay公网>:8111/stream?adb_addr=xxx──▶ relay(本服务)
+#
+# 部署：
+#   docker compose -f docker-compose.relay.yml up -d --build
+# 之后在网关做 NAT 映射：外网 8111 -> 本机 relay 9000
+#
+# 说明：
+#   - relay 独立部署，不依赖 myt 平台的 web/nginx
+#   - 9000 端口同时服务 /agent（Agent 上行）和 /stream（浏览器下行）
+#   - 仍需要 adb 连云手机（部署 Agent、控制指令）
+services:
+  relay:
+    build:
+      context: .
+      args:
+        APT_MIRROR: ${APT_MIRROR:-mirrors.aliyun.com}
+        APT_SCHEME: ${APT_SCHEME:-https}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-mirrors.aliyun.com}
+    container_name: myt-relay-standalone
+    restart: unless-stopped
+    init: true
+    command: ["python", "screen_relay.py"]
+    ports:
+      - "9000:9000"     # WS 端口（NAT 映射 8111 -> 9000）
+      - "9001:9001"     # 控制 HTTP 端口
+    environment:
+      RELAY_PORT: "9000"
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}   # JWT 校验，需与 myt 平台一致
+      ADB_PATH: /usr/bin/adb
+      SCREEN_MAX: "540"
+      SCREEN_BITRATE: "100000"
+      RELAY_STRIP_VUI: "1"
+      RELAY_USE_AGENT: "1"
+      # Agent 相关
+      AGENT_RELAY_HOST: ${AGENT_RELAY_HOST:-ws://113.105.100.58:8111}  # relay NAT 映射地址（Agent 出站连这里）
+      AGENT_TOKEN: ${AGENT_TOKEN:-}   # Agent 上行流认证密钥（生产务必设置）
+      AGENT_BIN_PATH: /app/agent/myt-agent-arm64   # 推送 Agent 二进制的本地路径
+      AGENT_DEVICE_PATH: /data/local/tmp/myt-agent  # Agent 在设备上的落盘路径
+    volumes:
+      - ./screen_relay.py:/app/screen_relay.py:ro
+      - ./auth.py:/app/auth.py:ro
+      - ./db.py:/app/db.py:ro
+      - ./scrcpy:/app/scrcpy:ro                    # scrcpy-server.jar
+      - ./agent:/app/agent:ro                      # Agent 二进制（推送用）
+      - ./data:/app/data:rw                        # SQLite（可选，读 devices enabled）
