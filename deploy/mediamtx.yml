@@ -1,0 +1,33 @@
+# MediaMTX production config for myt (live)
+# 认证凭据与公网 IP 通过环境变量注入（deploy/.env 或 shell export），不写入版本库
+# 环境变量替换在 yaml 任意位置生效（${VAR}）
+
+rtsp: yes
+rtspAddress: :8554
+
+srt: yes
+srtAddress: :8890
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcAllowOrigins: ["*"]
+webrtcLocalUDPAddress: :8189
+# host 网络下会自动检测服务器所有网卡 IP 作为 ICE 候选；
+# 若服务器在 NAT/负载均衡后（浏览器实际看到的是另一层公网 IP），必须手动填那层 IP：
+webrtcAdditionalHosts: [${PUBLIC_IP}]
+webrtcICEServers2: []
+
+readTimeout: 10m
+writeTimeout: 10m
+
+# 认证：生产必须开启，否则任何人可推流/拉流
+paths:
+  all:
+    publishUser: ${PUBLISH_USER}
+    publishPass: ${PUBLISH_PASS}
+    readUser: ${READ_USER}
+    readPass: ${READ_PASS}
+    publishSourceProtocols: [rtsp, rtmp]
+
+logLevel: info
+logDestinations: [stdout]

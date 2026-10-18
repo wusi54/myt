@@ -15,6 +15,7 @@ func main() {
 	maxSize := flag.Int("max-size", 720, "输出最长边")
 	bitrate := flag.Int("bitrate", 1000000, "码率 bps")
 	jarPath := flag.String("jar", "/data/local/tmp/scrcpy-server.jar", "scrcpy-server.jar 路径")
+	transport := flag.String("transport", "tcp", "RTSP 传输方式: tcp(默认,稳定) 或 udp(低延迟,需公网可达)")
 	flag.Parse()
 
 	if *relayURL == "" {
@@ -38,14 +39,14 @@ func main() {
 		default:
 		}
 
-		runOnce(*relayURL, *maxSize, *bitrate, *jarPath)
+		runOnce(*relayURL, *maxSize, *bitrate, *jarPath, *transport)
 		log.Printf("[agent] 一次会话结束，5 秒后重启...")
 		time.Sleep(5 * time.Second)
 	}
 }
 
 // runOnce 执行一次完整的「启动 scrcpy + 连 MediaMTX + 推流」会话。
-func runOnce(relayURL string, maxSize, bitrate int, jarPath string) {
+func runOnce(relayURL string, maxSize, bitrate int, jarPath, transport string) {
 	// 1. 启动 scrcpy-server（tunnel_forward 模式）
 	server := &ScrcpyServer{
 		JarPath: jarPath,
@@ -69,7 +70,7 @@ func runOnce(relayURL string, maxSize, bitrate int, jarPath string) {
 	defer reader.Close()
 
 	// 3. 连接 MediaMTX（RTSP RECORD 推流）
-	streamer := NewRTPStreamer(relayURL)
+	streamer := NewRTPStreamer(relayURL, transport)
 	if err := streamer.Connect(); err != nil {
 		log.Printf("[agent] RTSP 推流连接失败: %v", err)
 		time.Sleep(3 * time.Second)

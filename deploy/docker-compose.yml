@@ -1,0 +1,9 @@
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.15.0
+    restart: unless-stopped
+    # host 网络：MediaMTX 直接看到服务器所有网卡，自动检测 ICE 候选，无需端口映射
+    network_mode: host
+    env_file: .env
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml

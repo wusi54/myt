@@ -13,22 +13,29 @@ import (
 
 // RTPStreamer 负责把 scrcpy 采集到的 H.264 帧转成 RTP 推流到 MediaMTX。
 type RTPStreamer struct {
-	rtspURL string // rtsp://mediamtx:8554/device_xxx
-	client  *gortsplib.Client
-	forma   *format.H264
-	rtpEnc  *rtph264.Encoder
-	media   *description.Media
+	rtspURL   string // rtsp://mediamtx:8554/device_xxx
+	protocol  *gortsplib.Protocol
+	client    *gortsplib.Client
+	forma     *format.H264
+	rtpEnc    *rtph264.Encoder
+	media     *description.Media
 	// PTS 基准
-	startTime  time.Time
+	startTime   time.Time
 	randomStart uint32
-	frameCount uint64
+	frameCount  uint64
 }
 
 // NewRTPStreamer 创建推流器。
-func NewRTPStreamer(rtspURL string) *RTPStreamer {
+// transport: "tcp"（推荐，穿透 NAT/防火墙稳定）或 "udp"（低延迟，需网络可达）。
+func NewRTPStreamer(rtspURL, transport string) *RTPStreamer {
+	proto := gortsplib.ProtocolTCP // 默认 TCP：RTP 内嵌 RTSP 连接，不受 NAT/端口映射影响
+	if transport == "udp" {
+		proto = gortsplib.ProtocolUDP
+	}
 	return &RTPStreamer{
-		rtspURL:    rtspURL,
-		startTime:  time.Now(),
+		rtspURL:   rtspURL,
+		protocol:  &proto,
+		startTime: time.Now(),
 	}
 }
 
@@ -45,7 +52,9 @@ func (r *RTPStreamer) Connect() error {
 		}},
 	}
 
-	c := &gortsplib.Client{}
+	c := &gortsplib.Client{
+		Protocol: r.protocol, // 显式指定 RTSP 传输协议（TCP/UDP），避免默认先试 UDP
+	}
 	if err := c.StartRecording(r.rtspURL, desc); err != nil {
 		return fmt.Errorf("RTSP RECORD 开始失败: %w", err)
 	}

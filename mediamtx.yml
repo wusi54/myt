@@ -5,6 +5,10 @@
 rtsp: yes
 rtspAddress: :8554
 
+# SRT
+srt: yes
+srtAddress: :8890
+
 # WebRTC
 webrtc: yes
 webrtcAddress: :8889
