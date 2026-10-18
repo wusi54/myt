@@ -61,6 +61,15 @@ func main() {
 	}
 }
 
+// abortIfFatal 遇到不可重试错误（如 AGENT_TOKEN 无效）时直接退出进程。
+// 继续循环只会反复重启 scrcpy-server，白白耗尽设备 CPU / 内存。
+func abortIfFatal(relay *RelayConn) {
+	if reason := relay.FatalReason(); reason != "" {
+		log.Printf("[agent] 致命错误，进程退出: %s", reason)
+		os.Exit(1)
+	}
+}
+
 // runOnce 执行一次完整的「启动 scrcpy + 连 relay + 转发」会话。
 // 任何环节失败都会返回，由外层循环重试（实现断线自愈）。
 func runOnce(relayURL string, maxSize, bitrate int, jarPath string) {
@@ -68,6 +77,7 @@ func runOnce(relayURL string, maxSize, bitrate int, jarPath string) {
 	relay := &RelayConn{URL: relayURL}
 	if err := connectRelayWithRetry(relay); err != nil {
 		log.Printf("[agent] 连接 relay 失败: %v", err)
+		abortIfFatal(relay)
 		return
 	}
 	defer relay.Close()
@@ -77,6 +87,18 @@ func runOnce(relayURL string, maxSize, bitrate int, jarPath string) {
 	for {
 		select {
 		case <-sigChannel:
+			return
+		default:
+		}
+		// relay 连接已断（含被鉴权拒绝）时，先结束本次会话交由外层重连，
+		// 否则会在下面无限重启 scrcpy-server，白白耗尽设备 CPU / 内存。
+		if relay.FatalReason() != "" {
+			abortIfFatal(relay)
+			return
+		}
+		select {
+		case <-relay.Closed():
+			log.Printf("[agent] relay 连接已断开，结束本次会话并重连")
 			return
 		default:
 		}
@@ -111,6 +133,7 @@ func runOnce(relayURL string, maxSize, bitrate int, jarPath string) {
 			time.Sleep(2 * time.Second)
 			if err2 := connectRelayWithRetry(relay); err2 != nil {
 				log.Printf("[agent] relay 重连失败: %v", err2)
+				abortIfFatal(relay)
 				return
 			}
 		}
@@ -127,6 +150,10 @@ func init() {
 func connectRelayWithRetry(relay *RelayConn) error {
 	delay := time.Second
 	for i := 0; i < 30; i++ {
+		// 鉴权/参数类致命错误：重试无意义，直接返回让上层停止
+		if reason := relay.FatalReason(); reason != "" {
+			return fmt.Errorf("%s", reason)
+		}
 		err := relay.Connect()
 		if err == nil {
 			return nil

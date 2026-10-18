@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -20,6 +21,20 @@ type RelayConn struct {
 	conn *websocket.Conn
 	done chan struct{} // 读协程退出（连接已不可用）时关闭
 	once sync.Once
+	// fatal 保存「不可重试」的致命原因（如 4001 鉴权失败）。
+	// 这类错误重试多少次都不会变好，必须停止重连，否则会无限重启 scrcpy-server 拖垮设备。
+	fatal atomic.Value // string
+}
+
+// setFatal 记录致命原因（并发安全）。
+func (r *RelayConn) setFatal(msg string) { r.fatal.Store(msg) }
+
+// FatalReason 返回致命原因，空串表示可继续重试。
+func (r *RelayConn) FatalReason() string {
+	if v := r.fatal.Load(); v != nil {
+		return v.(string)
+	}
+	return ""
 }
 
 // Connect 建立到 relay 的 WebSocket 连接。
@@ -50,6 +65,11 @@ func (r *RelayConn) readLoop() {
 			return
 		}
 		if _, _, err := r.conn.NextReader(); err != nil {
+			// 4000/4001 是 relay 明确拒绝（adb_addr 缺失 / AGENT_TOKEN 无效），
+			// 重试多少次都不会成功。若继续重连，会反复重启 scrcpy-server 把设备拖垮。
+			if websocket.IsCloseError(err, 4000, 4001) {
+				r.setFatal(fmt.Sprintf("relay 拒绝连接(%v)：adb_addr 缺失或 AGENT_TOKEN 无效，请核对后重启 Agent", err))
+			}
 			log.Printf("[agent] relay 读循环结束: %v", err)
 			return
 		}

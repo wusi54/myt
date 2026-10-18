@@ -29,6 +29,11 @@ func (s *ScrcpyServer) Start() error {
 	if s.JarPath == "" {
 		s.JarPath = "/data/local/tmp/scrcpy-server.jar"
 	}
+	// jar 缺失时直接报错，不去调 app_process 空转：
+	// 设备会不定时清理 /data/local/tmp，jar 没了必须由 relay 重新部署时一并推送
+	if _, err := os.Stat(s.JarPath); err != nil {
+		return fmt.Errorf("scrcpy-server.jar 不存在(%s)，需由 relay 重新部署", s.JarPath)
+	}
 	if s.MaxSize <= 0 {
 		s.MaxSize = 720
 	}

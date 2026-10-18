@@ -142,9 +142,12 @@ def _deploy_agent(adb_addr):
         # Agent 出站 URL：带 token 鉴权（AGENT_TOKEN）
         token_q = f'&token={AGENT_TOKEN}' if AGENT_TOKEN else ''
         launch = (f"chmod 755 {AGENT_DEVICE_PATH} && "
-                  f"nohup {AGENT_DEVICE_PATH} -relay '{relay_url}/agent?adb_addr={adb_addr}{token_q}' "
+                  # setsid：彻底脱离 adb shell 会话，否则 adb shell 可能因会话未关闭而挂住。
+                  # 曾出现设备端进程明明起来了、但 adb shell 10 秒不返回导致误判部署失败。
+                  f"setsid nohup {AGENT_DEVICE_PATH} -relay '{relay_url}/agent?adb_addr={adb_addr}{token_q}' "
                   f">/data/local/tmp/myt-agent.log 2>&1 </dev/null &")
-        r3 = subprocess.run([ADB, '-s', adb_addr, 'shell', launch], capture_output=True, timeout=10)
+        # 超时放宽到 25s：慢设备（低端云手机）上 chmod + 启动可能超过 10s
+        r3 = subprocess.run([ADB, '-s', adb_addr, 'shell', launch], capture_output=True, timeout=25)
         if r3.returncode != 0:
             err = (r3.stderr or r3.stdout or b'').decode('utf-8', 'replace').strip()
             print(f'[agent] 启动 Agent 到 {adb_addr} 失败: {err}', flush=True)
