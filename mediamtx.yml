@@ -22,5 +22,5 @@ paths:
   all:
 
 # Logging
-logLevel: info
+logLevel: debug
 logDestinations: [stdout]

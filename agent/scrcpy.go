@@ -26,6 +26,10 @@ func (s *ScrcpyServer) Start() error {
 	if s.JarPath == "" {
 		s.JarPath = "/data/local/tmp/scrcpy-server.jar"
 	}
+	// 自动释放嵌入的 scrcpy-server.jar（单包部署，无需单独推送）
+	if err := ensureScrcpyJar(s.JarPath); err != nil {
+		log.Printf("[agent] 释放 scrcpy-server.jar 失败: %v（尝试使用已有文件）", err)
+	}
 	if s.MaxSize <= 0 {
 		s.MaxSize = 720
 	}
