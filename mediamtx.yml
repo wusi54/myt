@@ -10,6 +10,7 @@ webrtc: yes
 webrtcAddress: :8889
 webrtcAllowOrigins: ["*"]
 webrtcLocalUDPAddress: :8189
+webrtcAdditionalHosts: [127.0.0.1]
 webrtcICEServers2: []
 
 # Timeouts (very high for stability)
