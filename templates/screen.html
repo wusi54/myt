@@ -34,8 +34,10 @@ const statusEl = document.getElementById('status');
 
 function streamName(a){ return 'dev_' + String(a).replace(/\./g,'_').replace(/:/g,'_').replace(/-/g,'_'); }
 const sname = streamName(adbAddr);
-// MediaMTX WebRTC (WHEP) base URL: same host, port 8889
-const mediamtxBase = (window.location.protocol === 'https:' ? 'https://' : 'http://') + window.location.hostname + ':8889';
+// MediaMTX WebRTC (WHEP) base URL: MediaMTX serves HTTP on 8889 (not HTTPS)
+// Use http:// always; for remote HTTPS pages, browser may block mixed content
+// -> in that case, access MediaMTX directly via http://<host>:8889 or configure TLS
+const mediamtxBase = 'http://' + window.location.hostname + ':8889';
 const whepUrl = mediamtxBase + '/' + sname + '/whep';
 console.log('WHEP url:', whepUrl);
 
