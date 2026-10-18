@@ -1,5 +1,6 @@
 # MediaMTX minimal config for myt RTP+WebRTC
 # Allow anonymous publish and playback
+
 # RTSP
 rtsp: yes
 rtspAddress: :8554
@@ -9,10 +10,16 @@ webrtc: yes
 webrtcAddress: :8889
 webrtcAllowOrigins: ["*"]
 webrtcLocalUDPAddress: :8189
-webrtcICEServers: []
+webrtcICEServers2: []
 
-# Logging
+# Timeouts (increase for stability)
+readTimeout: 60s
+writeTimeout: 60s
+
+# Paths (allow all)
 paths:
   all:
+
+# Logging
 logLevel: info
 logDestinations: [stdout]
