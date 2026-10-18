@@ -12,9 +12,9 @@ webrtcAllowOrigins: ["*"]
 webrtcLocalUDPAddress: :8189
 webrtcICEServers2: []
 
-# Timeouts (increase for stability)
-readTimeout: 60s
-writeTimeout: 60s
+# Timeouts (very high for stability)
+readTimeout: 10m
+writeTimeout: 10m
 
 # Paths (allow all)
 paths:
