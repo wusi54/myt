@@ -14,9 +14,6 @@ import (
 )
 
 // ScrcpyServer 负责在设备端启动 scrcpy-server（tunnel_forward 模式）。
-//
-// tunnel_forward=true 时，scrcpy-server 会监听本地 abstract socket（名字 "scrcpy"，
-// 当 scid=-1 时），等待本地进程连接。这正是 Agent 绕开 adb 隧道的关键。
 type ScrcpyServer struct {
 	JarPath string
 	MaxSize int
@@ -28,11 +25,6 @@ type ScrcpyServer struct {
 func (s *ScrcpyServer) Start() error {
 	if s.JarPath == "" {
 		s.JarPath = "/data/local/tmp/scrcpy-server.jar"
-	}
-	// jar 缺失时直接报错，不去调 app_process 空转：
-	// 设备会不定时清理 /data/local/tmp，jar 没了必须由 relay 重新部署时一并推送
-	if _, err := os.Stat(s.JarPath); err != nil {
-		return fmt.Errorf("scrcpy-server.jar 不存在(%s)，需由 relay 重新部署", s.JarPath)
 	}
 	if s.MaxSize <= 0 {
 		s.MaxSize = 720
@@ -63,11 +55,10 @@ func (s *ScrcpyServer) Start() error {
 	}
 
 	cmd := exec.Command(args[0], args[1:]...)
-	// 关键：必须在继承父进程环境的基础上追加 CLASSPATH，
-	// 否则 app_process 丢失 PATH 等环境变量导致启动失败
+	// 继承父进程环境变量，追加 CLASSPATH
 	cmd.Env = append(os.Environ(), "CLASSPATH="+s.JarPath)
 	// 输出到日志文件，避免阻塞
-	logf, err := openLogFile("/data/local/tmp/scrcpy-agent.log")
+	logf, err := os.OpenFile("/data/local/tmp/scrcpy-agent.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
 		cmd.Stdout = logf
 		cmd.Stderr = logf
@@ -79,10 +70,6 @@ func (s *ScrcpyServer) Start() error {
 	s.cmd = cmd
 	log.Printf("[agent] scrcpy-server 已启动 (pid=%d), tunnel_forward=true", cmd.Process.Pid)
 	return nil
-}
-
-func openLogFile(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 }
 
 // Connect 连接 scrcpy-server 监听的本地 abstract socket "scrcpy"。
@@ -104,39 +91,21 @@ func (s *ScrcpyServer) Connect() (net.Conn, error) {
 		return nil, fmt.Errorf("连接 abstract socket 失败: %w", err)
 	}
 
-	// ⚠ 协议头必须完整消费，否则帧解析整体错位（表现为大量「异常帧 size=...」）。
-	// 本 Agent 用 send_dummy_byte=true + send_stream_meta=true，socket 上的布局是：
-	//   1B dummy + 4B codec id("h264") + 12B stream meta(宽/高) + 帧流
-	// 这与 relay 传统 scrcpy 路径（codec id + stream meta）一致，只多 1 字节 dummy。
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-
-	// 1) dummy byte
-	if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil {
+	// 读 dummy byte（send_dummy_byte=true 时，server 会先发 1 字节 0）
+	dummy := make([]byte, 1)
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := conn.Read(dummy); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("读 dummy byte 失败: %w", err)
 	}
-	// 2) codec id（4 字节）
-	codecID := make([]byte, 4)
-	if _, err := io.ReadFull(conn, codecID); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("读 codec id 失败: %w", err)
-	}
-	if string(codecID) != "h264" {
-		conn.Close()
-		return nil, fmt.Errorf("非预期 codec: %q（帧解析会错位）", string(codecID))
-	}
-	// 3) stream meta（12 字节：[4:8] 宽 / [8:12] 高）
-	meta := make([]byte, 12)
-	if _, err := io.ReadFull(conn, meta); err != nil {
+	// 读 stream meta（send_stream_meta=true 时，server 会发 4 字节 codec id）
+	streamMeta := make([]byte, 4)
+	if _, err := conn.Read(streamMeta); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("读 stream meta 失败: %w", err)
 	}
-	w := binary.BigEndian.Uint32(meta[4:8])
-	h := binary.BigEndian.Uint32(meta[8:12])
-
 	conn.SetReadDeadline(time.Time{})
-	log.Printf("[agent] 已连接 scrcpy-server 本地 socket，codec=%s 分辨率=%dx%d",
-		string(codecID), w, h)
+	log.Printf("[agent] 已连接 scrcpy-server 本地 socket，dummy+stream_meta 已读 (codec=%x)", streamMeta)
 	return conn, nil
 }
 
@@ -148,4 +117,28 @@ func (s *ScrcpyServer) Stop() {
 		s.cmd.Process.Kill()
 	}
 	exec.Command("pkill", "-f", "com.genymobile.scrcpy.Server").Run()
+}
+
+// ReadFrame 从 conn 读取一个 scrcpy 帧（12字节头 + payload）。
+// 返回 (annexb payload, 是否 config 帧, error)。
+func (s *ScrcpyServer) ReadFrame(conn net.Conn) ([]byte, bool, error) {
+	// 读 12 字节头
+	header := make([]byte, 12)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return nil, false, err
+	}
+	val := binary.BigEndian.Uint64(header[0:8])
+	size := binary.BigEndian.Uint32(header[8:12])
+	config := (val >> 63) & 1
+	if size == 0 {
+		return nil, config == 1, nil
+	}
+	if size > 8*1024*1024 {
+		return nil, false, fmt.Errorf("帧 size 异常: %d", size)
+	}
+	payload := make([]byte, size)
+	if _, err := io.ReadFull(conn, payload); err != nil {
+		return nil, false, err
+	}
+	return payload, config == 1, nil
 }

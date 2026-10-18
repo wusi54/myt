@@ -1,0 +1,18 @@
+# MediaMTX minimal config for myt RTP+WebRTC
+# Allow anonymous publish and playback
+# RTSP
+rtsp: yes
+rtspAddress: :8554
+
+# WebRTC
+webrtc: yes
+webrtcAddress: :8889
+webrtcAllowOrigins: ["*"]
+webrtcLocalUDPAddress: :8189
+webrtcICEServers: []
+
+# Logging
+paths:
+  all:
+logLevel: info
+logDestinations: [stdout]

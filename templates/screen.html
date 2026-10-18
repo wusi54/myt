@@ -7,11 +7,10 @@
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#000;display:flex;justify-content:center;align-items:center;min-height:100vh;flex-direction:column;color:#fff;font-family:sans-serif}
-#screen{width:100%;max-width:480px;border-radius:4px;cursor:crosshair;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+#screen{width:100%;max-width:480px;border-radius:4px;background:#111}
 #status{padding:12px;font-size:14px;color:#8899aa}
 .controls{position:fixed;top:12px;right:12px;z-index:10}
 .btn{padding:8px 16px;background:#c42b1c;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px}
-.btn:hover{background:#d83b2f}
 .toolbar{display:flex;gap:8px;padding:12px;flex-wrap:wrap;justify-content:center}
 .tbtn{padding:8px 16px;background:#1a2a3a;color:#cfe3f5;border:1px solid #2a3a4a;border-radius:4px;cursor:pointer;font-size:13px}
 .tbtn:hover{background:#243a4f;color:#00d4ff}
@@ -19,7 +18,7 @@ body{background:#000;display:flex;justify-content:center;align-items:center;min-
 </head>
 <body>
 <div class="controls"><button class="btn" onclick="window.close()">关闭</button></div>
-<canvas id="screen"></canvas>
+<video id="screen" autoplay playsinline muted></video>
 <div id="status">连接中...</div>
 <div class="toolbar">
   <button class="tbtn" onclick="sendKey(4)">← 返回</button>
@@ -30,18 +29,15 @@ body{background:#000;display:flex;justify-content:center;align-items:center;min-
 </div>
 <script>
 const adbAddr = '{{ adb_addr }}';
-const canvas = document.getElementById('screen');
-const ctx = canvas.getContext('2d');
+const video = document.getElementById('screen');
 const statusEl = document.getElementById('status');
-const wsProto = (window.location.protocol === 'https:') ? 'wss://' : 'ws://';
-const wsUrl = wsProto + window.location.host + '/ws/screen?adb_addr=' + encodeURIComponent(adbAddr);
-console.log('Connecting to:', wsUrl);
 
-let decoder = null;
-let buffer = new Uint8Array(0);
-let lastStart = -1;
-let nalCache = [];
-let dropUntilKey = false;   // 背压：解码排队过多时丢弃到下一个关键帧
+function streamName(a){ return 'dev_' + String(a).replace(/\./g,'_').replace(/:/g,'_').replace(/-/g,'_'); }
+const sname = streamName(adbAddr);
+// MediaMTX WebRTC (WHEP) base URL: same host, port 8889
+const mediamtxBase = (window.location.protocol === 'https:' ? 'https://' : 'http://') + window.location.hostname + ':8889';
+const whepUrl = mediamtxBase + '/' + sname + '/whep';
+console.log('WHEP url:', whepUrl);
 
 // ===== 屏幕操作（触控/按键/输入）=====
 async function sendTouch(action, params){
@@ -52,151 +48,78 @@ async function sendTouch(action, params){
       body:JSON.stringify(Object.assign({adb_addr:adbAddr, action:action}, params||{}))
     });
     if(!r.ok) toast('控制失败: '+r.status, 'error');
-  }catch(e){ console.error('touch error', e); toast('控制请求未送达', 'error'); }
+  }catch(e){ console.error('touch error', e); }
 }
 function sendKey(code){ sendTouch('key', {keycode:code}); }
 function sendText(){ const t = prompt('输入文字发送到设备:'); if(t) sendTouch('text', {text:t}); }
 
-// 按 object-fit:contain 计算画面归一化坐标(0~1)，兼容黑边
-function normPoint(clientX, clientY){
-  const rect = canvas.getBoundingClientRect();
-  const bw = canvas.width || 1, bh = canvas.height || 1;
-  const k = Math.min(rect.width/bw, rect.height/bh);
-  const dw = bw*k, dh = bh*k, ox = (rect.width-dw)/2, oy = (rect.height-dh)/2;
-  const nx = (clientX - rect.left - ox)/dw, ny = (clientY - rect.top - oy)/dh;
-  if(nx < 0 || nx > 1 || ny < 0 || ny > 1) return null;
-  return {nx:nx, ny:ny};
-}
-
 let downPt = null;
-canvas.addEventListener('pointerdown', (e)=>{
-  downPt = {x:e.clientX, y:e.clientY, t:Date.now()};
-  try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
-  e.preventDefault();
-});
-canvas.addEventListener('pointerup', (e)=>{
+video.addEventListener('pointerdown', (e)=>{ downPt = {x:e.clientX, y:e.clientY, t:Date.now()}; try{ video.setPointerCapture(e.pointerId);}catch(_){} e.preventDefault(); });
+video.addEventListener('pointerup', (e)=>{
   if(!downPt) return;
   const start = downPt; downPt = null;
   const dist = Math.hypot(e.clientX-start.x, e.clientY-start.y);
-  const p1 = normPoint(start.x, start.y);
-  if(!p1) return;
+  const rect = video.getBoundingClientRect();
+  const bw = video.videoWidth || 1, bh = video.videoHeight || 1;
+  const k = Math.min(rect.width/bw, rect.height/bh);
+  const dw = bw*k, dh = bh*k, ox=(rect.width-dw)/2, oy=(rect.height-dh)/2;
+  const nx0=(start.x-rect.left-ox)/dw, ny0=(start.y-rect.top-oy)/dh;
+  if(nx0<0||nx0>1||ny0<0||ny0>1) return;
   if(dist < 8 && (Date.now()-start.t) < 500){
-    sendTouch('tap', {nx:p1.nx, ny:p1.ny});
+    sendTouch('tap', {nx:nx0, ny:ny0});
   } else {
-    const p2 = normPoint(e.clientX, e.clientY);
-    if(!p2) return;
-    sendTouch('swipe', {nx:p1.nx, ny:p1.ny, nx2:p2.nx, ny2:p2.ny,
-                        duration:Math.max(100, Math.min(800, Math.round(dist/2)))});
+    const nx1=(e.clientX-rect.left-ox)/dw, ny1=(e.clientY-rect.top-oy)/dh;
+    if(nx1<0||nx1>1||ny1<0||ny1>1) return;
+    sendTouch('swipe', {nx:nx0, ny:ny0, nx2:nx1, ny2:ny1, duration:Math.max(100, Math.min(800, Math.round(dist/2)))});
   }
 });
-canvas.addEventListener('pointercancel', ()=>{ downPt = null; });
+video.addEventListener('pointercancel', ()=>{ downPt = null; });
 
-function initDecoder() {
-  if (typeof VideoDecoder === 'undefined') {
-    statusEl.textContent = '浏览器不支持 WebCodecs，请使用 Chrome/Edge';
-    return false;
-  }
+// ===== WebRTC WHEP 播放 =====
+let pc = null;
+async function startWhep(){
+  statusEl.textContent = '连接中 (WebRTC)...';
   try {
-    decoder = new VideoDecoder({
-      output: (frame) => {
-        try {
-          if (canvas.width !== frame.displayWidth) canvas.width = frame.displayWidth;
-          if (canvas.height !== frame.displayHeight) canvas.height = frame.displayHeight;
-          ctx.drawImage(frame, 0, 0);
-        } catch(e) {}
-        frame.close();
-      },
-      error: (e) => console.error('decode error:', e)
+    pc = new RTCPeerConnection({ iceServers: [] });
+    pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.ontrack = (e) => {
+      video.srcObject = e.streams[0];
+      statusEl.textContent = '已连接（可触控操作）';
+    };
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    // wait for ICE gathering (with timeout)
+    await new Promise((resolve) => {
+      if (pc.iceGatheringState === 'complete') { resolve(); return; }
+      const t = setTimeout(resolve, 1500);
+      pc.onicegatheringstatechange = () => {
+        if (pc.iceGatheringState === 'complete') { clearTimeout(t); resolve(); }
+      };
     });
-    decoder.configure({ codec: 'avc1.42C01E', optimizeForLatency: true });
-    return true;
-  } catch(e) {
-    statusEl.textContent = '解码器初始化失败';
-    return false;
-  }
-}
-
-function feedH264(data) {
-  buffer = concat(buffer, new Uint8Array(data));
-  parseStream();
-}
-
-function parseStream() {
-  let pos = 0;
-  while (pos < buffer.length - 3) {
-    let startLen = 0;
-    if (buffer[pos] === 0 && buffer[pos+1] === 0 && buffer[pos+2] === 1) startLen = 3;
-    else if (pos < buffer.length - 4 && buffer[pos] === 0 && buffer[pos+1] === 0 && buffer[pos+2] === 0 && buffer[pos+3] === 1) startLen = 4;
-    if (startLen > 0) {
-      if (lastStart >= 0) {
-        const nalData = buffer.slice(lastStart, pos);
-        const nalType = nalData[startLen] & 0x1F;
-        nalCache.push(nalData);
-        if (nalType === 5 || nalType === 1) flushFrame();
-      }
-      lastStart = pos;
-      pos += startLen;
-    } else { pos++; }
-  }
-  if (lastStart >= 0) { buffer = buffer.slice(lastStart); lastStart = 0; }
-}
-
-function flushFrame() {
-  if (nalCache.length === 0 || !decoder) return;
-  let hasIdr = false;
-  for (const nal of nalCache) {
-    const sl = (nal[0] === 0 && nal[1] === 0 && nal[2] === 0) ? 4 : 3;
-    if ((nal[sl] & 0x1F) === 5) { hasIdr = true; break; }
-  }
-  // 背压：解码排队过多时丢弃到下一个关键帧，避免画面延迟持续累积
-  if (decoder.decodeQueueSize > 30) dropUntilKey = true;
-  if (dropUntilKey) {
-    if (!hasIdr) { nalCache = []; return; }
-    dropUntilKey = false;
-  }
-  const total = nalCache.reduce((s, u) => s + u.length, 0);
-  const frame = new Uint8Array(total);
-  let off = 0;
-  for (const nal of nalCache) { frame.set(nal, off); off += nal.length; }
-  nalCache = [];
-  try { decoder.decode(new EncodedVideoChunk({ type: hasIdr ? 'key' : 'delta', timestamp: 0, duration: 100_000, data: frame })); } catch(e) {}
-}
-
-function concat(a, b) {
-  const c = new Uint8Array(a.length + b.length);
-  c.set(a); c.set(b, a.length);
-  return c;
-}
-
-// Start
-if (!initDecoder()) {
-  statusEl.textContent = '浏览器不支持 WebCodecs';
-} else {
-  connect();
-}
-
-function connect() {
-  statusEl.textContent = '连接中...';
-  const ws = new WebSocket(wsUrl);
-  ws.binaryType = 'arraybuffer';
-
-  ws.onopen = () => { statusEl.textContent = '已连接（可触控操作）'; console.log('WS connected'); };
-  ws.onmessage = (e) => feedH264(e.data);
-  ws.onclose = (e) => {
-    const msgs = {4000:'缺少adb_addr',4001:'已在投屏中',4002:'ADB连接失败',4003:'screenrecord超时，容器可能未运行'};
-    const msg = msgs[e.code] || ('断开 (code='+e.code+')');
-    statusEl.textContent = msg;
-    console.log('WS closed:', e.code, e.reason);
-    if (e.code !== 4000 && e.code !== 4001) {
-      setTimeout(connect, 5000);
+    const res = await fetch(whepUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/sdp' },
+      body: pc.localDescription.sdp
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error('WHEP ' + res.status + ': ' + txt.slice(0,200));
     }
-  };
-  ws.onerror = (e) => {
-    statusEl.textContent = '连接失败，3秒后重连...';
-    console.log('WS error:', e);
-    ws.close();
-  };
+    const answerSdp = await res.text();
+    await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+    // read Location for teardown (optional)
+    const loc = res.headers.get('Location');
+    console.log('WHEP connected, location:', loc);
+  } catch (e) {
+    console.error('WHEP error:', e);
+    statusEl.textContent = 'WebRTC 连接失败: ' + e.message;
+    if (pc) { try { pc.close(); } catch(_){} pc = null; }
+    setTimeout(startWhep, 5000);
+  }
 }
+
+startWhep();
 </script>
 </body>
 </html>
+PY

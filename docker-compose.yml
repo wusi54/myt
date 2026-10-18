@@ -87,9 +87,10 @@ services:
       SCREEN_MAX: "540"          # 投屏输出最长边（按设备分辨率等比缩放，越小越流畅/越省带宽）；720 会触发硬件解码偏蓝，取 480 稳妥
       SCREEN_BITRATE: "100000"   # 投屏码率 bps（下调以降低带宽与解码负载）
       RELAY_STRIP_VUI: "1"       # 剥离 scrcpy SPS 的 color VUI，避免浏览器按 BT.709 解释导致画面偏蓝
-      # 方向 A：Agent 上行流（设备端 Agent 出站推帧，绕开 adb 隧道）
+      # 方向 B：Agent 上行流（设备端 Agent 出站推帧，绕开 adb 隧道）
       RELAY_USE_AGENT: "1"       # 1=启用 Agent 模式（默认），0=回退传统 adb reverse 模式
-      AGENT_RELAY_HOST: ${AGENT_RELAY_HOST:-ws://113.105.100.58:9000}  # Agent 出站连这里（公网地址）
+      MEDIAMTX_RTSP_URL: ${MEDIAMTX_RTSP_URL:-rtsp://113.105.100.58:8554}  # Agent RTSP 推流地址
+      MEDIAMTX_WEBRTC_URL: ${MEDIAMTX_WEBRTC_URL:-http://113.105.100.58:8889}  # 浏览器 WebRTC 拉流地址
       AGENT_TOKEN: ${AGENT_TOKEN:-}           # Agent 上行流认证密钥（生产务必设置）
       AGENT_BIN_PATH: /app/agent/myt-agent-arm64      # 推送 Agent 二进制的容器内路径
       AGENT_DEVICE_PATH: /data/local/tmp/myt-agent     # Agent 在设备上的落盘路径
@@ -97,6 +98,19 @@ services:
       - ./screen_relay.py:/app/screen_relay.py:ro   # 投屏中继逻辑热更新（改后 restart relay 生效）
       - ./scrcpy:/app/scrcpy:ro                     # scrcpy-server.jar（v5.0.1，随镜像 COPY 亦可）
       - ./agent:/app/agent:ro                       # Agent 二进制（推送用）
+    networks:
+      - myt-net
+
+  # MediaMTX：RTSP 推流入口 + WebRTC (WHEP) 拉流出口（MIT 开源）
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: myt-mediamtx
+    restart: unless-stopped
+    ports:
+      - "8554:8554"     # RTSP 推流入口（Agent 推流）
+      - "8889:8889"     # WebRTC (WHEP) 拉流出口（浏览器）
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
     networks:
       - myt-net
 

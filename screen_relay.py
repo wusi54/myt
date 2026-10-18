@@ -74,18 +74,26 @@ lock = threading.Lock()      # 保护 streams 字典
 epochs = {}                  # adb_addr -> 当前生效的代际号；旧 Stream 据此判断自己是否已过期
 _epoch_lock = threading.Lock()
 
-# ---- 设备端 Agent 部署（方向 A：scrcpy 采集 + WebSocket 出站）----
+# ---- 设备端 Agent 部署（方向 B：RTP + MediaMTX）----
 # Agent 是 Go 编译的单二进制，部署到设备 /data/local/tmp/myt-agent 常驻运行。
-# relay 负责：检测 Agent 存活 → 不在则 push + 启动（带 relay 出站地址参数）。
-# 画面数据由 Agent 经 WebSocket 出站到 relay 的 /agent 端点，彻底绕开不稳定的 adb 隧道。
-# USE_AGENT=1 启用方向 A（默认）；设为 0 回退到传统 adb reverse 模式。
+# relay 负责：检测 Agent 存活 → 不在则 push + 启动（带 MediaMTX RTSP 推流地址）。
+# 画面数据由 Agent 经 RTSP 推流到 MediaMTX，浏览器经 WebRTC (WHEP) 拉流，全平台兼容。
+# USE_AGENT=1 启用方向 B（默认）；设为 0 回退到传统 adb reverse 模式。
 USE_AGENT = os.environ.get('RELAY_USE_AGENT', '1') == '1'
 AGENT_BIN_PATH = os.environ.get('AGENT_BIN_PATH') or '/app/agent/myt-agent-arm64'
 AGENT_DEVICE_PATH = os.environ.get('AGENT_DEVICE_PATH') or '/data/local/tmp/myt-agent'
-# relay 对 Agent 暴露的出站地址（Agent 主动连这里）；不含路径，路径由 Agent 内部拼 /agent
-AGENT_RELAY_HOST = os.environ.get('AGENT_RELAY_HOST', '')
-# Agent 上行流认证密钥（relay 与 Agent 之间约定的共享密钥）
+
+# MediaMTX RTSP 推流地址（Agent 出站推流到此；不含 stream path，path 由 relay 拼接）
+MEDIAMTX_RTSP_URL = os.environ.get('MEDIAMTX_RTSP_URL', 'rtsp://113.105.100.58:8554')
+# MediaMTX WebRTC (WHEP) 拉流地址（浏览器从此拉流）
+MEDIAMTX_WEBRTC_URL = os.environ.get('MEDIAMTX_WEBRTC_URL', 'http://113.105.100.58:8889')
+
 AGENT_TOKEN = os.environ.get('AGENT_TOKEN', '')
+
+
+def _stream_name(adb_addr):
+    """把 adb_addr 转成 MediaMTX 流名（仅字母数字下划线）。"""
+    return 'dev_' + str(adb_addr).replace('.', '_').replace(':', '_').replace('-', '_')
 
 
 def _agent_running(adb_addr):
@@ -136,15 +144,12 @@ def _deploy_agent(adb_addr):
         else:
             print(f'[agent] 本机无 scrcpy-server {jar_local}，Agent 可能无法采集', flush=True)
         # 2. 授权 + 启动（后台常驻）
-        relay_url = ''
-        if AGENT_RELAY_HOST:
-            relay_url = AGENT_RELAY_HOST
-        # Agent 出站 URL：带 token 鉴权（AGENT_TOKEN）
-        token_q = f'&token={AGENT_TOKEN}' if AGENT_TOKEN else ''
+        # Agent 推流 URL：MediaMTX RTSP （含 stream path）
+        push_url = f'{MEDIAMTX_RTSP_URL}/{_stream_name(adb_addr)}'
         launch = (f"chmod 755 {AGENT_DEVICE_PATH} && "
                   # setsid：彻底脱离 adb shell 会话，否则 adb shell 可能因会话未关闭而挂住。
                   # 曾出现设备端进程明明起来了、但 adb shell 10 秒不返回导致误判部署失败。
-                  f"setsid nohup {AGENT_DEVICE_PATH} -relay '{relay_url}/agent?adb_addr={adb_addr}{token_q}' "
+                  f"setsid nohup {AGENT_DEVICE_PATH} -relay '{push_url}' "
                   f">/data/local/tmp/myt-agent.log 2>&1 </dev/null &")
         # 超时放宽到 25s：慢设备（低端云手机）上 chmod + 启动可能超过 10s
         r3 = subprocess.run([ADB, '-s', adb_addr, 'shell', launch], capture_output=True, timeout=25)
@@ -152,7 +157,7 @@ def _deploy_agent(adb_addr):
             err = (r3.stderr or r3.stdout or b'').decode('utf-8', 'replace').strip()
             print(f'[agent] 启动 Agent 到 {adb_addr} 失败: {err}', flush=True)
             return False
-        print(f'[agent] 已部署 Agent 到 {adb_addr}, relay={relay_url}', flush=True)
+        print(f'[agent] 已部署 Agent 到 {adb_addr}, push={push_url}', flush=True)
         return True
     except Exception as e:
         print(f'[agent] 部署 Agent 到 {adb_addr} 失败: {e}', flush=True)
