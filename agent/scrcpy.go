@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -97,15 +99,39 @@ func (s *ScrcpyServer) Connect() (net.Conn, error) {
 		return nil, fmt.Errorf("连接 abstract socket 失败: %w", err)
 	}
 
-	// 读 dummy byte（send_dummy_byte=true 时，server 会先发 1 字节 0）
-	dummy := make([]byte, 1)
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	if _, err := conn.Read(dummy); err != nil {
+	// ⚠ 协议头必须完整消费，否则帧解析整体错位（表现为大量「异常帧 size=...」）。
+	// 本 Agent 用 send_dummy_byte=true + send_stream_meta=true，socket 上的布局是：
+	//   1B dummy + 4B codec id("h264") + 12B stream meta(宽/高) + 帧流
+	// 这与 relay 传统 scrcpy 路径（codec id + stream meta）一致，只多 1 字节 dummy。
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+	// 1) dummy byte
+	if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("读 dummy byte 失败: %w", err)
 	}
+	// 2) codec id（4 字节）
+	codecID := make([]byte, 4)
+	if _, err := io.ReadFull(conn, codecID); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("读 codec id 失败: %w", err)
+	}
+	if string(codecID) != "h264" {
+		conn.Close()
+		return nil, fmt.Errorf("非预期 codec: %q（帧解析会错位）", string(codecID))
+	}
+	// 3) stream meta（12 字节：[4:8] 宽 / [8:12] 高）
+	meta := make([]byte, 12)
+	if _, err := io.ReadFull(conn, meta); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("读 stream meta 失败: %w", err)
+	}
+	w := binary.BigEndian.Uint32(meta[4:8])
+	h := binary.BigEndian.Uint32(meta[8:12])
+
 	conn.SetReadDeadline(time.Time{})
-	log.Printf("[agent] 已连接 scrcpy-server 本地 socket，dummy byte 已读")
+	log.Printf("[agent] 已连接 scrcpy-server 本地 socket，codec=%s 分辨率=%dx%d",
+		string(codecID), w, h)
 	return conn, nil
 }
 

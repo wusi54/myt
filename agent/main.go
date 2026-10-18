@@ -148,6 +148,7 @@ func pumpFrames(reader interface {
 	frames := 0
 	buf := make([]byte, 0)
 	tmp := make([]byte, 64*1024)
+	lastLog := time.Now()
 	for {
 		n, err := reader.Read(tmp)
 		if err != nil {
@@ -162,6 +163,11 @@ func pumpFrames(reader interface {
 				// 否则 Agent 会一直往死连接写，既不恢复又刷爆日志
 				return err
 			}
+		}
+		// 每 5 秒打点：可据此判断帧是否真的被解析并转发（帧解析错位时计数不涨）
+		if time.Since(lastLog) >= 5*time.Second {
+			log.Printf("[agent] 已转发 %d 帧", frames)
+			lastLog = time.Now()
 		}
 	}
 }
