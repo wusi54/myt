@@ -86,6 +86,8 @@ async function startWhep(){
     pc.addTransceiver('video', { direction: 'recvonly' });
     pc.ontrack = (e) => {
       video.srcObject = e.streams[0];
+      // 显式调用 play()，确保浏览器自动播放（autoplay 属性可能被策略阻止）
+      video.play().catch((err) => { console.warn('autoplay blocked:', err); });
       statusEl.textContent = '已连接（可触控操作）';
     };
     const offer = await pc.createOffer();
