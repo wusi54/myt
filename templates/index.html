@@ -92,9 +92,25 @@ tr:hover td{background:#1e2e3e}
 .wall-cell .wc-toolbar{flex:0 0 auto;padding:3px 6px;background:#0f1923;border-top:1px solid #2a3a4a;display:flex;gap:4px;justify-content:center;align-items:center;flex-wrap:wrap}
 .wall-cell .wc-tb-btn{padding:3px 8px;background:#1a2a3a;border:1px solid #3a4a5a;border-radius:3px;color:#8899aa;font-size:10px;cursor:pointer}
 .wall-cell .wc-tb-btn:hover{background:#2a3a4a;color:#00d4ff}
-.wall-cell .wc-tb-res{background:#1a2a3a;border:1px solid #3a4a5a;border-radius:3px;color:#00d4ff;font-size:10px;padding:2px;max-width:58px;cursor:pointer}
 .wall-cell .wc-tb-input{background:#0f1923;border:1px solid #3a4a5a;border-radius:3px;color:#fff;font-size:10px;padding:3px 4px;width:80px;min-width:0}
 .wall-cell .wc-tb-input:focus{outline:none;border-color:#00d4ff}
+/* 单元格信息浮层：标题只显示实例名，api/adb 收进点击弹出的小浮层 */
+.wall-cell .wc-name{cursor:pointer}
+.wall-cell .wc-info{display:none;position:absolute;top:30px;left:6px;right:6px;z-index:6;background:#132030;border:1px solid #2a3a4a;border-radius:6px;padding:8px;font-size:11px;color:#9fb3c8;line-height:1.6;word-break:break-all}
+.wall-cell .wc-info .wc-api{color:#ff4d4f;font-weight:700}
+.wall-cell .wc-info .wc-adb{color:#9fb3c8}
+/* 独立投屏浮层：页内浮动弹框（不跳转新页面），兼容手机竖屏 */
+#screenModal .screen-box{background:#0d1520;border:1px solid #2a3a4a;border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px;width:min(440px,94vw);height:min(92dvh,860px);max-height:94dvh}
+#screenModal .screen-title{font-size:13px;color:#cfe3f5;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:2px 4px}
+#screenModal .screen-video-wrap{position:relative;flex:1;min-height:0;display:flex;background:#000;border-radius:6px;overflow:hidden}
+#screenModal video{width:100%;height:100%;display:block;object-fit:contain;background:#000;touch-action:none;cursor:crosshair}
+#screenModal .screen-kb-hint{position:absolute;left:0;right:0;bottom:0;padding:4px 8px;font-size:11px;color:#00d4ff;background:#000000a0;pointer-events:none;text-align:center}
+#screenModal .screen-toolbar{flex:0 0 auto;display:flex;gap:6px;flex-wrap:wrap;justify-content:center;align-items:center;padding:2px}
+#screenModal .screen-toolbar .wc-tb-btn{padding:8px 14px;font-size:12px}
+#screenModal .screen-toolbar .wc-tb-btn.screen-close{color:#ff6b6b;border-color:#5a2a2a}
+#screenModal .screen-toolbar .wc-tb-btn.screen-close:hover{background:#3a1a1a;color:#ff8b8b}
+#screenModal .screen-toolbar input{background:#0f1923;border:1px solid #3a4a5a;border-radius:3px;color:#fff;font-size:12px;padding:8px 8px;width:110px;min-width:0}
+#screenModal .screen-toolbar input:focus{outline:none;border-color:#00d4ff}
 .wall-device{border-bottom:1px solid #22303e}
 .wall-device-head{display:flex;align-items:center;gap:6px;padding:6px 8px;background:#132030}
 .wall-device-arrow{color:#00d4ff;cursor:pointer;width:12px;display:inline-block;user-select:none;font-size:10px}
@@ -447,6 +463,25 @@ tr:hover td{background:#1e2e3e}
 <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal('importProxyModal')">取消</button><button class="btn btn-primary" onclick="importProxies()">导入</button></div>
 </div></div>
 
+<!-- ========== Modal: 独立投屏浮层（页内弹框，不跳转新页面） ========== -->
+<div id="screenModal" class="modal-overlay">
+  <div class="screen-box">
+    <div class="screen-title" id="screenModalTitle"></div>
+    <div class="screen-video-wrap">
+      <video id="screenModalVideo" autoplay playsinline muted></video>
+      <div class="wc-status" id="screenModalStatus">连接中…</div>
+      <div class="screen-kb-hint" id="screenModalKbHint" style="display:none">键盘已捕获：按键/输入直接发送到设备，Esc 退出捕获</div>
+    </div>
+    <div class="screen-toolbar">
+      <span class="wc-tb-btn" id="screenModalBack">返回</span>
+      <span class="wc-tb-btn" id="screenModalHome">主页</span>
+      <span class="wc-tb-btn" id="screenModalRecent">最近</span>
+      <input id="screenModalInput" type="text" placeholder="回车发送文本">
+      <span class="wc-tb-btn screen-close" id="screenModalClose">关闭</span>
+    </div>
+  </div>
+</div>
+
 <!-- ========== Modal: 上传APK ========== -->
 <div id="uploadAppModal" class="modal-overlay"><div class="modal" style="max-width:480px">
 <h2>上传APK</h2>
@@ -648,7 +683,7 @@ function renderContainers(){
     <td style="font-size:11px">${fp?('<span class="badge badge-blue">'+esc(fp.name)+'</span>'):'-'}</td>
     <td class="text-truncate" title="${esc(img)}" style="font-size:11px;color:#8899aa">${esc(shortimg)}</td>
     <td><button class="btn btn-sm btn-outline" onclick="openDetail('${c.id}')">管理</button>
-    <a class="btn btn-sm btn-primary" href="/screen/${encodeURIComponent(c.adb_addr)}?name=${encodeURIComponent(c.name)}" target="_blank">投屏</a></td></tr>`;
+    <button class="btn btn-sm btn-primary" data-sadb="${esc(c.adb_addr)}" data-sname="${esc(c.name||c.adb_addr)}" onclick="openScreenModal(this.dataset.sadb,this.dataset.sname)">投屏</button></td></tr>`;
   });
   h+='</tbody></table>';el.innerHTML=h;
 }
@@ -1063,8 +1098,8 @@ const wallCells=new Map();   // adbAddr -> {el,video,player}  复用单元格，
 const wallEnsureAt=new Map(); // adbAddr -> 上次 ensure 时间，避免每次重连都触发部署
 function wallStreamName(adbAddr){return 'dev_'+String(adbAddr).replace(/[.:-]/g,'_')}
 class WallPlayer{
-  constructor(video,adbAddr,maxSize){
-    this.video=video;this.adbAddr=adbAddr;this.maxSize=maxSize||720;
+  constructor(video,adbAddr){
+    this.video=video;this.adbAddr=adbAddr;
     this.statusEl=video.parentElement?video.parentElement.querySelector('.wc-status'):null;
     this.pc=null;this.whepLocation='';this.reconnectDelay=1000;this.reconnectTimer=null;
     this.destroyed=false;this.paused=false;this._connecting=false;
@@ -1153,21 +1188,15 @@ class WallPlayer{
   async _closePeer(){
     this._clearReconnect();
     const pc=this.pc;this.pc=null;
-    if(pc){try{pc.close()}catch(_){}}
+    // 先 DELETE WHEP 会话再关 pc：pc.close() 后 MediaMTX 会立即回收会话，
+    // 反过来 DELETE 会 404（会话已不存在）
     if(this.whepLocation){
       const loc=this.whepLocation;this.whepLocation='';
       try{fetch(loc,{method:'DELETE'}).catch(()=>{})}catch(_){}
     }
+    if(pc){try{pc.close()}catch(_){}}
     try{if(this.video.srcObject){this.video.srcObject.getTracks().forEach(t=>t.stop());this.video.srcObject=null}}catch(_){}
   }
-  setMaxSize(ms){this.maxSize=parseInt(ms)||720;this.reconnectDelay=1000;this.connect()}
-  setPaused(p){
-    if(p===this.paused)return;
-    this.paused=p;
-    if(p){this._status('已暂停','#8899aa');this._closePeer();try{this.video.pause()}catch(_){}
-    }else{this._status('恢复中…','#8899aa');this.reconnectDelay=1000;this.connect()}
-  }
-  requestIdr(){return false}
   destroy(){this.destroyed=true;this._closePeer();try{this.video.pause()}catch(_){}}
   _concat(a,b){const c=new Uint8Array(a.length+b.length);c.set(a);c.set(b,a.length);return c}
 }
@@ -1220,17 +1249,16 @@ function makeWallCell(item){
   const el=c?c.el:document.createElement('div');
   if(!c){
     el.className='wall-cell';
-    el.innerHTML='<div class="wc-label"><div class="wc-meta"><div class="wc-api"></div><div class="wc-name"></div><div class="wc-adb"></div></div><span class="wc-close">×</span></div><div class="wc-video-wrap"><video autoplay playsinline muted></video><div class="wc-status">连接中…</div></div><div class="wc-toolbar"><span class="wc-tb-btn" data-tb="back">返回</span><span class="wc-tb-btn" data-tb="home">主页</span><span class="wc-tb-btn" data-tb="recent">最近</span><select class="wc-tb-res" title="重连分辨率（Agent 重启后生效）"><option value="240">240</option><option value="360">360</option><option value="480">480</option><option value="540">540</option><option value="720" selected>720</option><option value="1080">1080</option></select><input class="wc-tb-input" type="text" placeholder="回车发送"><span class="wc-tb-btn" data-tb="popup">弹窗</span></div>';
+    el.innerHTML='<div class="wc-label"><div class="wc-meta"><div class="wc-name" title="点击查看连接信息"></div></div><span class="wc-close">×</span></div><div class="wc-info"></div><div class="wc-video-wrap"><video autoplay playsinline muted></video><div class="wc-status">连接中…</div></div><div class="wc-toolbar"><span class="wc-tb-btn" data-tb="back">返回</span><span class="wc-tb-btn" data-tb="home">主页</span><span class="wc-tb-btn" data-tb="recent">最近</span><input class="wc-tb-input" type="text" placeholder="回车发送"><span class="wc-tb-btn" data-tb="popup">弹窗</span></div>';
   }
-  const apiEl=el.querySelector('.wc-api');
-  if(item.apiUrl){apiEl.style.display='';apiEl.textContent=item.apiUrl;apiEl.title=item.apiUrl}else{apiEl.style.display='none'}
-  const nmEl=el.querySelector('.wc-name');nmEl.textContent=item.name;nmEl.title=item.name;
-  const adbEl=el.querySelector('.wc-adb');if(adbEl){adbEl.textContent='adb: '+item.adbAddr;adbEl.title=item.adbAddr}
+  const nmEl=el.querySelector('.wc-name');nmEl.textContent=item.name;
+  // 顶部只留一行实例名；api/adb 收进点击弹出的信息浮层
+  const infoEl=el.querySelector('.wc-info');
+  if(infoEl){infoEl.innerHTML='<div class="wc-api">'+esc(item.apiUrl||'（无 API 地址）')+'</div><div class="wc-adb">adb: '+esc(item.adbAddr)+'</div>'}
   el.dataset.adb=item.adbAddr;
   el.querySelector('.wc-close').dataset.removeAdb=item.adbAddr;
   el.querySelectorAll('.wc-tb-btn').forEach(b=>b.dataset.adb=item.adbAddr);
-  const tbRes=el.querySelector('.wc-tb-res'),tbInp=el.querySelector('.wc-tb-input');
-  if(tbRes){tbRes.dataset.adb=item.adbAddr;const _pl=wallCells.get(item.adbAddr);tbRes.value=String((_pl&&_pl.player&&_pl.player.maxSize)||540)}
+  const tbInp=el.querySelector('.wc-tb-input');
   if(tbInp)tbInp.dataset.adb=item.adbAddr;
   if(!c){
     const video=el.querySelector('video');
@@ -1332,17 +1360,21 @@ function toggleWallDeviceAll(devCb){const host=devCb.dataset.host;const on=devCb
 function toggleWallCbs(v){document.querySelectorAll('#wallContainerList .wall-cb:not(:disabled)').forEach(cb=>{cb.checked=v;if(v)wallPending.add(cb.dataset.adb);else wallPending.delete(cb.dataset.adb)});document.querySelectorAll('#wallContainerList .wall-device-cb').forEach(syncWallDeviceCb)}
 function addSelectedToWall(){const max=wallCols()*wallRows();const cbs=document.querySelectorAll('#wallContainerList .wall-cb:checked:not(:disabled)');let added=0;cbs.forEach(cb=>{if(wallItems.length>=max)return;wallItems.push({name:cb.value,adbAddr:cb.dataset.adb,apiUrl:cb.dataset.url||'',player:null,canvas:null});added++});wallPending.clear();closeModal('addToWallModal');renderWall();toast(added?('已添加 '+added+' 个'):'未添加','info')}
 document.addEventListener('click',function(e){
+  // 单元格标题：点击弹出/收起连接信息浮层
+  if(e.target.classList&&e.target.classList.contains('wc-name')){
+    const info=e.target.closest('.wall-cell')&&e.target.closest('.wall-cell').querySelector('.wc-info');
+    if(info)info.style.display=(info.style.display==='block')?'none':'block';
+    return}
+  // 点击浮层外任意区域：收起所有信息浮层
+  if(!(e.target.closest&&e.target.closest('.wc-info'))){document.querySelectorAll('.wall-cell .wc-info').forEach(function(i){i.style.display='none'})}
   if(e.target.dataset.removeAdb!==undefined){removeFromWall(e.target.dataset.removeAdb);return}
   if(e.target.dataset.tb){const item=wallItems.find(w=>w.adbAddr===e.target.dataset.adb);if(!item)return;const tb=e.target.dataset.tb;
     if(tb==='back')wallSendTouch(item.adbAddr,'key',{keycode:'4'});
     else if(tb==='home')wallSendTouch(item.adbAddr,'key',{keycode:'3'});
     else if(tb==='recent')wallSendTouch(item.adbAddr,'key',{keycode:'187'});
-    else if(tb==='popup'){window.open('/screen/'+encodeURIComponent(item.adbAddr)+'?name='+encodeURIComponent(item.name||''),'_blank','width=440,height=860')}}
+    else if(tb==='popup'){openScreenModal(item.adbAddr,item.name)}}
 });
-// 分辨率切换：按新 max_size 重连该单元格播放器
-document.addEventListener('change',function(e){
-  if(e.target.matches('.wc-tb-res')){wallSetRes(e.target.dataset.adb,e.target.value)}
-});
+// 分辨率由 Agent 启动参数（AGENT_MAX_SIZE）决定，WHEP 重连无法切换，已移除下拉
 // 内联输入：回车直发文本到设备（无需 prompt），发完清空并保持聚焦可连续输入
 document.addEventListener('keydown',function(e){
   if(e.target.matches('.wc-tb-input')&&e.key==='Enter'){
@@ -1351,8 +1383,6 @@ document.addEventListener('keydown',function(e){
     e.target.focus();
   }
 });
-function wallSetRes(adb,ms){const c=wallCells.get(adb);if(!c||!c.player)return;c.player.setMaxSize(parseInt(ms)||720)}
-function wallSetPaused(p){for(const pair of wallCells){const pl=pair[1].player;if(pl&&pl.setPaused)pl.setPaused(p)}}
 function wallNorm(el,clientX,clientY){
   // 按 object-fit:contain 计算点相对画面的归一化坐标，并 clamp 到 [0,1]
   // 关键修复：之前 nx/ny 越界直接 return null 会丢弃黑边区域的点击；
@@ -1372,6 +1402,8 @@ document.addEventListener('pointerdown',function(e){
   const canvas=e.target;
   try{canvas.setPointerCapture(e.pointerId)}catch(_){}
   canvas._pt={sx:e.clientX,sy:e.clientY,cx:e.clientX,cy:e.clientY,t:Date.now()};
+  // 独立弹窗：点击画面即捕获键盘，后续按键/输入直达设备
+  if(canvas.id==='screenModalVideo'){screenModalState.kbCapture=true;document.getElementById('screenModalKbHint').style.display='block'}
 });
 document.addEventListener('pointermove',function(e){
   const canvas=e.target;if(canvas&&canvas._pt){canvas._pt.cx=e.clientX;canvas._pt.cy=e.clientY;}
@@ -1379,13 +1411,78 @@ document.addEventListener('pointermove',function(e){
   const canvas=e.target;if(!canvas||!canvas._pt)return;
   try{canvas.releasePointerCapture(e.pointerId)}catch(_){}
   const s=canvas._pt;canvas._pt=null;
-  const item=wallItems.find(function(w){return w.adbAddr===canvas.dataset.adb});if(!item)return;
+  // 独立弹窗的 video 不在 wallItems 里，单独路由
+  let adbAddr='';
+  if(canvas.id==='screenModalVideo'){adbAddr=screenModalState.adb}
+  else{const item=wallItems.find(function(w){return w.adbAddr===canvas.dataset.adb});if(item)adbAddr=item.adbAddr}
+  if(!adbAddr)return;
   const cell=canvas.closest('.wall-cell');
   const p1=wallNorm(canvas,s.sx,s.sy);
   const dist=Math.hypot(e.clientX-s.sx,e.clientY-s.sy);
-  if(dist<10&&(Date.now()-s.t)<600){wallSendTouch(item.adbAddr,'tap',{nx:p1.nx,ny:p1.ny});wallFlash(cell);}
-  else{const p2=wallNorm(canvas,e.clientX,e.clientY);wallSendTouch(item.adbAddr,'swipe',{nx:p1.nx,ny:p1.ny,nx2:p2.nx,ny2:p2.ny,duration:Math.max(120,Math.min(800,Math.round(dist/2)))});}
+  if(dist<10&&(Date.now()-s.t)<600){wallSendTouch(adbAddr,'tap',{nx:p1.nx,ny:p1.ny});wallFlash(cell);}
+  else{const p2=wallNorm(canvas,e.clientX,e.clientY);wallSendTouch(adbAddr,'swipe',{nx:p1.nx,ny:p1.ny,nx2:p2.nx,ny2:p2.ny,duration:Math.max(120,Math.min(800,Math.round(dist/2)))});}
 });
+
+// ==================== 独立投屏浮层（页内弹框，复用 WHEP 播放器） ====================
+const screenModalState={player:null,adb:'',kbCapture:false};
+// 物理键 -> Android keycode（其余可打印字符按文本下发）
+const SCREEN_KEYCODES={Enter:66,Backspace:67,Tab:61,ArrowUp:19,ArrowDown:20,ArrowLeft:21,ArrowRight:22,PageUp:92,PageDown:93,Home:122,End:123};
+function screenSendTouch(action,params){
+  if(!screenModalState.adb)return;
+  wallSendTouch(screenModalState.adb,action,params||{});
+}
+function openScreenModal(adb,name){
+  if(!adb)return;
+  screenModalState.adb=adb;
+  document.getElementById('screenModalTitle').textContent=name||adb;
+  const modal=document.getElementById('screenModal');
+  modal.classList.add('active');
+  const video=document.getElementById('screenModalVideo');
+  video.dataset.adb=adb;
+  video.srcObject=null;
+  if(screenModalState.player)screenModalState.player.destroy();
+  const p=new WallPlayer(video,adb);
+  screenModalState.player=p;
+  p.connect();
+}
+function closeScreenModal(){
+  document.getElementById('screenModal').classList.remove('active');
+  if(screenModalState.player){screenModalState.player.destroy();screenModalState.player=null}
+  screenModalState.adb='';screenModalState.kbCapture=false;
+  document.getElementById('screenModalKbHint').style.display='none';
+  const inp=document.getElementById('screenModalInput');if(inp)inp.value='';
+}
+// 键盘捕获：点击画面后按键直达设备；Esc 退出捕获（未捕获时 Esc 关闭弹窗）
+document.addEventListener('keydown',function(e){
+  const modal=document.getElementById('screenModal');
+  if(!modal||!modal.classList.contains('active'))return;
+  if(e.target&&(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA'))return;
+  if(!screenModalState.kbCapture){
+    if(e.key==='Escape')closeScreenModal();
+    return;
+  }
+  if(e.key==='Escape'){
+    screenModalState.kbCapture=false;
+    document.getElementById('screenModalKbHint').style.display='none';
+    return;
+  }
+  e.preventDefault();
+  if(SCREEN_KEYCODES[e.key]!==undefined){screenSendTouch('key',{keycode:SCREEN_KEYCODES[e.key]})}
+  else if(e.key.length===1){screenSendTouch('text',{text:e.key})}
+});
+// 工具栏：返回/主页/最近、文本输入、关闭；点遮罩关闭
+document.getElementById('screenModalBack').addEventListener('click',function(){screenSendTouch('key',{keycode:4})});
+document.getElementById('screenModalHome').addEventListener('click',function(){screenSendTouch('key',{keycode:3})});
+document.getElementById('screenModalRecent').addEventListener('click',function(){screenSendTouch('key',{keycode:187})});
+document.getElementById('screenModalClose').addEventListener('click',closeScreenModal);
+document.getElementById('screenModalInput').addEventListener('keydown',function(e){
+  if(e.key!=='Enter')return;
+  e.preventDefault();
+  const t=this.value;
+  if(t)screenSendTouch('text',{text:t});
+  this.value='';this.focus();
+});
+document.getElementById('screenModal').addEventListener('click',function(e){if(e.target===this)closeScreenModal()});
 
 // ==================== 登录用户 / 用户管理 ====================
 async function loadCurrentUser(){

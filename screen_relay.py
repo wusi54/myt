@@ -20,6 +20,7 @@ import queue
 import subprocess
 import socket
 import random
+import shlex
 import http.server
 import auth
 
@@ -1249,7 +1250,10 @@ def build_input_cmd(adb_addr, d):
     if action == 'key':
         return f"input keyevent {int(d.get('keycode', 0))}"
     if action == 'text':
-        return f"input text {d.get('text', '')}"
+        # adb shell 会把参数重新拼进设备端 shell 执行，必须整体加引号，
+        # 否则空格/特殊字符会被拆散。CJK 依赖设备 IME，多数机型不支持（沿用原有限制）。
+        txt = str(d.get('text', '')).replace('\n', ' ').replace('\r', ' ')
+        return 'input text ' + shlex.quote(txt) if txt else None
     return None
 
 
