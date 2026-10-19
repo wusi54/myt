@@ -125,12 +125,21 @@ func (r *RTPStreamer) PushFrame(annexb []byte) error {
 		return nil
 	}
 
-	// 检查是否是 config 帧（含 SPS/PPS）
+	// 检查是否包含参数集和 IDR 帧。
 	hasSPS := false
+	hasPPS := false
+	hasIDR := false
 	for _, nal := range nals {
-		if len(nal) > 0 && (nal[0]&0x1F) == 7 {
+		if len(nal) == 0 {
+			continue
+		}
+		switch nal[0] & 0x1F {
+		case 5:
+			hasIDR = true
+		case 7:
 			hasSPS = true
-			break
+		case 8:
+			hasPPS = true
 		}
 	}
 	if hasSPS {
@@ -157,6 +166,21 @@ func (r *RTPStreamer) PushFrame(annexb []byte) error {
 	if r.rtpEnc == nil {
 		if err := r.EnsureEncoder(); err != nil {
 			return err
+		}
+	}
+
+	// RTSP RECORD 已在采集到 SPS/PPS 前建立，因而 SDP 中没有参数集。
+	// 将参数集带在首个 IDR 前，确保解码器能初始化（如 iOS/FFmpeg）。
+	if hasIDR {
+		var parameterSets [][]byte
+		if !hasSPS && len(r.forma.SPS) > 0 {
+			parameterSets = append(parameterSets, r.forma.SPS)
+		}
+		if !hasPPS && len(r.forma.PPS) > 0 {
+			parameterSets = append(parameterSets, r.forma.PPS)
+		}
+		if len(parameterSets) > 0 {
+			nals = append(parameterSets, nals...)
 		}
 	}
 

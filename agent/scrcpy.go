@@ -77,7 +77,7 @@ func (s *ScrcpyServer) Start() error {
 }
 
 // Connect 连接 scrcpy-server 监听的本地 abstract socket "scrcpy"。
-// 返回一个连接，读它会得到 H.264 帧流（先 1 字节 dummy，再 12字节头+payload）。
+// 握手会读取 dummy、codec、首个视频尺寸元数据；返回连接从第一条 12 字节帧头开始。
 func (s *ScrcpyServer) Connect() (net.Conn, error) {
 	// abstract namespace socket: 名字前面加 \x00
 	addr := &net.UnixAddr{Name: "\x00scrcpy", Net: "unix"}
@@ -95,21 +95,41 @@ func (s *ScrcpyServer) Connect() (net.Conn, error) {
 		return nil, fmt.Errorf("连接 abstract socket 失败: %w", err)
 	}
 
-	// 读 dummy byte（send_dummy_byte=true 时，server 会先发 1 字节 0）
-	dummy := make([]byte, 1)
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	if _, err := conn.Read(dummy); err != nil {
+	// 读 dummy byte（send_dummy_byte=true 时，server 会先发 1 字节 0）。
+	dummy := make([]byte, 1)
+	if _, err := io.ReadFull(conn, dummy); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("读 dummy byte 失败: %w", err)
 	}
 	// 读 stream meta（send_stream_meta=true 时，server 会发 4 字节 codec id）
 	streamMeta := make([]byte, 4)
-	if _, err := conn.Read(streamMeta); err != nil {
+	if _, err := io.ReadFull(conn, streamMeta); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("读 stream meta 失败: %w", err)
 	}
+	if string(streamMeta) != "h264" {
+		conn.Close()
+		return nil, fmt.Errorf("不支持的 scrcpy codec: %q", streamMeta)
+	}
+
+	// 该 scrcpy 5.0.1 fork 在 codec id 后发送 12 字节视频尺寸记录：
+	// 8 字节字段的最高位为标记、低位是宽度，随后 4 字节是高度。
+	// 它看起来像帧头，但不是 H.264 帧；若留给 pumpFrame，会导致错位。
+	videoMeta := make([]byte, 12)
+	if _, err := io.ReadFull(conn, videoMeta); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("读视频尺寸元数据失败: %w", err)
+	}
+	metaValue := binary.BigEndian.Uint64(videoMeta[:8])
+	width := uint32(metaValue & 0x7fffffff)
+	height := binary.BigEndian.Uint32(videoMeta[8:12])
+	if metaValue&(uint64(1)<<63) == 0 || width == 0 || width > 16384 || height == 0 || height > 16384 {
+		conn.Close()
+		return nil, fmt.Errorf("无效的视频尺寸元数据: value=%#x width=%d height=%d", metaValue, width, height)
+	}
 	conn.SetReadDeadline(time.Time{})
-	log.Printf("[agent] 已连接 scrcpy-server 本地 socket，dummy+stream_meta 已读 (codec=%x)", streamMeta)
+	log.Printf("[agent] 已连接 scrcpy-server 本地 socket (codec=%s, size=%dx%d)", streamMeta, width, height)
 	return conn, nil
 }
 
