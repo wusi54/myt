@@ -165,6 +165,8 @@ class AgentManager:
         已经是 running 时不重启 Agent：群控窗每次 WHEP 重连都会调用 ensure，
         重复 push/重启会把正常推流打断。
         """
+        # 先清理所有残余 Agent 进程（防止多进程竞争 scrcpy socket）
+        _kill_agent_process(adb_addr)
         if max_size is None and self.is_running(adb_addr):
             self.set_state(adb_addr, status='running',
                            stream_name=_agent_stream_name(adb_addr))
@@ -306,23 +308,42 @@ def _agent_running(adb_addr):
 
 
 def _kill_agent_process(adb_addr):
-    """结束设备端残余 Agent。兼容 root/shell 两种用户。"""
-    # 云手机上 Agent 可能以 root 运行，shell 用户无法 kill，必须用 su。
-    # 尝试 su -c kill（root 设备）和直接 kill（普通设备）两种方式。
-    cmds = [
-        "su -c \"for p in \\$(ps -ef | grep '/data/local/tmp/myt-agent' | grep -v grep | awk '{print \\$2}'); do kill -9 \\$p; done\"",
-        "for p in $(ps -ef | grep '/data/local/tmp/myt-agent' | grep -v grep | awk '{print $2}'); do kill -9 $p; done",
-    ]
-    for cmd in cmds:
-        try:
-            subprocess.run([ADB, '-s', adb_addr, 'shell', cmd],
+    """结束设备端所有残余 Agent 和 scrcpy 进程。
+
+    兼容 root/shell 两种用户：
+    1. 先尝试 su -c kill（root 设备）
+    2. 再直接 kill（普通设备，ADB shell 以 root 运行时）
+    3. 最后用 pkill 兜底
+    """
+    # 方法 1：su -c kill（root 设备）
+    try:
+        subprocess.run([ADB, '-s', adb_addr, 'shell',
+                        "su -c 'pkill -9 -f myt-agent; pkill -9 -f scrcpy.Server'"],
+                       capture_output=True, timeout=10)
+    except Exception:
+        pass
+    # 方法 2：直接 kill（ADB shell 以 root 运行时）
+    try:
+        r = subprocess.run([ADB, '-s', adb_addr, 'shell',
+                            "ps -ef | grep -E 'myt-agent|scrcpy.Server' | grep -v grep | awk '{print $2}'"],
                            capture_output=True, timeout=10)
-        except Exception:
-            pass
+        for pid in (r.stdout or b'').decode().split():
+            subprocess.run([ADB, '-s', adb_addr, 'shell', f'kill -9 {pid}'],
+                           capture_output=True, timeout=5)
+    except Exception:
+        pass
+    # 方法 3：pkill 兜底
+    try:
+        subprocess.run([ADB, '-s', adb_addr, 'shell', 'pkill -9 -f myt-agent'],
+                       capture_output=True, timeout=5)
+        subprocess.run([ADB, '-s', adb_addr, 'shell', 'pkill -9 -f scrcpy.Server'],
+                       capture_output=True, timeout=5)
+    except Exception:
+        pass
     # 等待进程完全退出（最多 5 秒）
     for _ in range(10):
         r = subprocess.run([ADB, '-s', adb_addr, 'shell',
-                            "ps -ef | grep '/data/local/tmp/myt-agent' | grep -v grep"],
+                            "ps -ef | grep -E 'myt-agent|scrcpy.Server' | grep -v grep"],
                            capture_output=True, timeout=5)
         if not (r.stdout or b'').strip():
             break
