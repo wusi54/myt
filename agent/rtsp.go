@@ -53,7 +53,8 @@ func (r *RTPStreamer) Connect() error {
 	}
 
 	c := &gortsplib.Client{
-		Protocol: r.protocol, // 显式指定 RTSP 传输协议（TCP/UDP），避免默认先试 UDP
+		Protocol:       r.protocol,
+		WriteQueueSize: 2048, // 增大队列，避免高帧率/大帧时 "write queue is full"
 	}
 	if err := c.StartRecording(r.rtspURL, desc); err != nil {
 		return fmt.Errorf("RTSP RECORD 开始失败: %w", err)

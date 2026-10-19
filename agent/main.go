@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -119,13 +120,17 @@ func pumpFrame(buf []byte, streamer *RTPStreamer) []byte {
 			nals := splitAnnexB(payload)
 			streamer.UpdateSPSPPS(nals)
 			if err := streamer.PushFrame(payload); err != nil {
-				log.Printf("[agent] push frame failed: %v", err)
+				if !strings.Contains(err.Error(), "write queue is full") {
+					log.Printf("[agent] push frame failed: %v", err)
+				}
 			}
 			continue
 		}
 
 		if err := streamer.PushFrame(payload); err != nil {
-			log.Printf("[agent] push frame failed: %v", err)
+			if !strings.Contains(err.Error(), "write queue is full") {
+				log.Printf("[agent] push frame failed: %v", err)
+			}
 		}
 	}
 	return buf
