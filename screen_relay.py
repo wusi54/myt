@@ -306,30 +306,27 @@ def _agent_running(adb_addr):
 
 
 def _kill_agent_process(adb_addr):
-    """结束设备端残留 Agent。
-
-    单独用一条 adb shell 执行，避免和启动命令拼在一起：
-    启动命令本身包含 /data/local/tmp/myt-agent 字样，会被 ps|grep 匹配到，
-    进而 kill 掉当前 adb shell 自己（返回码 137）。
-    [m] 让 grep 不匹配这条 shell 命令自身的 '[m]yt-agent' 字面量。
-    """
-    # 只杀真正的 Agent 进程（NAME 不是 sh/grep）；同时清理遗留的启动 shell。
-    # 兼容 ps -ef（云手机）和 ps -A（标准 Android）两种格式
-    cmd = ("for p in $(ps -ef | grep '/data/local/tmp/myt-agent' | grep -v grep | awk '{print $2}'); do kill -9 $p; done; "
-           "for p in $(ps -ef | grep 'chmod 755 /data/local/tmp/myt-agent' | grep -v grep | awk '{print $2}'); do kill -9 $p; done")
-    try:
-        subprocess.run([ADB, '-s', adb_addr, 'shell', cmd],
-                       capture_output=True, timeout=10)
-        # 等待旧进程完全退出（最多 5 秒）
-        for _ in range(10):
-            r = subprocess.run([ADB, '-s', adb_addr, 'shell',
-                                "ps -ef | grep '/data/local/tmp/myt-agent' | grep -v grep"],
-                               capture_output=True, timeout=5)
-            if not (r.stdout or b'').strip():
-                break
-            time.sleep(0.5)
-    except Exception as e:
-        print(f'[agent] 清理 Agent 进程失败: {e}', flush=True)
+    """结束设备端残余 Agent。兼容 root/shell 两种用户。"""
+    # 云手机上 Agent 可能以 root 运行，shell 用户无法 kill，必须用 su。
+    # 尝试 su -c kill（root 设备）和直接 kill（普通设备）两种方式。
+    cmds = [
+        "su -c \"for p in \\$(ps -ef | grep '/data/local/tmp/myt-agent' | grep -v grep | awk '{print \\$2}'); do kill -9 \\$p; done\"",
+        "for p in $(ps -ef | grep '/data/local/tmp/myt-agent' | grep -v grep | awk '{print $2}'); do kill -9 $p; done",
+    ]
+    for cmd in cmds:
+        try:
+            subprocess.run([ADB, '-s', adb_addr, 'shell', cmd],
+                           capture_output=True, timeout=10)
+        except Exception:
+            pass
+    # 等待进程完全退出（最多 5 秒）
+    for _ in range(10):
+        r = subprocess.run([ADB, '-s', adb_addr, 'shell',
+                            "ps -ef | grep '/data/local/tmp/myt-agent' | grep -v grep"],
+                           capture_output=True, timeout=5)
+        if not (r.stdout or b'').strip():
+            break
+        time.sleep(0.5)
 
 
 def _md5_file(path):
