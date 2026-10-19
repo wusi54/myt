@@ -477,10 +477,6 @@ tr:hover td{background:#1e2e3e}
       <span class="wc-tb-btn" id="screenModalBack">返回</span>
       <span class="wc-tb-btn" id="screenModalHome">主页</span>
       <span class="wc-tb-btn" id="screenModalRecent">最近</span>
-      <select id="screenModalRes" class="wc-tb-res" title="分辨率（切换会重启 Agent，约 3 秒）">
-    <option value="720" selected>720</option>
-    <option value="1080">1080</option>
-  </select>
   <input id="screenModalInput" type="text" placeholder="回车发送文本">
       <span class="wc-tb-btn screen-close" id="screenModalClose">关闭</span>
       <span class="wc-tb-btn" id="screenModalKbToggle">⌨ 键盘</span>
@@ -1521,17 +1517,6 @@ document.getElementById('screenModalBack').addEventListener('click',function(){s
 document.getElementById('screenModalHome').addEventListener('click',function(){screenSendTouch('key',{keycode:3})});
 document.getElementById('screenModalRecent').addEventListener('click',function(){screenSendTouch('key',{keycode:187})});
 document.getElementById('screenModalClose').addEventListener('click',closeScreenModal);
-document.getElementById('screenModalRes').addEventListener('change', async function(){
-  const ms = parseInt(this.value) || 720;
-  screenModalStatus('切换分辨率，重部署 Agent 中…', '#ffa500');
-  try {
-    await fetch('/api/screen/ensure', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({adb_addr:screenModalState.adb,max_size:ms})});
-  } catch(e) {}
-  setTimeout(() => {
-    screenModalStatus('重连中…', '#ffa500');
-    if(screenModalState.player){screenModalState.player.reconnectDelay=1000;screenModalState.player.connect();}
-  }, 3000);
-});
 document.getElementById('screenModalInput').addEventListener('keydown',function(e){
   if(e.key!=='Enter')return;
   e.preventDefault();
