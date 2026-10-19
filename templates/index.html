@@ -1427,6 +1427,7 @@ document.addEventListener('pointermove',function(e){
 });
 
 // ==================== 独立投屏浮层（页内弹框，复用 WHEP 播放器） ====================
+const screenModalState={player:null,adb:'',kbCapture:false};
 function screenModalStatus(t,color){
   const el=document.getElementById('screenModalStatus');
   if(!el)return;
