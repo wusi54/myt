@@ -283,10 +283,18 @@ def _agent_running(adb_addr):
         if r.returncode != 0:
             return False
         # 2. 检查进程是否存活。
-        # 注意：部分 x86 云手机/模拟器通过 houdini 跑 arm64 二进制，进程名会变成
-        # houdini64，pgrep -x myt-agent 永远匹配不到；因此按完整命令行匹配。
-        # [m] 防止 grep 命中 adb shell 命令行自身（self-match）。
-        # 按 NAME 排除 sh/grep，避免把启动命令的 shell 自身误判成 Agent。
+        # 兼容两种 ps 格式：
+        #   - ps -ef（Linux 标准，云手机普遍支持）
+        #   - ps -A -o PID,NAME,ARGS（标准 Android，部分设备支持）
+        # 按命令行匹配，避免 houdini64 进程名导致 pgrep -x 失效。
+        # 先试 ps -ef，再 fallback ps -A。
+        r = subprocess.run(
+            [ADB, '-s', adb_addr, 'shell',
+             "ps -ef | grep '/data/local/tmp/myt-agent' | grep -v grep"],
+            capture_output=True, timeout=8)
+        if r.returncode == 0 and (r.stdout or b'').strip():
+            return True
+        # Fallback: ps -A -o PID,NAME,ARGS
         r = subprocess.run(
             [ADB, '-s', adb_addr, 'shell',
              "ps -A -o PID,NAME,ARGS | awk '$2 != \"sh\" && $2 != \"grep\" && $2 != \"awk\" "
@@ -306,17 +314,16 @@ def _kill_agent_process(adb_addr):
     [m] 让 grep 不匹配这条 shell 命令自身的 '[m]yt-agent' 字面量。
     """
     # 只杀真正的 Agent 进程（NAME 不是 sh/grep）；同时清理遗留的启动 shell。
-    cmd = ("for p in $(ps -A -o PID,NAME,ARGS | awk '$2 != \"sh\" && $2 != \"grep\" && $2 != \"awk\" "
-           "&& index($0, \"/data/local/tmp/myt-agent\") {print $1}'); do kill -9 $p; done; "
-           "for p in $(ps -A -o PID,NAME,ARGS | awk '$2 == \"sh\" "
-           "&& index($0, \"[c]hmod 755 /data/local/tmp/myt-agent\") {print $1}'); do kill -9 $p; done")
+    # 兼容 ps -ef（云手机）和 ps -A（标准 Android）两种格式
+    cmd = ("for p in $(ps -ef | grep '/data/local/tmp/myt-agent' | grep -v grep | awk '{print $2}'); do kill -9 $p; done; "
+           "for p in $(ps -ef | grep 'chmod 755 /data/local/tmp/myt-agent' | grep -v grep | awk '{print $2}'); do kill -9 $p; done")
     try:
         subprocess.run([ADB, '-s', adb_addr, 'shell', cmd],
                        capture_output=True, timeout=10)
-        # 等待旧进程完全退出（最多 5 秒），避免新进程启动时 socket 被占用
+        # 等待旧进程完全退出（最多 5 秒）
         for _ in range(10):
             r = subprocess.run([ADB, '-s', adb_addr, 'shell',
-                                "ps -A -o PID,NAME,ARGS | awk '$2 != \"sh\" && $2 != \"grep\" && $2 != \"awk\" && index($0, \"/data/local/tmp/myt-agent\") {print $1; exit}'"],
+                                "ps -ef | grep '/data/local/tmp/myt-agent' | grep -v grep"],
                                capture_output=True, timeout=5)
             if not (r.stdout or b'').strip():
                 break

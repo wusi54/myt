@@ -53,7 +53,7 @@ func (s *ScrcpyServer) Start() error {
 		exec.Command("pkill", "-9", "-f", "com.genymobile.scrcpy.Server").Run()
 		time.Sleep(100 * time.Millisecond)
 	}
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 
 	// 参数：scid=-1 让 socket 名为 "scrcpy"，tunnel_forward=true 让 server 监听
 	args := []string{
@@ -103,7 +103,7 @@ func (s *ScrcpyServer) Connect() (net.Conn, error) {
 	var conn net.Conn
 	var err error
 	// 重试连接（scrcpy-server 启动需要时间）
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 100; i++ {
 		conn, err = net.DialUnix("unix", nil, addr)
 		if err == nil {
 			break
