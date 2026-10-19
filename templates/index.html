@@ -76,7 +76,10 @@ tr:hover td{background:#1e2e3e}
 .wall-2{grid-template-columns:1fr 1fr}.wall-3{grid-template-columns:1fr 1fr 1fr}.wall-4{grid-template-columns:1fr 1fr 1fr 1fr}
 .wall-5{grid-template-columns:repeat(5,1fr)}.wall-6{grid-template-columns:repeat(6,1fr)}.wall-7{grid-template-columns:repeat(7,1fr)}
 .wall-cell{background:#000;border-radius:4px;overflow:hidden;position:relative;aspect-ratio:9/16;border:1px solid #2a3a4a;display:flex;flex-direction:column}
-.wall-cell canvas{width:100%;flex:1;min-height:0;display:block;object-fit:contain;cursor:crosshair;touch-action:none}
+.wall-cell video{width:100%;height:100%;display:block;object-fit:contain;cursor:crosshair;touch-action:none;background:#000}
+.wc-video-wrap{position:relative;flex:1;min-height:0;display:flex;background:#000}
+.wc-video-wrap video{flex:1;min-width:0}
+.wc-status{position:absolute;left:0;top:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;padding:8px;text-align:center;color:#8899aa;font-size:12px;pointer-events:none;background:#00000066}
 .wall-cell.wc-flash{outline:2px solid #36d399;outline-offset:-2px}
 .wall-cell .wc-label{flex:0 0 auto;padding:4px 8px;background:#0f1923;border-bottom:1px solid #2a3a4a;font-size:11px;z-index:2;display:flex;justify-content:space-between;align-items:center;gap:6px}
 .wall-cell .wc-label .wc-meta{min-width:0;flex:1}
@@ -633,14 +636,14 @@ function renderContainers(){
   const list=filteredContainers(),el=document.getElementById('containerList');
   if(!allContainers.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无容器，请先同步容器</div>';return}
   if(!list.length){el.innerHTML='<div style="text-align:center;padding:30px;color:#8899aa">无匹配容器</div>';return}
-  let h='<table><thead><tr><th>设备IP</th><th>容器名称</th><th>容器ID</th><th>状态</th><th>投屏</th><th>ADB地址</th><th>代理</th><th>真机参数</th><th>镜像</th><th>操作</th></tr></thead><tbody>';
+  let h='<table><thead><tr><th>设备IP</th><th>容器名称</th><th>容器ID</th><th>状态</th><th>投屏</th><th>Agent</th><th>ADB地址</th><th>代理</th><th>真机参数</th><th>镜像</th><th>操作</th></tr></thead><tbody>';
   list.forEach(c=>{
     const fp=realParams.find(f=>f.id===c.fp_id), px=proxies.find(p=>p.id===c.proxy_id);
     const img=c.image||'',shortimg=img.length>34?img.substring(0,34)+'...':img;
     h+=`<tr><td>${esc(c.device_ip)}</td>
     <td><span class="link" onclick="openDetail('${c.id}')" title="${esc(c.name)}">${esc(c.name.length>34?c.name.substring(0,34)+'...':c.name)}</span></td>
     <td style="font-size:11px;color:#8899aa">${esc(c.short_id||c.id.substring(0,12))}</td>
-    <td>${badge(c.state)}</td><td>${screenBadge(c.screen_status)}</td><td style="font-size:12px">${esc(c.adb_addr||'-')}</td>
+    <td>${badge(c.state)}</td><td>${screenBadge(c.screen_status)}</td><td>${agentBadge(c)}</td><td style="font-size:12px">${esc(c.adb_addr||'-')}</td>
     <td style="font-size:11px" title="${esc(c.s5_addr)}">${px?(px.status==='fault'?'<span class="badge badge-red" title="线路故障">'+esc(px.name)+'·故障</span>':'<span class="badge badge-green">'+esc(px.name)+'</span>'):(c.s5_addr?'<span class="badge badge-gray" title="'+esc(c.s5_addr)+'">已配置</span>':'-')}</td>
     <td style="font-size:11px">${fp?('<span class="badge badge-blue">'+esc(fp.name)+'</span>'):'-'}</td>
     <td class="text-truncate" title="${esc(img)}" style="font-size:11px;color:#8899aa">${esc(shortimg)}</td>
@@ -654,6 +657,13 @@ function screenBadge(s){
   if(s==='ok')return '<span class="badge badge-green">正常</span>';
   if(s==='fail')return '<span class="badge badge-red">异常</span>';
   return '<span class="badge badge-gray">未检</span>';
+}
+function agentBadge(c){
+  const s=(c.agent_status||'unknown').toLowerCase();
+  const cls={running:'green',deploying:'yellow',stopped:'gray',error:'red',offline:'red'}[s]||'gray';
+  const txt={running:'运行中',deploying:'部署中',stopped:'已停止',error:'异常',offline:'离线',unknown:'未部署'}[s]||s;
+  const title=(c.agent_stream_name||'')?('流: '+c.agent_stream_name):'';
+  return '<span class="badge badge-'+cls+'" title="'+esc(title)+'">'+esc(txt)+'</span>';
 }
 async function probeScreen(){
   toast('正在检测投屏能力(adb 连通)...','info');
@@ -1049,57 +1059,116 @@ let wallItems=[];let wallPage=0;
 let wallAutoFilled=false;
 let wallDeviceOpen={};        // 设备(host) -> 展开态
 let wallPending=new Set();    // 添加弹窗内已勾选、待加入的 adb
-const wallCells=new Map();   // adbAddr -> {el,canvas,player}  复用单元格，避免重连
+const wallCells=new Map();   // adbAddr -> {el,video,player}  复用单元格，避免重连
+const wallEnsureAt=new Map(); // adbAddr -> 上次 ensure 时间，避免每次重连都触发部署
+function wallStreamName(adbAddr){return 'dev_'+String(adbAddr).replace(/[.:-]/g,'_')}
 class WallPlayer{
-  constructor(canvas,adbAddr,maxSize){this.maxSize=maxSize||720;this.paused=false;this.canvas=canvas;this.ctx=canvas.getContext('2d');this.decoder=null;this.buffer=new Uint8Array(0);this.lastStart=-1;this.nalCache=[];this.ws=null;this.adbAddr=adbAddr;this.reconnectDelay=1000;this.reconnectTimer=null;this.destroyed=false;this.maxQueue=30;this.dropUntilKey=false;this._dropStart=0;this._resyncing=false;this.reconnects=0;this._initDecoder()}
-  _initDecoder(){if(typeof VideoDecoder==='undefined')return;this.ts=0;try{this.decoder=new VideoDecoder({output:(frame)=>{try{if(!this._csLogged){this._csLogged=1;try{console.log('[wall]',this.adbAddr,'frame.colorSpace=',JSON.stringify(frame.colorSpace))}catch(_){}}if(this.canvas.width!==frame.displayWidth)this.canvas.width=frame.displayWidth;if(this.canvas.height!==frame.displayHeight)this.canvas.height=frame.displayHeight;const n=performance.now();if(n-(this._lastDraw||0)>=70){this._lastDraw=n;this.ctx.drawImage(frame,0,0)}}catch(e){}frame.close()},error:(e)=>{console.error('decode error',e)}});this.decoder.configure({codec:'avc1.42C01E',optimizeForLatency:true})}catch(e){}}
-  _drawStatus(text,color){try{const c=this.ctx;if(!this.canvas.width)this.canvas.width=300;if(!this.canvas.height)this.canvas.height=400;c.fillStyle='#000';c.fillRect(0,0,this.canvas.width,this.canvas.height);c.fillStyle=color||'#8899aa';c.font='12px sans-serif';c.textBaseline='middle';c.fillText(text,8,this.canvas.height/2);}catch(e){}}
-  connect(){if(this.destroyed)return;if(this.ws)this.disconnect();this._clearLoadTimer();this._drawStatus('连接中…','#8899aa');const wproto=(window.location.protocol==='https:')?'wss://':'ws://';this.ws=new WebSocket(wproto+window.location.host+'/ws/screen?adb_addr='+encodeURIComponent(this.adbAddr)+'&max_size='+(this.maxSize||480));this.ws.binaryType='arraybuffer';this.ws.onopen=()=>{this.reconnectDelay=1000;this.reconnects=0;if(!this.decoder){this._drawStatus('⚠ 浏览器不支持 WebCodecs（请使用 https + Chrome/Edge）','#ff6b6b')}else{this._drawStatus('连接中…','#8899aa');this._armLoadTimer()}};this.ws.onmessage=(e)=>{if(this.paused)return;this._armLoadTimer();this.buffer=this._concat(this.buffer,new Uint8Array(e.data));this._parse()};this.ws.onclose=(ev)=>{this.ws=null;this._clearLoadTimer();if(this.destroyed)return;const code=ev&&ev.code;if(code===4002){this._drawStatus('设备不可达（adb 连接失败）','#ff6b6b');return}if(code===4001){this._drawStatus('登录已过期，请重新登录','#ff6b6b');return}if(code===4000){this._drawStatus('参数缺失','#ff6b6b');return}this._drawStatus('重连中…','#8899aa');this._scheduleReconnect()};this.ws.onerror=()=>{if(this.ws){try{this.ws.close()}catch{}this.ws=null}}}
-  _clearLoadTimer(){if(this._loadTimer){clearTimeout(this._loadTimer);this._loadTimer=null}}
-  _armLoadTimer(){this._clearLoadTimer();this._loadTimer=setTimeout(()=>{if(this.destroyed||!this.ws)return;this._drawStatus('连接中… 设备响应较慢','#ffa500');this._loadTimer=setTimeout(()=>{if(this.destroyed||!this.ws)return;this._drawStatus('连接失败，重试中…','#ff6b6b');try{this.ws.close()}catch(_){}},12000)},8000)}
-  setMaxSize(ms){this.maxSize=parseInt(ms)||480;try{if(this.ws)this.disconnect()}catch(e){};this._drawStatus('切换分辨率 '+this.maxSize+'…','#8899aa');this.connect()}
-  setPaused(p){if(p===this.paused)return;this.paused=p;if(!p){this.buffer=new Uint8Array(0);this.lastStart=-1;this.nalCache=[];this.dropUntilKey=true;this._dropStart=0;this._drawStatus('恢复中…','#8899aa');try{this.requestIdr&&this.requestIdr()}catch(e){}}}
-  _scheduleReconnect(){if(this.destroyed||this.reconnectTimer)return;const cap=Math.min(this.reconnectDelay*1.5,15000);const jitter=cap*0.2*Math.random();this.reconnectTimer=setTimeout(()=>{this.reconnectTimer=null;if(!this.destroyed){this.reconnectDelay=cap;this.reconnects++;this.connect()}},this.reconnectDelay+jitter)}
-  _parse(){let pos=0;while(pos<this.buffer.length-3){let sl=0;if(this.buffer[pos]===0&&this.buffer[pos+1]===0&&this.buffer[pos+2]===1)sl=3;else if(pos<this.buffer.length-4&&this.buffer[pos]===0&&this.buffer[pos+1]===0&&this.buffer[pos+2]===0&&this.buffer[pos+3]===1)sl=4;if(sl>0){if(this.lastStart>=0){const nalData=this.buffer.slice(this.lastStart,pos);const nalType=nalData[sl]&0x1F;this.nalCache.push(nalData);if(nalType===5||nalType===1)this._flush()}this.lastStart=pos;pos+=sl}else{pos++}}if(this.lastStart>=0){this.buffer=this.buffer.slice(this.lastStart);this.lastStart=0}}
-  _flush(){
-    if(this.nalCache.length===0||!this.decoder)return;
-    let hasIdr=false;
-    for(const n of this.nalCache){const sl=(n[0]===0&&n[1]===0&&n[2]===0)?4:3;if((n[sl]&0x1F)===5){hasIdr=true;break}}
-    // 背压：解码排队严重时丢弃到下一个关键帧，避免画面延迟持续累积（越用越卡）
-    if(this.decoder.decodeQueueSize>this.maxQueue){this.dropUntilKey=true;if(!this._dropStart)this._dropStart=Date.now()}
-    if(this.dropUntilKey){
-      if(hasIdr){this.dropUntilKey=false;this._dropStart=0}
-      else{
-        this.nalCache=[];
-        // 安全阀：screenrecord 关键帧间隔约 10s，久等不到就请求 IDR 强制拿新关键帧（不重连），避免长时间卡住
-        if(this._dropStart&&Date.now()-this._dropStart>3000){this._dropStart=0;this._forceResync()}
-        return;
+  constructor(video,adbAddr,maxSize){
+    this.video=video;this.adbAddr=adbAddr;this.maxSize=maxSize||720;
+    this.statusEl=video.parentElement?video.parentElement.querySelector('.wc-status'):null;
+    this.pc=null;this.whepLocation='';this.reconnectDelay=1000;this.reconnectTimer=null;
+    this.destroyed=false;this.paused=false;this._connecting=false;
+  }
+  _status(text,color){
+    if(!this.statusEl)return;
+    this.statusEl.textContent=text||'';
+    this.statusEl.style.color=color||'#8899aa';
+    this.statusEl.style.display=text?'flex':'none';
+  }
+  async _ensureAgent(){
+    const now=Date.now(),last=wallEnsureAt.get(this.adbAddr)||0;
+    if(now-last<30000)return true;
+    wallEnsureAt.set(this.adbAddr,now);
+    try{
+      const r=await fetch('/api/screen/ensure',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({adb_addr:this.adbAddr})});
+      return r.ok;
+    }catch(e){return false}
+  }
+  async connect(){
+    if(this.destroyed||this._connecting)return;
+    this._connecting=true;
+    this._clearReconnect();
+    await this._closePeer();
+    this._status('连接中…');
+    await this._ensureAgent();
+    if(this.destroyed){this._connecting=false;return}
+    let pc=null;
+    try{
+      pc=new RTCPeerConnection({iceServers:[]});
+      this.pc=pc;
+      pc.addTransceiver('video',{direction:'recvonly'});
+      pc.ontrack=(e)=>{
+        if(this.destroyed||this.pc!==pc)return;
+        try{
+          this.video.srcObject=e.streams[0];
+          this.video.play().catch(()=>{});
+        }catch(_){}
+        this._status('');
+        this.reconnectDelay=1000;
+      };
+      pc.onconnectionstatechange=()=>{
+        if(this.destroyed||this.pc!==pc)return;
+        const st=pc.connectionState;
+        if(st==='failed'||st==='disconnected'||st==='closed'){
+          this._status('重连中…','#ffa500');
+          this._scheduleReconnect();
+        }
+      };
+      const offer=await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await new Promise((resolve)=>{
+        if(pc.iceGatheringState==='complete'){resolve();return}
+        const t=setTimeout(resolve,1500);
+        pc.onicegatheringstatechange=()=>{if(pc.iceGatheringState==='complete'){clearTimeout(t);resolve()}};
+      });
+      const url='/mtx/'+wallStreamName(this.adbAddr)+'/whep';
+      const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/sdp'},body:pc.localDescription.sdp});
+      if(!res.ok){
+        const txt=await res.text().catch(()=> '');
+        throw new Error('WHEP '+res.status+(txt?(': '+txt.slice(0,120)):''));
       }
+      this.whepLocation=res.headers.get('Location')||'';
+      if(this.whepLocation.startsWith('/')&&!this.whepLocation.startsWith('/mtx')){
+        this.whepLocation='/mtx'+this.whepLocation;
+      }
+      const answer=await res.text();
+      await pc.setRemoteDescription({type:'answer',sdp:answer});
+      this._connecting=false;
+    }catch(e){
+      this._connecting=false;
+      if(this.pc===pc){try{pc.close()}catch(_){}this.pc=null}
+      if(this.destroyed)return;
+      console.warn('[wall] WHEP failed',this.adbAddr,e.message||e);
+      this._status('连接失败，重试中…','#ff6b6b');
+      this._scheduleReconnect();
     }
-    // 无缝换流：距上次解码>400ms(说明 screenrecord 重启/换流)时，先干净重置解码器再吃 IDR，避免黑屏/卡死且不重连
-    const now=Date.now();
-    if(hasIdr&&now-(this._lastFlushClock||0)>400){try{this.decoder.reset();this.decoder.configure({codec:'avc1.42C01E',optimizeForLatency:true})}catch(e){}}
-    const total=this.nalCache.reduce((s,u)=>s+u.length,0);
-    const f=new Uint8Array(total);let off=0;for(const n of this.nalCache){f.set(n,off);off+=n.length}
-    this.nalCache=[];
-    this._lastFlushClock=now;
-    const ts=this.ts;this.ts+=100000;
-    try{this.decoder.decode(new EncodedVideoChunk({type:hasIdr?'key':'delta',timestamp:ts,duration:100000,data:f}))}catch(e){}
   }
-  _forceResync(){
-    if(this.destroyed||this._resyncing)return;
-    this._resyncing=true;
-    this.dropUntilKey=false;
-    this.buffer=new Uint8Array(0);this.nalCache=[];this.lastStart=-1;
-    try{if(this.decoder){this.decoder.reset();this.decoder.configure({codec:'avc1.42C01E',optimizeForLatency:true})}}catch(e){}
-    // 不再关闭 WS：向 relay 请求一次 IDR(relay 重启 screenrecord 发新关键帧)，解码器已重置，等新帧即可，避免重连风暴
-    this.requestIdr();
-    setTimeout(()=>{this._resyncing=false},800);
+  _clearReconnect(){if(this.reconnectTimer){clearTimeout(this.reconnectTimer);this.reconnectTimer=null}}
+  _scheduleReconnect(){
+    if(this.destroyed||this.reconnectTimer)return;
+    const delay=this.reconnectDelay;
+    this.reconnectDelay=Math.min(Math.round(this.reconnectDelay*1.5),15000);
+    this.reconnectTimer=setTimeout(()=>{this.reconnectTimer=null;this.connect()},delay);
   }
-  requestIdr(){if(!this.ws||this.ws.readyState!==1)return false;try{this.ws.send(JSON.stringify({type:'request_idr'}));return true}catch(e){return false}}
-  disconnect(){if(this.reconnectTimer){clearTimeout(this.reconnectTimer);this.reconnectTimer=null}if(this.ws){try{this.ws.close()}catch{}this.ws=null}this.buffer=new Uint8Array(0);this.nalCache=[];this.lastStart=-1;this.dropUntilKey=false}
-  sendControl(obj){if(!this.ws||this.ws.readyState!==1)return false;try{this.ws.send(JSON.stringify(Object.assign({type:'control'},obj)));return true}catch(e){return false}}
-  destroy(){this.destroyed=true;this.disconnect();if(this.decoder){try{this.decoder.close()}catch{}this.decoder=null}}
+  async _closePeer(){
+    this._clearReconnect();
+    const pc=this.pc;this.pc=null;
+    if(pc){try{pc.close()}catch(_){}}
+    if(this.whepLocation){
+      const loc=this.whepLocation;this.whepLocation='';
+      try{fetch(loc,{method:'DELETE'}).catch(()=>{})}catch(_){}
+    }
+    try{if(this.video.srcObject){this.video.srcObject.getTracks().forEach(t=>t.stop());this.video.srcObject=null}}catch(_){}
+  }
+  setMaxSize(ms){this.maxSize=parseInt(ms)||720;this.reconnectDelay=1000;this.connect()}
+  setPaused(p){
+    if(p===this.paused)return;
+    this.paused=p;
+    if(p){this._status('已暂停','#8899aa');this._closePeer();try{this.video.pause()}catch(_){}
+    }else{this._status('恢复中…','#8899aa');this.reconnectDelay=1000;this.connect()}
+  }
+  requestIdr(){return false}
+  destroy(){this.destroyed=true;this._closePeer();try{this.video.pause()}catch(_){}}
   _concat(a,b){const c=new Uint8Array(a.length+b.length);c.set(a);c.set(b,a.length);return c}
 }
 // 前台恢复：从后台标签切回时，死连接重连、活连接请求 IDR 刷新，避免"静止也重连/黑屏"
@@ -1108,8 +1177,8 @@ document.addEventListener('visibilitychange',()=>{
   try{
     for(const c of wallCells.values()){
       if(c&&c.player){
-        if(!c.player.ws||c.player.ws.readyState!==1){try{c.player.connect()}catch(e){}}
-        else{c.player.requestIdr()}
+        const pc=c.player.pc;
+        if(!pc||pc.connectionState!=='connected'){try{c.player.connect()}catch(e){}}
       }
     }
   }catch(e){}
@@ -1151,7 +1220,7 @@ function makeWallCell(item){
   const el=c?c.el:document.createElement('div');
   if(!c){
     el.className='wall-cell';
-    el.innerHTML='<div class="wc-label"><div class="wc-meta"><div class="wc-api"></div><div class="wc-name"></div><div class="wc-adb"></div></div><span class="wc-close">×</span></div><canvas></canvas><div class="wc-toolbar"><span class="wc-tb-btn" data-tb="back">返回</span><span class="wc-tb-btn" data-tb="home">主页</span><span class="wc-tb-btn" data-tb="recent">最近</span><select class="wc-tb-res" title="分辨率（默认 540；部分设备升到 720 以上会触发硬件解码偏蓝）"><option value="240">240</option><option value="360">360</option><option value="480">480</option><option value="540" selected>540</option><option value="720">720</option><option value="1080">1080</option></select><input class="wc-tb-input" type="text" placeholder="回车发送"><span class="wc-tb-btn" data-tb="popup">弹窗</span></div>';
+    el.innerHTML='<div class="wc-label"><div class="wc-meta"><div class="wc-api"></div><div class="wc-name"></div><div class="wc-adb"></div></div><span class="wc-close">×</span></div><div class="wc-video-wrap"><video autoplay playsinline muted></video><div class="wc-status">连接中…</div></div><div class="wc-toolbar"><span class="wc-tb-btn" data-tb="back">返回</span><span class="wc-tb-btn" data-tb="home">主页</span><span class="wc-tb-btn" data-tb="recent">最近</span><select class="wc-tb-res" title="重连分辨率（Agent 重启后生效）"><option value="240">240</option><option value="360">360</option><option value="480">480</option><option value="540">540</option><option value="720" selected>720</option><option value="1080">1080</option></select><input class="wc-tb-input" type="text" placeholder="回车发送"><span class="wc-tb-btn" data-tb="popup">弹窗</span></div>';
   }
   const apiEl=el.querySelector('.wc-api');
   if(item.apiUrl){apiEl.style.display='';apiEl.textContent=item.apiUrl;apiEl.title=item.apiUrl}else{apiEl.style.display='none'}
@@ -1164,10 +1233,10 @@ function makeWallCell(item){
   if(tbRes){tbRes.dataset.adb=item.adbAddr;const _pl=wallCells.get(item.adbAddr);tbRes.value=String((_pl&&_pl.player&&_pl.player.maxSize)||540)}
   if(tbInp)tbInp.dataset.adb=item.adbAddr;
   if(!c){
-    const canvas=el.querySelector('canvas');
-    canvas.dataset.adb=item.adbAddr;
-    const p=new WallPlayer(canvas,item.adbAddr);p.connect();
-    wallCells.set(item.adbAddr,{el:el,canvas:canvas,player:p});
+    const video=el.querySelector('video');
+    video.dataset.adb=item.adbAddr;
+    const p=new WallPlayer(video,item.adbAddr);p.connect();
+    wallCells.set(item.adbAddr,{el:el,video:video,player:p});
   }
   return el;
 }
@@ -1219,8 +1288,12 @@ function autoFillWall(){
   if(wallAutoFilled)return;
   const max=wallCols()*wallRows();
   const running=allContainers.filter(c=>String(c.state||'').toLowerCase()==='running'&&c.adb_addr&&!deviceDisabled(c.device_ip));
+  // 优先自动放入内网/本地测试设备：公网设备通常无法把 Agent 推流到本地 MediaMTX，
+  // 自动填充它们只会不断重连并报错。用户仍可在“+ 添加容器”里手动选择公网设备。
+  const local=running.filter(c=>(c.device_screen_net||'')==='lan');
+  const candidates=local.length?local:running;
   let added=0;
-  for(const c of running){
+  for(const c of candidates){
     if(wallItems.length>=max||added>=2)break;
     wallItems.push({name:c.name,adbAddr:c.adb_addr,apiUrl:c.device_url||''});
     added++;
@@ -1280,12 +1353,12 @@ document.addEventListener('keydown',function(e){
 });
 function wallSetRes(adb,ms){const c=wallCells.get(adb);if(!c||!c.player)return;c.player.setMaxSize(parseInt(ms)||720)}
 function wallSetPaused(p){for(const pair of wallCells){const pl=pair[1].player;if(pl&&pl.setPaused)pl.setPaused(p)}}
-function wallNorm(canvas,clientX,clientY){
+function wallNorm(el,clientX,clientY){
   // 按 object-fit:contain 计算点相对画面的归一化坐标，并 clamp 到 [0,1]
   // 关键修复：之前 nx/ny 越界直接 return null 会丢弃黑边区域的点击；
   // 改为 clamp，黑边点击落到最近边缘，保证指令一定下发
-  const rect=canvas.getBoundingClientRect();
-  const bw=canvas.width||1,bh=canvas.height||1;
+  const rect=el.getBoundingClientRect();
+  const bw=el.videoWidth||el.clientWidth||1,bh=el.videoHeight||el.clientHeight||1;
   const k=Math.min(rect.width/bw,rect.height/bh);
   const dw=bw*k,dh=bh*k,ox=(rect.width-dw)/2,oy=(rect.height-dh)/2;
   let nx=(clientX-rect.left-ox)/dw, ny=(clientY-rect.top-oy)/dh;
@@ -1295,15 +1368,14 @@ function wallNorm(canvas,clientX,clientY){
 function wallFlash(cell){if(!cell)return;cell.classList.add('wc-flash');setTimeout(function(){cell.classList.remove('wc-flash')},180)}
 // 用 Pointer Events + 指针捕获，统一鼠标/触摸；捕获后 pointerup 必回到 canvas，避免覆盖层/细微移动导致丢点击
 document.addEventListener('pointerdown',function(e){
-  if(!e.target.matches('canvas[data-adb]'))return;
+  if(!e.target.matches('video[data-adb]'))return;
   const canvas=e.target;
   try{canvas.setPointerCapture(e.pointerId)}catch(_){}
   canvas._pt={sx:e.clientX,sy:e.clientY,cx:e.clientX,cy:e.clientY,t:Date.now()};
 });
 document.addEventListener('pointermove',function(e){
   const canvas=e.target;if(canvas&&canvas._pt){canvas._pt.cx=e.clientX;canvas._pt.cy=e.clientY;}
-});
-document.addEventListener('pointerup',function(e){
+});document.addEventListener('pointerup',function(e){
   const canvas=e.target;if(!canvas||!canvas._pt)return;
   try{canvas.releasePointerCapture(e.pointerId)}catch(_){}
   const s=canvas._pt;canvas._pt=null;

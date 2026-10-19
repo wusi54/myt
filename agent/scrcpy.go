@@ -9,16 +9,18 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
 
 // ScrcpyServer 负责在设备端启动 scrcpy-server（tunnel_forward 模式）。
 type ScrcpyServer struct {
-	JarPath string
-	MaxSize int
-	Bitrate int
-	cmd     *exec.Cmd
+	JarPath          string
+	MaxSize          int
+	Bitrate          int
+	KeyFrameInterval int
+	cmd              *exec.Cmd
 }
 
 // Start 启动 scrcpy-server 进程（app_process，tunnel_forward 模式）。
@@ -36,10 +38,22 @@ func (s *ScrcpyServer) Start() error {
 	if s.Bitrate <= 0 {
 		s.Bitrate = 1000000
 	}
+	if s.KeyFrameInterval < 0 {
+		s.KeyFrameInterval = 0
+	}
 
-	// 清理旧实例（幂等）
+	// 清理旧实例（幂等）；等待旧 server 释放 abstract socket "scrcpy"，
+	// 否则新实例会因 Address already in use 退出，表现为群控窗黑屏/重连。
 	exec.Command("pkill", "-f", "com.genymobile.scrcpy.Server").Run()
-	time.Sleep(500 * time.Millisecond)
+	for i := 0; i < 20; i++ {
+		out, _ := exec.Command("pgrep", "-f", "com.genymobile.scrcpy.Server").Output()
+		if len(strings.TrimSpace(string(out))) == 0 {
+			break
+		}
+		exec.Command("pkill", "-9", "-f", "com.genymobile.scrcpy.Server").Run()
+		time.Sleep(100 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
 
 	// 参数：scid=-1 让 socket 名为 "scrcpy"，tunnel_forward=true 让 server 监听
 	args := []string{
@@ -57,6 +71,10 @@ func (s *ScrcpyServer) Start() error {
 		"send_frame_meta=true",
 		"max_size=" + strconv.Itoa(s.MaxSize),
 		"video_bit_rate=" + strconv.Itoa(s.Bitrate),
+		// 关键帧间隔：MediaMTX/WHEP 新观众加入时必须尽快拿到 IDR，
+		// 否则只能等到设备画面变化触发关键帧，群控窗会出现长时间黑屏。
+		// 注意：该 Xiaomi 编码器会把 1/2 秒钳成 10 秒 GOP，只有 0（每帧 IDR）生效。
+		"video_codec_options=i-frame-interval:int=" + strconv.Itoa(s.KeyFrameInterval),
 	}
 
 	cmd := exec.Command(args[0], args[1:]...)

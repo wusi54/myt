@@ -34,12 +34,25 @@ const statusEl = document.getElementById('status');
 
 function streamName(a){ return 'dev_' + String(a).replace(/\./g,'_').replace(/:/g,'_').replace(/-/g,'_'); }
 const sname = streamName(adbAddr);
-// MediaMTX WebRTC (WHEP) base URL: MediaMTX serves HTTP on 8889 (not HTTPS)
-// Use http:// always; for remote HTTPS pages, browser may block mixed content
-// -> in that case, access MediaMTX directly via http://<host>:8889 or configure TLS
-const mediamtxBase = 'http://' + window.location.hostname + ':8889';
+// MediaMTX WebRTC (WHEP) 走同源反向代理 /mtx，避免 HTTPS 页面加载 http://host:8889 被浏览器按混合内容拦截。
+// nginx: /mtx/<stream>/whep -> mediamtx:8889/<stream>/whep
+const mediamtxBase = '/mtx';
 const whepUrl = mediamtxBase + '/' + sname + '/whep';
 console.log('WHEP url:', whepUrl);
+
+let lastEnsure = 0;
+async function ensureAgent(){
+  const now = Date.now();
+  if (now - lastEnsure < 30000) return;
+  lastEnsure = now;
+  try{
+    await fetch('/api/screen/ensure', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({adb_addr: adbAddr})
+    });
+  }catch(e){ console.warn('ensure agent failed', e); }
+}
 
 // ===== 屏幕操作（触控/按键/输入）=====
 async function sendTouch(action, params){
@@ -81,6 +94,7 @@ video.addEventListener('pointercancel', ()=>{ downPt = null; });
 let pc = null;
 async function startWhep(){
   statusEl.textContent = '连接中 (WebRTC)...';
+  await ensureAgent();
   try {
     pc = new RTCPeerConnection({ iceServers: [] });
     pc.addTransceiver('video', { direction: 'recvonly' });
@@ -126,4 +140,3 @@ startWhep();
 </script>
 </body>
 </html>
-PY

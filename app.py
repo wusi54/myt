@@ -1675,6 +1675,39 @@ def screen_touch():
         return err(f'relay control error: {e}', 500)
 
 
+def _agent_stream_name(adb_addr):
+    """与 relay / Agent 保持一致的 MediaMTX 流名。"""
+    return 'dev_' + str(adb_addr).replace('.', '_').replace(':', '_').replace('-', '_')
+
+
+@app.route('/api/screen/ensure', methods=['POST'])
+def screen_ensure():
+    """群控窗/单窗口打开 WHEP 前调用：确保设备端 Agent 已部署并在推流。
+
+    WHEP 画面不经过 relay，但 Agent 的部署/健康检查仍由 relay:9001 负责。
+    该接口幂等：Agent 已在运行时 relay 直接返回，不会重启推流。
+    """
+    d = request.json or {}
+    adb_addr = (d.get('adb_addr') or '').strip()
+    if not adb_addr:
+        return err('missing adb_addr')
+    stream_name = _agent_stream_name(adb_addr)
+    c = db.row('SELECT * FROM containers WHERE adb_addr=?', (adb_addr,))
+    result, code = _relay_agent('deploy', adb_addr)
+    if code == 200:
+        fields = {'agent_status': 'running', 'agent_stream_name': stream_name,
+                  'agent_last_seen': db.now()}
+        if c:
+            db.update_container(c['id'], **fields)
+        return ok({'adb_addr': adb_addr, 'stream_name': stream_name,
+                   'whep_path': f'/mtx/{stream_name}/whep',
+                   'agent': result.get('data') if isinstance(result, dict) else None})
+    if c:
+        db.update_container(c['id'], agent_status='error')
+    return jsonify(result), code
+
+
+
 # ==================== Agent 生命周期管理 ====================
 def _relay_agent(action, adb_addr, body=None):
     """转发 Agent 生命周期请求到 relay:9001。"""

@@ -16,6 +16,7 @@ func main() {
 	bitrate := flag.Int("bitrate", 1000000, "bitrate")
 	jarPath := flag.String("jar", "/data/local/tmp/scrcpy-server.jar", "jar path")
 	transport := flag.String("transport", "tcp", "RTSP transport: tcp or udp")
+	keyFrameInterval := flag.Int("keyframe-interval", 0, "video keyframe interval seconds; 0 = every frame")
 	flag.Parse()
 
 	if *relayURL == "" {
@@ -26,7 +27,7 @@ func main() {
 	}
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	log.Printf("[agent] starting, push=%s max_size=%d bitrate=%d transport=%s", *relayURL, *maxSize, *bitrate, *transport)
+	log.Printf("[agent] starting, push=%s max_size=%d bitrate=%d transport=%s keyframe_interval=%ds", *relayURL, *maxSize, *bitrate, *transport, *keyFrameInterval)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -39,17 +40,18 @@ func main() {
 		default:
 		}
 
-		runOnce(*relayURL, *maxSize, *bitrate, *jarPath, *transport)
+		runOnce(*relayURL, *maxSize, *bitrate, *jarPath, *transport, *keyFrameInterval)
 		log.Printf("[agent] session ended, restarting scrcpy-server immediately...")
 		// 不需要 sleep，立即重启 scrcpy-server
 	}
 }
 
-func runOnce(relayURL string, maxSize, bitrate int, jarPath, transport string) {
+func runOnce(relayURL string, maxSize, bitrate int, jarPath, transport string, keyFrameInterval int) {
 	server := &ScrcpyServer{
-		JarPath: jarPath,
-		MaxSize: maxSize,
-		Bitrate: bitrate,
+		JarPath:          jarPath,
+		MaxSize:          maxSize,
+		Bitrate:          bitrate,
+		KeyFrameInterval: keyFrameInterval,
 	}
 	if err := server.Start(); err != nil {
 		log.Printf("[agent] start scrcpy-server failed: %v, retrying in 3s", err)

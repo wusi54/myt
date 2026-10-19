@@ -89,6 +89,11 @@ MEDIAMTX_RTSP_URL = os.environ.get('MEDIAMTX_RTSP_URL', 'rtsp://113.105.100.58:8
 MEDIAMTX_WEBRTC_URL = os.environ.get('MEDIAMTX_WEBRTC_URL', 'http://113.105.100.58:8889')
 
 AGENT_TOKEN = os.environ.get('AGENT_TOKEN', '')
+# Agent 推流传输协议：udp 适合弱网实时性（已在本地点对点验证可用）；如需排障可切回 tcp。
+AGENT_TRANSPORT = os.environ.get('AGENT_TRANSPORT', 'udp')
+AGENT_MAX_SIZE = int(os.environ.get('AGENT_MAX_SIZE', '720'))
+AGENT_BITRATE = int(os.environ.get('AGENT_BITRATE', '1000000'))
+AGENT_KEYFRAME_INTERVAL = int(os.environ.get('AGENT_KEYFRAME_INTERVAL', '1'))
 
 # ---- Agent 生命周期管理 ----
 AGENT_IDLE_STOP_SEC = int(os.environ.get('AGENT_IDLE_STOP_SEC', '300'))   # 无观众后多少秒停止 Agent（省设备资源），0=不自动停
@@ -154,11 +159,22 @@ class AgentManager:
             st['last_seen'] = time.strftime('%Y-%m-%d %H:%M:%S')
 
     def deploy(self, adb_addr):
-        """部署并启动 Agent（幂等）。返回 (ok, msg)。"""
+        """部署并启动 Agent（幂等）。返回 (ok, msg)。
+
+        已经是 running 时不重启 Agent：群控窗每次 WHEP 重连都会调用 ensure，
+        重复 push/重启会把正常推流打断。
+        """
+        if self.is_running(adb_addr):
+            self.set_state(adb_addr, status='running',
+                           stream_name=_agent_stream_name(adb_addr))
+            self.touch_subscriber(adb_addr)
+            return True, 'Agent 已在运行'
         self.set_state(adb_addr, status='deploying')
         ok = _deploy_agent(adb_addr)
         if ok:
-            self.set_state(adb_addr, status='running')
+            self.set_state(adb_addr, status='running',
+                           stream_name=_agent_stream_name(adb_addr))
+            self.touch_subscriber(adb_addr)
             return True, 'Agent 已部署并启动'
         self.set_state(adb_addr, status='error')
         return False, 'Agent 部署失败'
@@ -167,8 +183,7 @@ class AgentManager:
         """停止设备端 Agent 进程。"""
         try:
             subprocess.run([ADB, 'connect', adb_addr], capture_output=True, timeout=10)
-            subprocess.run([ADB, '-s', adb_addr, 'shell',
-                            'pkill -f myt-agent'], capture_output=True, timeout=8)
+            _kill_agent_process(adb_addr)
         except Exception:
             pass
         self.set_state(adb_addr, status='stopped')
@@ -242,79 +257,7 @@ def _ensure_agent_for_ws(adb_addr):
     return ok
 
 
-# ---- 扩展 _ControlHTTPHandler：加 Agent 生命周期 HTTP 端点 ----
-_orig_do_POST = _ControlHTTPHandler.do_POST
-
-
-def _agent_http_do_POST(self):
-    path = self.path.rstrip('/')
-    if path == '/agent/deploy':
-        self._handle_agent_deploy()
-        return
-    if path == '/agent/stop':
-        self._handle_agent_stop()
-        return
-    if path.startswith('/agent/status/'):
-        addr = path[len('/agent/status/'):]
-        self._handle_agent_status(addr)
-        return
-    _orig_do_POST(self)
-
-
-_ControlHTTPHandler.do_POST = _agent_http_do_POST
-
-
-_ControlHTTPHandler._handle_agent_deploy = lambda self: self._agent_cmd('deploy')
-_ControlHTTPHandler._handle_agent_stop = lambda self: self._agent_cmd('stop')
-
-
-def _agent_cmd(self, action):
-    try:
-        n = int(self.headers.get('Content-Length', 0) or 0)
-        body = self.rfile.read(n) if n else b''
-        d = json.loads(body.decode('utf-8', 'replace')) if body else {}
-    except Exception:
-        d = {}
-    adb_addr = (d.get('adb_addr') or '') if isinstance(d, dict) else ''
-    if not adb_addr:
-        self._send_json(400, {'code': 400, 'msg': 'missing adb_addr'})
-        return
-    if action == 'deploy':
-        ok, msg = agent_mgr.deploy(adb_addr)
-    else:
-        ok, msg = agent_mgr.stop(adb_addr)
-    self._send_json(200 if ok else 500, {'code': 200 if ok else 500, 'msg': msg})
-
-
-_ControlHTTPHandler._handle_agent_status = lambda self, addr: self._agent_status(addr)
-
-
-def _agent_status(self, adb_addr):
-    st = agent_mgr.get_state(adb_addr)
-    st['running_now'] = agent_mgr.is_running(adb_addr)
-    st['stream_url_whep'] = f'{MEDIAMTX_WEBRTC_URL}/{st.get("stream_name", _agent_stream_name(adb_addr))}/whep'
-    st['stream_url_rtsp'] = f'{MEDIAMTX_RTSP_URL}/{st.get("stream_name", _agent_stream_name(adb_addr))}'
-    self._send_json(200, {'code': 200, 'data': st})
-
-
-def _send_json(self, code, body):
-    self.send_response(code)
-    self.send_header('Content-Type', 'application/json')
-    self.end_headers()
-    self.wfile.write(json.dumps(body, ensure_ascii=False).encode('utf-8'))
-
-
-_ControlHTTPHandler._send_json = _send_json
-
-
-def _start_control_http():
-    try:
-        srv = http.server.ThreadingHTTPServer(('0.0.0.0', 9001), _ControlHTTPHandler)
-        print('[relay] control http listening on :9001', flush=True)
-        agent_mgr.start()
-        srv.serve_forever()
-    except Exception as e:
-        print(f'[relay] control http failed: {e}', flush=True)
+def _stream_name(adb_addr):
     """把 adb_addr 转成 MediaMTX 流名（仅字母数字下划线）。"""
     return 'dev_' + str(adb_addr).replace('.', '_').replace(':', '_').replace('-', '_')
 
@@ -333,16 +276,51 @@ def _agent_running(adb_addr):
                            capture_output=True, timeout=8)
         if r.returncode != 0:
             return False
-        # 2. 检查进程是否存活
-        r = subprocess.run([ADB, '-s', adb_addr, 'shell', 'pgrep', '-f', 'myt-agent'],
-                           capture_output=True, timeout=8)
-        return r.returncode == 0
+        # 2. 检查进程是否存活。
+        # 注意：部分 x86 云手机/模拟器通过 houdini 跑 arm64 二进制，进程名会变成
+        # houdini64，pgrep -x myt-agent 永远匹配不到；因此按完整命令行匹配。
+        # [m] 防止 grep 命中 adb shell 命令行自身（self-match）。
+        # 按 NAME 排除 sh/grep，避免把启动命令的 shell 自身误判成 Agent。
+        r = subprocess.run(
+            [ADB, '-s', adb_addr, 'shell',
+             "ps -A -o PID,NAME,ARGS | awk '$2 != \"sh\" && $2 != \"grep\" && $2 != \"awk\" "
+             "&& index($0, \"/data/local/tmp/myt-agent\") {print $1; exit}'"],
+            capture_output=True, timeout=8)
+        return r.returncode == 0 and bool((r.stdout or b'').strip())
     except Exception:
         return False
 
 
+def _kill_agent_process(adb_addr):
+    """结束设备端残留 Agent。
+
+    单独用一条 adb shell 执行，避免和启动命令拼在一起：
+    启动命令本身包含 /data/local/tmp/myt-agent 字样，会被 ps|grep 匹配到，
+    进而 kill 掉当前 adb shell 自己（返回码 137）。
+    [m] 让 grep 不匹配这条 shell 命令自身的 '[m]yt-agent' 字面量。
+    """
+    # 只杀真正的 Agent 进程（NAME 不是 sh/grep）；同时清理遗留的启动 shell。
+    cmd = ("for p in $(ps -A -o PID,NAME,ARGS | awk '$2 != \"sh\" && $2 != \"grep\" && $2 != \"awk\" "
+           "&& index($0, \"/data/local/tmp/myt-agent\") {print $1}'); do kill -9 $p; done; "
+           "for p in $(ps -A -o PID,NAME,ARGS | awk '$2 == \"sh\" "
+           "&& index($0, \"[c]hmod 755 /data/local/tmp/myt-agent\") {print $1}'); do kill -9 $p; done")
+    try:
+        subprocess.run([ADB, '-s', adb_addr, 'shell', cmd],
+                       capture_output=True, timeout=10)
+    except Exception as e:
+        print(f'[agent] 清理旧 Agent 进程失败: {e}', flush=True)
+
+
+def _md5_file(path):
+    h = hashlib.md5()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def _deploy_agent(adb_addr):
-    """推送并启动设备端 Agent（幂等：文件已存在且大小一致则跳过推送）。
+    """推送并启动设备端 Agent（幂等：MD5 一致则跳过推送）。
 
     推送两个文件：
       1. Agent 二进制（myt-agent-arm64）
@@ -359,8 +337,15 @@ def _deploy_agent(adb_addr):
             print(f'[agent] adb connect {adb_addr} 失败: {cout}', flush=True)
             return False
 
-        # 1. 检查设备端 Agent 文件是否已存在且大小一致（避免重复推送浪费带宽）
+        # 1. 检查设备端 Agent 是否与本地二进制一致（MD5）。
+        # 只比大小不够：Go 加一串常量后二进制大小可能完全不变，会漏推新版本。
         local_size = os.path.getsize(AGENT_BIN_PATH)
+        local_md5 = _md5_file(AGENT_BIN_PATH)
+        remote_md5 = ''
+        r = subprocess.run([ADB, '-s', adb_addr, 'shell', 'md5sum', AGENT_DEVICE_PATH],
+                           capture_output=True, timeout=8)
+        if r.returncode == 0 and (r.stdout or b'').strip():
+            remote_md5 = r.stdout.decode('utf-8', 'replace').split()[0].lower()
         r = subprocess.run([ADB, '-s', adb_addr, 'shell', 'ls', '-l', AGENT_DEVICE_PATH],
                            capture_output=True, timeout=8)
         remote_exists = r.returncode == 0
@@ -372,8 +357,14 @@ def _deploy_agent(adb_addr):
                 if p.isdigit():
                     remote_size = int(p)
                     break
-        if remote_exists and remote_size == local_size:
-            print(f'[agent] {adb_addr} 设备端 Agent 文件已存在且大小一致 ({local_size} bytes)，跳过 push', flush=True)
+        need_push = True
+        if remote_md5:
+            need_push = remote_md5 != local_md5
+        elif remote_exists and remote_size == local_size:
+            # 设备没有 md5sum 时退回大小比较
+            need_push = False
+        if not need_push:
+            print(f'[agent] {adb_addr} 设备端 Agent 已是最新 ({local_md5[:12]}...)，跳过 push', flush=True)
         else:
             # 1. push Agent 二进制（检查返回码，失败即暴露真实原因）
             r = subprocess.run([ADB, '-s', adb_addr, 'push', AGENT_BIN_PATH, AGENT_DEVICE_PATH],
@@ -408,19 +399,32 @@ def _deploy_agent(adb_addr):
         # 2. 授权 + 启动（后台常驻）
         # Agent 推流 URL：MediaMTX RTSP （含 stream path）
         push_url = f'{MEDIAMTX_RTSP_URL}/{_stream_name(adb_addr)}'
-        launch = (f"chmod 755 {AGENT_DEVICE_PATH} && "
-                  # setsid：彻底脱离 adb shell 会话，否则 adb shell 可能因会话未关闭而挂住。
-                  # 曾出现设备端进程明明起来了、但 adb shell 10 秒不返回导致误判部署失败。
+        # 先单独清理旧进程（避免启动命令自匹配被 kill），再启动新进程。
+        _kill_agent_process(adb_addr)
+        # 整个 { ... } & 组合重定向到日志文件：后台 shell 不再持有 adb shell 的
+        # stdout/stderr，否则 adb shell 会一直等后台进程退出（表现为部署超时）。
+        launch = (f"{{ chmod 755 {AGENT_DEVICE_PATH} && "
                   f"setsid nohup {AGENT_DEVICE_PATH} -relay '{push_url}' "
-                  f"-transport udp "
+                  f"-transport {AGENT_TRANSPORT} -max-size {AGENT_MAX_SIZE} -bitrate {AGENT_BITRATE} "
+                  f"-keyframe-interval {AGENT_KEYFRAME_INTERVAL}; }} "
                   f">/data/local/tmp/myt-agent.log 2>&1 </dev/null &")
-        # 超时放宽到 25s：慢设备（低端云手机）上 chmod + 启动可能超过 10s
-        r3 = subprocess.run([ADB, '-s', adb_addr, 'shell', launch], capture_output=True, timeout=25)
-        if r3.returncode != 0:
+        # 超时放宽到 15s；即使 adb shell 返回超时，只要 Agent 进程已起来也算成功。
+        try:
+            r3 = subprocess.run([ADB, '-s', adb_addr, 'shell', launch],
+                                capture_output=True, timeout=15)
+            launch_ok = r3.returncode == 0
             err = (r3.stderr or r3.stdout or b'').decode('utf-8', 'replace').strip()
-            print(f'[agent] 启动 Agent 到 {adb_addr} 失败: {err}', flush=True)
-            return False
-        print(f'[agent] 已部署 Agent 到 {adb_addr}, push={push_url}', flush=True)
+        except subprocess.TimeoutExpired:
+            launch_ok = False
+            err = 'adb shell 等待启动命令超时'
+        if not launch_ok:
+            time.sleep(1)
+            if _agent_running(adb_addr):
+                print(f'[agent] 启动命令未正常返回，但 Agent 已在运行: {adb_addr}', flush=True)
+            else:
+                print(f'[agent] 启动 Agent 到 {adb_addr} 失败: {err}', flush=True)
+                return False
+        print(f'[agent] 已部署 Agent 到 {adb_addr}, push={push_url}, transport={AGENT_TRANSPORT}', flush=True)
         return True
     except Exception as e:
         print(f'[agent] 部署 Agent 到 {adb_addr} 失败: {e}', flush=True)
@@ -1318,10 +1322,73 @@ class _ControlHTTPHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+# ---- Agent 生命周期 HTTP 端点（必须在 _ControlHTTPHandler 定义之后扩展）----
+_orig_do_POST = _ControlHTTPHandler.do_POST
+
+
+def _agent_http_do_POST(self):
+    path = self.path.rstrip('/')
+    if path == '/agent/deploy':
+        self._handle_agent_deploy()
+        return
+    if path == '/agent/stop':
+        self._handle_agent_stop()
+        return
+    if path.startswith('/agent/status/'):
+        addr = path[len('/agent/status/'):]
+        self._handle_agent_status(addr)
+        return
+    _orig_do_POST(self)
+
+
+def _agent_cmd(self, action):
+    try:
+        n = int(self.headers.get('Content-Length', 0) or 0)
+        body = self.rfile.read(n) if n else b''
+        d = json.loads(body.decode('utf-8', 'replace')) if body else {}
+    except Exception:
+        d = {}
+    adb_addr = (d.get('adb_addr') or '') if isinstance(d, dict) else ''
+    if not adb_addr:
+        self._send_json(400, {'code': 400, 'msg': 'missing adb_addr'})
+        return
+    if action == 'deploy':
+        ok, msg = agent_mgr.deploy(adb_addr)
+    else:
+        ok, msg = agent_mgr.stop(adb_addr)
+    self._send_json(200 if ok else 500, {'code': 200 if ok else 500, 'msg': msg})
+
+
+def _agent_status(self, adb_addr):
+    st = agent_mgr.get_state(adb_addr)
+    st['running_now'] = agent_mgr.is_running(adb_addr)
+    if st['running_now'] and not st.get('stream_name'):
+        st['stream_name'] = _agent_stream_name(adb_addr)
+    stream = st.get('stream_name') or _agent_stream_name(adb_addr)
+    st['stream_url_whep'] = f'{MEDIAMTX_WEBRTC_URL}/{stream}/whep'
+    st['stream_url_rtsp'] = f'{MEDIAMTX_RTSP_URL}/{stream}'
+    self._send_json(200, {'code': 200, 'data': st})
+
+
+def _send_json(self, code, body):
+    self.send_response(code)
+    self.send_header('Content-Type', 'application/json')
+    self.end_headers()
+    self.wfile.write(json.dumps(body, ensure_ascii=False).encode('utf-8'))
+
+
+_ControlHTTPHandler.do_POST = _agent_http_do_POST
+_ControlHTTPHandler._handle_agent_deploy = lambda self: _agent_cmd(self, 'deploy')
+_ControlHTTPHandler._handle_agent_stop = lambda self: _agent_cmd(self, 'stop')
+_ControlHTTPHandler._handle_agent_status = lambda self, addr: _agent_status(self, addr)
+_ControlHTTPHandler._send_json = _send_json
+
+
 def _start_control_http():
     try:
         srv = http.server.ThreadingHTTPServer(('0.0.0.0', 9001), _ControlHTTPHandler)
         print('[relay] control http listening on :9001', flush=True)
+        agent_mgr.start()
         srv.serve_forever()
     except Exception as e:
         print(f'[relay] control http failed: {e}', flush=True)

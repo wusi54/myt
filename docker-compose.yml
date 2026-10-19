@@ -89,8 +89,15 @@ services:
       RELAY_STRIP_VUI: "1"       # 剥离 scrcpy SPS 的 color VUI，避免浏览器按 BT.709 解释导致画面偏蓝
       # 方向 B：Agent 上行流（设备端 Agent 出站推帧，绕开 adb 隧道）
       RELAY_USE_AGENT: "1"       # 1=启用 Agent 模式（默认），0=回退传统 adb reverse 模式
-      MEDIAMTX_RTSP_URL: ${MEDIAMTX_RTSP_URL:-rtsp://113.105.100.58:8554}  # Agent RTSP 推流地址
-      MEDIAMTX_WEBRTC_URL: ${MEDIAMTX_WEBRTC_URL:-http://113.105.100.58:8889}  # 浏览器 WebRTC 拉流地址
+      # 本地联调：UDP 推流必须走 192.168.10.43（10.9 只支持 TCP 推流）。
+      # 生产环境可通过 .env 覆盖为公网 MediaMTX。
+      MEDIAMTX_RTSP_URL: ${MEDIAMTX_RTSP_URL:-rtsp://192.168.10.43:8554}  # Agent RTSP/UDP 推流地址
+      MEDIAMTX_WEBRTC_URL: ${MEDIAMTX_WEBRTC_URL:-http://192.168.10.43:8889}  # 浏览器 WebRTC 拉流地址
+      AGENT_TRANSPORT: ${AGENT_TRANSPORT:-udp}   # udp 弱网实时性更好（已验证）；排障可切 tcp
+      AGENT_MAX_SIZE: ${AGENT_MAX_SIZE:-720}     # Agent 采集最长边
+      AGENT_BITRATE: ${AGENT_BITRATE:-1000000}   # Agent 编码码率 bps
+      AGENT_KEYFRAME_INTERVAL: ${AGENT_KEYFRAME_INTERVAL:-0}  # 0=每帧关键帧，WHEP 新观众可立即解码；该机型 1/2 会被编码器钳成 10s
+      AGENT_IDLE_STOP_SEC: ${AGENT_IDLE_STOP_SEC:-0}  # 0=不自动停（WHEP 观众不经过 relay，relay 无法感知订阅者）
       AGENT_TOKEN: ${AGENT_TOKEN:-}           # Agent 上行流认证密钥（生产务必设置）
       AGENT_BIN_PATH: /app/agent/myt-agent-arm64      # 推送 Agent 二进制的容器内路径
       AGENT_DEVICE_PATH: /data/local/tmp/myt-agent     # Agent 在设备上的落盘路径
