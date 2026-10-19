@@ -107,6 +107,14 @@ AGENT_HEALTH_CHECK_SEC = int(os.environ.get('AGENT_HEALTH_CHECK_SEC', '30'))  # 
 #   last_sub_ts: 最后一次有 WebRTC 订阅者的时间戳（用于空闲停止）
 agent_states = {}          # type: dict[str, dict]
 agent_states_lock = threading.Lock()
+agent_deploy_locks = {}     # adb_addr -> per-device deploy lock
+agent_deploy_locks_lock = threading.Lock()
+
+
+def _agent_deploy_lock(adb_addr):
+    """Return a lock that serializes lifecycle operations for one device."""
+    with agent_deploy_locks_lock:
+        return agent_deploy_locks.setdefault(adb_addr, threading.Lock())
 
 
 class AgentManager:
@@ -160,32 +168,30 @@ class AgentManager:
             st['last_seen'] = time.strftime('%Y-%m-%d %H:%M:%S')
 
     def deploy(self, adb_addr, max_size=None):
-        """部署并启动 Agent（幂等）。返回 (ok, msg)。
+        """部署并启动 Agent（幂等）。返回 (ok, msg)。"""
+        # 同一设备的并发 ensure/deploy 必须串行，避免两个 HTTP 请求同时启动 Agent。
+        lock = _agent_deploy_lock(adb_addr)
+        with lock:
+            # 保持幂等：健康的 Agent 正在运行时绝不能先 kill。
+            # 普通 ensure/WHEP 重连会频繁调用此方法，重启会中断媒体流。
+            process_count = _agent_process_count(adb_addr)
+            if max_size is None and process_count == 1:
+                self.set_state(adb_addr, status='running',
+                               stream_name=_agent_stream_name(adb_addr))
+                self.touch_subscriber(adb_addr)
+                return True, 'Agent 已在运行'
 
-        已经是 running 时不重启 Agent：群控窗每次 WHEP 重连都会调用 ensure，
-        重复 push/重启会把正常推流打断。
-        """
-        # 先清理所有残余 Agent 进程（防止多进程竞争 scrcpy socket）
-        _kill_agent_process(adb_addr)
-        if max_size is None and self.is_running(adb_addr):
-            self.set_state(adb_addr, status='running',
-                           stream_name=_agent_stream_name(adb_addr))
-            self.touch_subscriber(adb_addr)
-            return True, 'Agent 已在运行'
-        if max_size is not None:
-            try:
-                self.stop(adb_addr)
-            except Exception:
-                pass
-        self.set_state(adb_addr, status='deploying')
-        ok = _deploy_agent(adb_addr, int(max_size) if max_size else None)
-        if ok:
-            self.set_state(adb_addr, status='running',
-                           stream_name=_agent_stream_name(adb_addr))
-            self.touch_subscriber(adb_addr)
-            return True, 'Agent 已部署并启动'
-        self.set_state(adb_addr, status='error')
-        return False, 'Agent 部署失败'
+            # Agent 未运行、发现重复实例、或显式切换参数时，清理后重新部署。
+            _kill_agent_process(adb_addr)
+            self.set_state(adb_addr, status='deploying')
+            ok = _deploy_agent(adb_addr, int(max_size) if max_size else None)
+            if ok:
+                self.set_state(adb_addr, status='running',
+                               stream_name=_agent_stream_name(adb_addr))
+                self.touch_subscriber(adb_addr)
+                return True, 'Agent 已部署并启动'
+            self.set_state(adb_addr, status='error')
+            return False, 'Agent 部署失败'
 
     def stop(self, adb_addr):
         """停止设备端 Agent 进程。"""
@@ -270,84 +276,84 @@ def _stream_name(adb_addr):
     return 'dev_' + str(adb_addr).replace('.', '_').replace(':', '_').replace('-', '_')
 
 
-def _agent_running(adb_addr):
-    """设备端 Agent 是否在运行。
-
-    先检查设备端文件是否存在，不存在直接返回 False（避免无意义的 pgrep）。
-    存在再检查进程是否存活。
-    """
+def _agent_process_count(adb_addr):
+    """Count actual Agent processes (not their background `sh -c` launcher)."""
     try:
-        # 0. 先连 adb（网关映射地址需先建立连接）
         subprocess.run([ADB, 'connect', adb_addr], capture_output=True, timeout=15)
-        # 1. 检查文件是否存在（避免文件不存在时还 pgrep，浪费带宽/时间）
-        r = subprocess.run([ADB, '-s', adb_addr, 'shell', 'test', '-f', AGENT_DEVICE_PATH],
-                           capture_output=True, timeout=8)
-        if r.returncode != 0:
-            return False
-        # 2. 检查进程是否存活。
-        # 兼容两种 ps 格式：
-        #   - ps -ef（Linux 标准，云手机普遍支持）
-        #   - ps -A -o PID,NAME,ARGS（标准 Android，部分设备支持）
-        # 按命令行匹配，避免 houdini64 进程名导致 pgrep -x 失效。
-        # 先试 ps -ef，再 fallback ps -A。
+        # ps -ef exists on the target cloud phones and common Android builds.
+        # Exclude shell/grep/awk command lines, which contain the search string.
         r = subprocess.run(
             [ADB, '-s', adb_addr, 'shell',
-             "ps -ef | grep '/data/local/tmp/myt-agent' | grep -v grep"],
+             "ps -ef | grep 'myt-agent' | grep -v grep | grep -v 'sh -c' | grep -v awk"],
             capture_output=True, timeout=8)
-        if r.returncode == 0 and (r.stdout or b'').strip():
-            return True
-        # Fallback: ps -A -o PID,NAME,ARGS
+        if r.returncode == 0:
+            return sum(1 for line in (r.stdout or b'').decode('utf-8', 'replace').splitlines()
+                       if line.strip())
+        # Fallback to Android's ps format, excluding shell and helper processes.
         r = subprocess.run(
             [ADB, '-s', adb_addr, 'shell',
              "ps -A -o PID,NAME,ARGS | awk '$2 != \"sh\" && $2 != \"grep\" && $2 != \"awk\" "
-             "&& index($0, \"/data/local/tmp/myt-agent\") {print $1; exit}'"],
+             "&& index($0, \"myt-agent\") {print $1}'"],
             capture_output=True, timeout=8)
-        return r.returncode == 0 and bool((r.stdout or b'').strip())
+        if r.returncode == 0:
+            return sum(1 for line in (r.stdout or b'').decode('utf-8', 'replace').splitlines()
+                       if line.strip())
     except Exception:
-        return False
+        pass
+    return -1
+
+
+def _device_agent_pids(adb_addr):
+    """List Agent, scrcpy server and stale launcher PIDs on a device."""
+    pids = set()
+    commands = (
+        "ps -ef | grep -E 'myt-agent|scrcpy.Server' | grep -v grep | grep -v awk | grep -v 'sh -c' | awk '{print $2}'",
+        "ps -ef | grep '[c]hmod 755 /data/local/tmp/myt-agent' | awk '{print $2}'",
+    )
+    for command in commands:
+        try:
+            r = subprocess.run([ADB, '-s', adb_addr, 'shell', command],
+                               capture_output=True, timeout=8)
+            for value in (r.stdout or b'').decode('utf-8', 'replace').split():
+                if value.isdigit():
+                    pids.add(value)
+        except Exception:
+            continue
+    return pids
+
+
+def _agent_running(adb_addr):
+    """设备端是否有 Agent 进程（兼容云手机的 ps -ef/Android ps）。"""
+    return _agent_process_count(adb_addr) > 0
 
 
 def _kill_agent_process(adb_addr):
-    """结束设备端所有残余 Agent 和 scrcpy 进程。
+    """Kill exact PIDs (root or shell) and wait for Agent/scrcpy to exit.
 
-    兼容 root/shell 两种用户：
-    1. 先尝试 su -c kill（root 设备）
-    2. 再直接 kill（普通设备，ADB shell 以 root 运行时）
-    3. 最后用 pkill 兜底
+    Avoid pkill -f: its pattern can match the pkill/adb shell command itself,
+    and on some cloud phones it leaves root-owned Agent processes behind.
     """
-    # 方法 1：su -c kill（root 设备）
     try:
-        subprocess.run([ADB, '-s', adb_addr, 'shell',
-                        "su -c 'pkill -9 -f myt-agent; pkill -9 -f scrcpy.Server'"],
-                       capture_output=True, timeout=10)
+        subprocess.run([ADB, 'connect', adb_addr], capture_output=True, timeout=15)
     except Exception:
         pass
-    # 方法 2：直接 kill（ADB shell 以 root 运行时）
-    try:
-        r = subprocess.run([ADB, '-s', adb_addr, 'shell',
-                            "ps -ef | grep -E 'myt-agent|scrcpy.Server' | grep -v grep | awk '{print $2}'"],
-                           capture_output=True, timeout=10)
-        for pid in (r.stdout or b'').decode().split():
-            subprocess.run([ADB, '-s', adb_addr, 'shell', f'kill -9 {pid}'],
-                           capture_output=True, timeout=5)
-    except Exception:
-        pass
-    # 方法 3：pkill 兜底
-    try:
-        subprocess.run([ADB, '-s', adb_addr, 'shell', 'pkill -9 -f myt-agent'],
-                       capture_output=True, timeout=5)
-        subprocess.run([ADB, '-s', adb_addr, 'shell', 'pkill -9 -f scrcpy.Server'],
-                       capture_output=True, timeout=5)
-    except Exception:
-        pass
-    # 等待进程完全退出（最多 5 秒）
-    for _ in range(10):
-        r = subprocess.run([ADB, '-s', adb_addr, 'shell',
-                            "ps -ef | grep -E 'myt-agent|scrcpy.Server' | grep -v grep"],
-                           capture_output=True, timeout=5)
-        if not (r.stdout or b'').strip():
-            break
+    for _ in range(3):
+        pids = _device_agent_pids(adb_addr)
+        if not pids:
+            return
+        pid_args = ' '.join(sorted(pids, key=int))
+        # Try root first, then direct shell privileges for non-root devices.
+        for command in (f"su -c 'kill -9 {pid_args}'", f'kill -9 {pid_args}'):
+            try:
+                subprocess.run([ADB, '-s', adb_addr, 'shell', command],
+                               capture_output=True, timeout=10)
+            except Exception:
+                pass
         time.sleep(0.5)
+    # Verify that no managed processes remain; don't silently report success.
+    remaining = _device_agent_pids(adb_addr)
+    if remaining:
+        print(f'[agent] 无法清理设备 {adb_addr} 残余进程 PID={",".join(sorted(remaining))}', flush=True)
 
 
 def _md5_file(path):
