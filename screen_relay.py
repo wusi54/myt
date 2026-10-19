@@ -90,8 +90,9 @@ MEDIAMTX_RTSP_URL = os.environ.get('MEDIAMTX_RTSP_URL', 'rtsp://113.105.100.58:8
 MEDIAMTX_WEBRTC_URL = os.environ.get('MEDIAMTX_WEBRTC_URL', 'http://113.105.100.58:8889')
 
 AGENT_TOKEN = os.environ.get('AGENT_TOKEN', '')
-# Agent 推流传输协议：udp 适合弱网实时性（已在本地点对点验证可用）；如需排障可切回 tcp。
-AGENT_TRANSPORT = os.environ.get('AGENT_TRANSPORT', 'udp')
+# Agent 推流传输协议：tcp 为默认（RTP 内嵌 RTSP 连接，NAT/防火墙穿透稳定，已验证）。
+# udp 仅在同网段/无 NAT 的链路排障或低延迟场景下使用（外网 UDP 媒体端口映射不可靠）。
+AGENT_TRANSPORT = os.environ.get('AGENT_TRANSPORT', 'tcp')
 AGENT_MAX_SIZE = int(os.environ.get('AGENT_MAX_SIZE', '720'))
 AGENT_BITRATE = int(os.environ.get('AGENT_BITRATE', '1000000'))
 AGENT_KEYFRAME_INTERVAL = int(os.environ.get('AGENT_KEYFRAME_INTERVAL', '1'))
