@@ -446,8 +446,16 @@ def _deploy_agent(adb_addr, max_size=None):
             else:
                 print(f'[agent] 启动 Agent 到 {adb_addr} 失败: {err}', flush=True)
                 return False
-        print(f'[agent] 已部署 Agent 到 {adb_addr}, push={push_url}, transport={AGENT_TRANSPORT}', flush=True)
-        return True
+        # 启动 Agent 后等待 scrcpy-server 初始化，然后发送 dummy 触摸事件触发第一帧。
+        # 云手机等设备在屏幕完全静态时，scrcpy 不会发送第一帧（repeat frame 机制需要至少一帧），
+        # 导致 Agent 的 reader.Read() 永久阻塞，画面黑屏。
+        time.sleep(5)
+        try:
+            subprocess.run([ADB, '-s', adb_addr, 'shell', 'input tap 100 100'],
+                           capture_output=True, timeout=5)
+            print(f'[agent] 已发送 dummy 触摸触发首帧: {adb_addr}', flush=True)
+        except Exception as e:
+            print(f'[agent] dummy 触摸失败: {e}', flush=True)
     except Exception as e:
         print(f'[agent] 部署 Agent 到 {adb_addr} 失败: {e}', flush=True)
         return False
