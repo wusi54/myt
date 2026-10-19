@@ -106,16 +106,9 @@ services:
     image: bluenviron/mediamtx:latest
     container_name: myt-mediamtx
     restart: unless-stopped
-    ports:
-      - "8554:8554"          # RTSP (TCP)
-      - "8889:8889"          # WebRTC HTTP (TCP)
-      - "8189:8189/udp"      # WebRTC ICE (UDP) - CRITICAL for WebRTC
-      - "8000:8000/udp"      # RTP (UDP) - for RTSP-over-UDP push
-      - "8001:8001/udp"      # RTCP (UDP) - for RTSP-over-UDP push
+    network_mode: host
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
-    networks:
-      - myt-net
 
 networks:
   myt-net:
