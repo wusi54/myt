@@ -183,6 +183,12 @@ def _ensure_columns(conn):
         conn.execute("ALTER TABLE devices ADD COLUMN enabled INTEGER DEFAULT 1")
     if 'screen_status' not in cols('containers'):
         conn.execute("ALTER TABLE containers ADD COLUMN screen_status TEXT DEFAULT ''")
+    if 'agent_status' not in cols('containers'):
+        conn.execute("ALTER TABLE containers ADD COLUMN agent_status TEXT DEFAULT 'unknown'")
+    if 'agent_stream_name' not in cols('containers'):
+        conn.execute("ALTER TABLE containers ADD COLUMN agent_stream_name TEXT DEFAULT ''")
+    if 'agent_last_seen' not in cols('containers'):
+        conn.execute("ALTER TABLE containers ADD COLUMN agent_last_seen TEXT DEFAULT ''")
 
 
 def init_db():

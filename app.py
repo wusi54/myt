@@ -1675,6 +1675,68 @@ def screen_touch():
         return err(f'relay control error: {e}', 500)
 
 
+# ==================== Agent 生命周期管理 ====================
+def _relay_agent(action, adb_addr, body=None):
+    """转发 Agent 生命周期请求到 relay:9001。"""
+    import requests
+    url = f'http://relay:9001/agent/{action}'
+    try:
+        r = requests.post(url, json={'adb_addr': adb_addr, **(body or {})}, timeout=30)
+        try:
+            return r.json(), r.status_code
+        except Exception:
+            return {'code': r.status_code, 'msg': r.text or ''}, r.status_code
+    except Exception as e:
+        return {'code': 500, 'msg': f'relay agent error: {e}'}, 500
+
+
+@app.route('/api/containers/<cid>/agent/deploy', methods=['POST'])
+def api_container_agent_deploy(cid):
+    c = db.get_container(cid)
+    if not c:
+        return err('容器不存在', 404)
+    adb_addr = c.get('adb_addr') or ''
+    if not adb_addr:
+        return err('容器无 adb_addr', 400)
+    result, code = _relay_agent('deploy', adb_addr)
+    if code == 200:
+        db.update_container(cid, agent_status='running')
+    return jsonify(result), code
+
+
+@app.route('/api/containers/<cid>/agent/stop', methods=['POST'])
+def api_container_agent_stop(cid):
+    c = db.get_container(cid)
+    if not c:
+        return err('容器不存在', 404)
+    adb_addr = c.get('adb_addr') or ''
+    if not adb_addr:
+        return err('容器无 adb_addr', 400)
+    result, code = _relay_agent('stop', adb_addr)
+    if code == 200:
+        db.update_container(cid, agent_status='stopped')
+    return jsonify(result), code
+
+
+@app.route('/api/containers/<cid>/agent/status', methods=['GET'])
+def api_container_agent_status(cid):
+    c = db.get_container(cid)
+    if not c:
+        return err('容器不存在', 404)
+    adb_addr = c.get('adb_addr') or ''
+    if not adb_addr:
+        return err('容器无 adb_addr', 400)
+    result, code = _relay_agent('status', adb_addr)
+    # 同步写回本地 DB 缓存
+    if code == 200 and result.get('data'):
+        data = result['data']
+        db.update_container(cid,
+                            agent_status=data.get('running_now') and 'running' or data.get('status', 'unknown'),
+                            agent_stream_name=data.get('stream_name', ''),
+                            agent_last_seen=data.get('last_seen', ''))
+    return jsonify(result), code
+
+
 # 启动时按设备 url 修正历史容器的投屏(adb)地址（网关场景，幂等）
 try:
     _n = migrate_adb_addrs()

@@ -90,8 +90,231 @@ MEDIAMTX_WEBRTC_URL = os.environ.get('MEDIAMTX_WEBRTC_URL', 'http://113.105.100.
 
 AGENT_TOKEN = os.environ.get('AGENT_TOKEN', '')
 
+# ---- Agent 生命周期管理 ----
+AGENT_IDLE_STOP_SEC = int(os.environ.get('AGENT_IDLE_STOP_SEC', '300'))   # 无观众后多少秒停止 Agent（省设备资源），0=不自动停
+AGENT_HEALTH_CHECK_SEC = int(os.environ.get('AGENT_HEALTH_CHECK_SEC', '30'))  # 健康检查间隔(秒)
 
-def _stream_name(adb_addr):
+# adb_addr -> AgentState
+#   status: 'unknown'|'deploying'|'running'|'stopped'|'error'|'offline'
+#   stream_name: MediaMTX 流名
+#   last_seen: 最后一次心跳/上报时间戳
+#   last_sub_ts: 最后一次有 WebRTC 订阅者的时间戳（用于空闲停止）
+agent_states = {}          # type: dict[str, dict]
+agent_states_lock = threading.Lock()
+
+
+class AgentManager:
+    """设备端 Agent 生命周期管理：部署、健康检查、空闲停止、自愈。"""
+
+    def __init__(self):
+        self._health_thread = None
+        self._idle_thread = None
+        self._started = False
+
+    def start(self):
+        """启动后台健康检查 + 空闲停止线程（仅启动一次）。"""
+        with agent_states_lock:
+            if self._started:
+                return
+            self._started = True
+        self._health_thread = threading.Thread(target=self._health_check_loop, daemon=True,
+                                               name='agent-health')
+        self._idle_thread = threading.Thread(target=self._idle_stop_loop, daemon=True,
+                                             name='agent-idle-stop')
+        self._health_thread.start()
+        self._idle_thread.start()
+        print('[agent-mgr] Agent 生命周期管理已启动 (health_check=%ds, idle_stop=%ds)' % (
+            AGENT_HEALTH_CHECK_SEC, AGENT_IDLE_STOP_SEC), flush=True)
+
+    def get_state(self, adb_addr):
+        with agent_states_lock:
+            return dict(agent_states.get(adb_addr, {
+                'status': 'unknown', 'stream_name': '', 'last_seen': '',
+                'last_sub_ts': 0.0,
+            }))
+
+    def set_state(self, adb_addr, **fields):
+        with agent_states_lock:
+            st = agent_states.setdefault(adb_addr, {
+                'status': 'unknown', 'stream_name': '', 'last_seen': '',
+                'last_sub_ts': 0.0,
+            })
+            st.update(fields)
+            st['last_seen'] = time.strftime('%Y-%m-%d %H:%M:%S')
+            return dict(st)
+
+    def touch_subscriber(self, adb_addr):
+        """有 WebRTC 订阅者加入时更新最后订阅时间。"""
+        with agent_states_lock:
+            st = agent_states.setdefault(adb_addr, {
+                'status': 'unknown', 'stream_name': '', 'last_seen': '',
+                'last_sub_ts': 0.0,
+            })
+            st['last_sub_ts'] = time.time()
+            st['last_seen'] = time.strftime('%Y-%m-%d %H:%M:%S')
+
+    def deploy(self, adb_addr):
+        """部署并启动 Agent（幂等）。返回 (ok, msg)。"""
+        self.set_state(adb_addr, status='deploying')
+        ok = _deploy_agent(adb_addr)
+        if ok:
+            self.set_state(adb_addr, status='running')
+            return True, 'Agent 已部署并启动'
+        self.set_state(adb_addr, status='error')
+        return False, 'Agent 部署失败'
+
+    def stop(self, adb_addr):
+        """停止设备端 Agent 进程。"""
+        try:
+            subprocess.run([ADB, 'connect', adb_addr], capture_output=True, timeout=10)
+            subprocess.run([ADB, '-s', adb_addr, 'shell',
+                            'pkill -f myt-agent'], capture_output=True, timeout=8)
+        except Exception:
+            pass
+        self.set_state(adb_addr, status='stopped')
+        return True, 'Agent 已停止'
+
+    def is_running(self, adb_addr):
+        return _agent_running(adb_addr)
+
+    # ---- 后台循环 ----
+
+    def _health_check_loop(self):
+        """每 AGENT_HEALTH_CHECK_SEC 检查一次已知设备的 Agent 存活，死掉则重新部署。"""
+        while True:
+            time.sleep(AGENT_HEALTH_CHECK_SEC)
+            with agent_states_lock:
+                addrs = list(agent_states.keys())
+            for addr in addrs:
+                try:
+                    if self.is_running(addr):
+                        self.set_state(addr, status='running')
+                    else:
+                        st = self.get_state(addr)
+                        if st['status'] == 'running':
+                            # 之前是 running，现在死了 -> 自愈重新部署
+                            print(f'[agent-mgr] {addr} Agent 非正常退出，自愈重新部署', flush=True)
+                            self.deploy(addr)
+                        elif st['status'] in ('unknown', 'error', 'stopped'):
+                            # 非运行状态，不主动部署（等用户触发或有订阅者时按需部署）
+                            pass
+                except Exception as e:
+                    print(f'[agent-mgr] {addr} 健康检查异常: {e}', flush=True)
+
+    def _idle_stop_loop(self):
+        """每 AGENT_HEALTH_CHECK_SEC 检查空闲设备，无订阅者超过 AGENT_IDLE_STOP_SEC 则停止 Agent。"""
+        if AGENT_IDLE_STOP_SEC <= 0:
+            return
+        while True:
+            time.sleep(AGENT_HEALTH_CHECK_SEC)
+            now = time.time()
+            with agent_states_lock:
+                addrs = list(agent_states.keys())
+            for addr in addrs:
+                st = self.get_state(addr)
+                if st['status'] != 'running':
+                    continue
+                if st['last_sub_ts'] <= 0:
+                    continue  # 从未有过订阅者，不主动停（部署时即可能立即观看）
+                idle = now - st['last_sub_ts']
+                if idle > AGENT_IDLE_STOP_SEC:
+                    print(f'[agent-mgr] {addr} 无订阅者空闲 {idle:.0f}s > {AGENT_IDLE_STOP_SEC}s，停止 Agent', flush=True)
+                    self.stop(addr)
+
+
+agent_mgr = AgentManager()
+
+
+def _agent_stream_name(adb_addr):
+    """与 MediaMTX 流名一致：dev_<ip>_<port>"""
+    return _stream_name(adb_addr)
+
+
+def _ensure_agent_for_ws(adb_addr):
+    """WebSocket 连接进来时确保 Agent 运行（按需部署）。"""
+    agent_mgr.touch_subscriber(adb_addr)
+    st = agent_mgr.get_state(adb_addr)
+    if st['status'] == 'running' and agent_mgr.is_running(adb_addr):
+        return True
+    if st['status'] == 'deploying':
+        return False  # 正在部署，等
+    ok, msg = agent_mgr.deploy(adb_addr)
+    return ok
+
+
+# ---- 扩展 _ControlHTTPHandler：加 Agent 生命周期 HTTP 端点 ----
+_orig_do_POST = _ControlHTTPHandler.do_POST
+
+
+def _agent_http_do_POST(self):
+    path = self.path.rstrip('/')
+    if path == '/agent/deploy':
+        self._handle_agent_deploy()
+        return
+    if path == '/agent/stop':
+        self._handle_agent_stop()
+        return
+    if path.startswith('/agent/status/'):
+        addr = path[len('/agent/status/'):]
+        self._handle_agent_status(addr)
+        return
+    _orig_do_POST(self)
+
+
+_ControlHTTPHandler.do_POST = _agent_http_do_POST
+
+
+_ControlHTTPHandler._handle_agent_deploy = lambda self: self._agent_cmd('deploy')
+_ControlHTTPHandler._handle_agent_stop = lambda self: self._agent_cmd('stop')
+
+
+def _agent_cmd(self, action):
+    try:
+        n = int(self.headers.get('Content-Length', 0) or 0)
+        body = self.rfile.read(n) if n else b''
+        d = json.loads(body.decode('utf-8', 'replace')) if body else {}
+    except Exception:
+        d = {}
+    adb_addr = (d.get('adb_addr') or '') if isinstance(d, dict) else ''
+    if not adb_addr:
+        self._send_json(400, {'code': 400, 'msg': 'missing adb_addr'})
+        return
+    if action == 'deploy':
+        ok, msg = agent_mgr.deploy(adb_addr)
+    else:
+        ok, msg = agent_mgr.stop(adb_addr)
+    self._send_json(200 if ok else 500, {'code': 200 if ok else 500, 'msg': msg})
+
+
+_ControlHTTPHandler._handle_agent_status = lambda self, addr: self._agent_status(addr)
+
+
+def _agent_status(self, adb_addr):
+    st = agent_mgr.get_state(adb_addr)
+    st['running_now'] = agent_mgr.is_running(adb_addr)
+    st['stream_url_whep'] = f'{MEDIAMTX_WEBRTC_URL}/{st.get("stream_name", _agent_stream_name(adb_addr))}/whep'
+    st['stream_url_rtsp'] = f'{MEDIAMTX_RTSP_URL}/{st.get("stream_name", _agent_stream_name(adb_addr))}'
+    self._send_json(200, {'code': 200, 'data': st})
+
+
+def _send_json(self, code, body):
+    self.send_response(code)
+    self.send_header('Content-Type', 'application/json')
+    self.end_headers()
+    self.wfile.write(json.dumps(body, ensure_ascii=False).encode('utf-8'))
+
+
+_ControlHTTPHandler._send_json = _send_json
+
+
+def _start_control_http():
+    try:
+        srv = http.server.ThreadingHTTPServer(('0.0.0.0', 9001), _ControlHTTPHandler)
+        print('[relay] control http listening on :9001', flush=True)
+        agent_mgr.start()
+        srv.serve_forever()
+    except Exception as e:
+        print(f'[relay] control http failed: {e}', flush=True)
     """把 adb_addr 转成 MediaMTX 流名（仅字母数字下划线）。"""
     return 'dev_' + str(adb_addr).replace('.', '_').replace(':', '_').replace('-', '_')
 
@@ -398,6 +621,8 @@ class Stream:
         with self.sub_lock:
             first = len(self.subs) == 0
             self.subs.add(ws)
+        # 通知 AgentManager 有订阅者（用于空闲停止判断）
+        agent_mgr.touch_subscriber(self.adb_addr)
         # 后加入者错过当前 IDR，请求重启让其快速出画（0.3s 去抖）
         if not first and self.last_start and (time.time() - self.last_start) > 0.3:
             self.kick.set()
@@ -843,10 +1068,10 @@ async def handler(ws):
             req_ms = max(240, min(1080, int(max_size_raw)))
         except Exception:
             req_ms = None
-    # 方向 A：确保设备端 Agent 存活（Agent 出站推帧，绕开 adb 隧道）
+    # 方向 B：确保设备端 Agent 存活（Agent 出站 RTSP 推流，绕开 adb 隧道）
     # 部署 Agent 是阻塞操作（push + 启动），放到线程避免阻塞事件循环
     if USE_AGENT:
-        threading.Thread(target=_ensure_agent, args=(adb_addr,), daemon=True).start()
+        threading.Thread(target=lambda: agent_mgr.deploy(adb_addr), daemon=True).start()
     with lock:
         s = streams.get(adb_addr)
         if s is None:
@@ -918,6 +1143,8 @@ async def agent_handler(ws):
         return
 
     print(f'[relay][agent] agent connected adb_addr={adb_addr}', flush=True)
+    agent_mgr.touch_subscriber(adb_addr)
+    agent_mgr.set_state(adb_addr, status='running', stream_name=_agent_stream_name(adb_addr))
     loop = asyncio.get_running_loop()
     with lock:
         s = streams.get(adb_addr)
@@ -944,7 +1171,7 @@ async def agent_handler(ws):
                 streams.pop(adb_addr, None)
         # 自愈：Agent 断开后，后台重新部署 Agent（Agent 会自动重连 /agent）
         # 避免「Agent 断了就永远黑屏，直到浏览器重连才恢复」
-        threading.Thread(target=_ensure_agent, args=(adb_addr,), daemon=True).start()
+        threading.Thread(target=lambda: agent_mgr.deploy(adb_addr), daemon=True).start()
 
 
 def build_input_cmd(adb_addr, d):
