@@ -114,6 +114,11 @@ services:
     container_name: myt-mediamtx
     restart: unless-stopped
     network_mode: host
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
 

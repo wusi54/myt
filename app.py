@@ -1715,7 +1715,9 @@ def _relay_agent(action, adb_addr, body=None):
     import requests
     url = f'http://relay:9001/agent/{action}'
     try:
-        r = requests.post(url, json={'adb_addr': adb_addr, **(body or {})}, timeout=30)
+        # Agent deployment can include ADB connect/push/start on cloud phones; allow
+        # enough time so Flask does not abandon the relay request while it is working.
+        r = requests.post(url, json={'adb_addr': adb_addr, **(body or {})}, timeout=240)
         try:
             return r.json(), r.status_code
         except Exception:

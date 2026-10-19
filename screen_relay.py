@@ -181,8 +181,7 @@ class AgentManager:
                 self.touch_subscriber(adb_addr)
                 return True, 'Agent 已在运行'
 
-            # Agent 未运行、发现重复实例、或显式切换参数时，清理后重新部署。
-            _kill_agent_process(adb_addr)
+            # Agent 未运行、发现重复实例、或显式切换参数时，_deploy_agent 会先清理再部署。
             self.set_state(adb_addr, status='deploying')
             ok = _deploy_agent(adb_addr, int(max_size) if max_size else None)
             if ok:
@@ -480,8 +479,12 @@ def _deploy_agent(adb_addr, max_size=None):
             print(f'[agent] 已发送 dummy 触摸触发首帧: {adb_addr}', flush=True)
         except Exception as e:
             print(f'[agent] dummy 触摸失败: {e}', flush=True)
+        # 启动流程至此已完成；不能隐式返回 None，否则 AgentManager 会把已启动的
+        # Agent 报成部署失败（设备上能看到进程，但 API 返回 500）。
+        print(f'[agent][INFO] deploy completed for {adb_addr}, stream={push_url}', flush=True)
+        return True
     except Exception as e:
-        print(f'[agent] 部署 Agent 到 {adb_addr} 失败: {e}', flush=True)
+        print(f'[agent][ERROR] 部署 Agent 到 {adb_addr} 失败: {e}', flush=True)
         return False
 
 
@@ -1428,10 +1431,14 @@ def _agent_status(self, adb_addr):
 
 
 def _send_json(self, code, body):
-    self.send_response(code)
-    self.send_header('Content-Type', 'application/json')
-    self.end_headers()
-    self.wfile.write(json.dumps(body, ensure_ascii=False).encode('utf-8'))
+    try:
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(body, ensure_ascii=False).encode('utf-8'))
+    except (BrokenPipeError, ConnectionResetError) as e:
+        # 客户端（通常是浏览器/Flask 上游）超时或主动断开；避免 socketserver 打整段 traceback。
+        print(f'[control-http][WARN] client disconnected before response: path={self.path} error={e}', flush=True)
 
 
 _ControlHTTPHandler.do_POST = _agent_http_do_POST
