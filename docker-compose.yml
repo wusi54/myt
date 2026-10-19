@@ -91,8 +91,8 @@ services:
       RELAY_USE_AGENT: "1"       # 1=启用 Agent 模式（默认），0=回退传统 adb reverse 模式
       # 本地联调：UDP 推流必须走 192.168.10.43（10.9 只支持 TCP 推流）。
       # 生产环境可通过 .env 覆盖为公网 MediaMTX。
-      MEDIAMTX_RTSP_URL: ${MEDIAMTX_RTSP_URL:-rtsp://192.168.10.43:8554}  # Agent RTSP/UDP 推流地址
-      MEDIAMTX_WEBRTC_URL: ${MEDIAMTX_WEBRTC_URL:-http://192.168.10.43:8889}  # 浏览器 WebRTC 拉流地址
+      MEDIAMTX_RTSP_URL: ${MEDIAMTX_RTSP_URL:-rtsp://113.105.100.58:8554}  # Agent RTSP/UDP 推流地址（生产默认；本地调试在 .env 中覆盖为 192.168.10.43）
+      MEDIAMTX_WEBRTC_URL: ${MEDIAMTX_WEBRTC_URL:-http://113.105.100.58:8889}  # 浏览器 WebRTC 拉流地址（生产默认；本地调试在 .env 中覆盖）
       AGENT_TRANSPORT: ${AGENT_TRANSPORT:-udp}   # udp 弱网实时性更好（已验证）；排障可切 tcp
       AGENT_MAX_SIZE: ${AGENT_MAX_SIZE:-720}     # Agent 采集最长边
       AGENT_BITRATE: ${AGENT_BITRATE:-1000000}   # Agent 编码码率 bps

@@ -313,8 +313,16 @@ def _kill_agent_process(adb_addr):
     try:
         subprocess.run([ADB, '-s', adb_addr, 'shell', cmd],
                        capture_output=True, timeout=10)
+        # 等待旧进程完全退出（最多 5 秒），避免新进程启动时 socket 被占用
+        for _ in range(10):
+            r = subprocess.run([ADB, '-s', adb_addr, 'shell',
+                                "ps -A -o PID,NAME,ARGS | awk '$2 != \"sh\" && $2 != \"grep\" && $2 != \"awk\" && index($0, \"/data/local/tmp/myt-agent\") {print $1; exit}'"],
+                               capture_output=True, timeout=5)
+            if not (r.stdout or b'').strip():
+                break
+            time.sleep(0.5)
     except Exception as e:
-        print(f'[agent] 清理旧 Agent 进程失败: {e}', flush=True)
+        print(f'[agent] 清理 Agent 进程失败: {e}', flush=True)
 
 
 def _md5_file(path):
@@ -418,7 +426,7 @@ def _deploy_agent(adb_addr, max_size=None):
         # 超时放宽到 15s；即使 adb shell 返回超时，只要 Agent 进程已起来也算成功。
         try:
             r3 = subprocess.run([ADB, '-s', adb_addr, 'shell', launch],
-                                capture_output=True, timeout=15)
+                                capture_output=True, timeout=30)
             launch_ok = r3.returncode == 0
             err = (r3.stderr or r3.stdout or b'').decode('utf-8', 'replace').strip()
         except subprocess.TimeoutExpired:
@@ -875,7 +883,7 @@ class Stream:
             # ---- 推送 server jar（jar 小，始终 push 保证版本一致）----
             try:
                 subprocess.run([ADB, '-s', self.adb_addr, 'push', SCRCPY_SERVER_LOCAL, DEVICE_SERVER_JAR],
-                               capture_output=True, timeout=30)
+                               capture_output=True, timeout=15)
             except Exception as e:
                 print(f'[stream] {self.adb_addr} scrcpy push server error: {e}', flush=True)
 
