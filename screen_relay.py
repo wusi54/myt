@@ -320,10 +320,20 @@ def _start_control_http():
 
 
 def _agent_running(adb_addr):
-    """设备端 Agent 是否在运行。"""
+    """设备端 Agent 是否在运行。
+
+    先检查设备端文件是否存在，不存在直接返回 False（避免无意义的 pgrep）。
+    存在再检查进程是否存活。
+    """
     try:
-        # 先 connect（网关映射地址需先建立连接）
+        # 0. 先连 adb（网关映射地址需先建立连接）
         subprocess.run([ADB, 'connect', adb_addr], capture_output=True, timeout=15)
+        # 1. 检查文件是否存在（避免文件不存在时还 pgrep，浪费带宽/时间）
+        r = subprocess.run([ADB, '-s', adb_addr, 'shell', 'test', '-f', AGENT_DEVICE_PATH],
+                           capture_output=True, timeout=8)
+        if r.returncode != 0:
+            return False
+        # 2. 检查进程是否存活
         r = subprocess.run([ADB, '-s', adb_addr, 'shell', 'pgrep', '-f', 'myt-agent'],
                            capture_output=True, timeout=8)
         return r.returncode == 0
@@ -332,7 +342,7 @@ def _agent_running(adb_addr):
 
 
 def _deploy_agent(adb_addr):
-    """推送并启动设备端 Agent（幂等：已运行则跳过）。返回出站 relay 地址。
+    """推送并启动设备端 Agent（幂等：文件已存在且大小一致则跳过推送）。
 
     推送两个文件：
       1. Agent 二进制（myt-agent-arm64）
@@ -348,24 +358,53 @@ def _deploy_agent(adb_addr):
         if rc.returncode != 0 and 'connected' not in cout and 'already' not in cout:
             print(f'[agent] adb connect {adb_addr} 失败: {cout}', flush=True)
             return False
-        # 1. push Agent 二进制（检查返回码，失败即暴露真实原因）
-        r = subprocess.run([ADB, '-s', adb_addr, 'push', AGENT_BIN_PATH, AGENT_DEVICE_PATH],
-                           capture_output=True, timeout=60)
-        if r.returncode != 0:
-            err = (r.stderr or r.stdout or b'').decode('utf-8', 'replace').strip()
-            print(f'[agent] push Agent 到 {adb_addr} 失败: {err}', flush=True)
-            return False
+
+        # 1. 检查设备端 Agent 文件是否已存在且大小一致（避免重复推送浪费带宽）
+        local_size = os.path.getsize(AGENT_BIN_PATH)
+        r = subprocess.run([ADB, '-s', adb_addr, 'shell', 'ls', '-l', AGENT_DEVICE_PATH],
+                           capture_output=True, timeout=8)
+        remote_exists = r.returncode == 0
+        remote_size = 0
+        if remote_exists:
+            # ls -l 输出格式：-rwxr-xr-x 1 root root 7078050 ... myt-agent
+            parts = r.stdout.decode('utf-8', 'replace').split()
+            for p in parts:
+                if p.isdigit():
+                    remote_size = int(p)
+                    break
+        if remote_exists and remote_size == local_size:
+            print(f'[agent] {adb_addr} 设备端 Agent 文件已存在且大小一致 ({local_size} bytes)，跳过 push', flush=True)
+        else:
+            # 1. push Agent 二进制（检查返回码，失败即暴露真实原因）
+            r = subprocess.run([ADB, '-s', adb_addr, 'push', AGENT_BIN_PATH, AGENT_DEVICE_PATH],
+                               capture_output=True, timeout=60)
+            if r.returncode != 0:
+                err = (r.stderr or r.stdout or b'').decode('utf-8', 'replace').strip()
+                print(f'[agent] push Agent 到 {adb_addr} 失败: {err}', flush=True)
+                return False
+            print(f'[agent] 已 push Agent 到 {adb_addr} ({local_size} bytes)', flush=True)
+
         # 1.1 push scrcpy-server.jar（Agent 采集依赖）
         jar_local = SCRCPY_SERVER_LOCAL
         jar_device = DEVICE_SERVER_JAR
         if os.path.exists(jar_local):
-            r2 = subprocess.run([ADB, '-s', adb_addr, 'push', jar_local, jar_device],
-                                capture_output=True, timeout=60)
-            if r2.returncode != 0:
-                err = (r2.stderr or r2.stdout or b'').decode('utf-8', 'replace').strip()
-                print(f'[agent] push scrcpy-server 到 {adb_addr} 失败: {err}', flush=True)
+            local_jar_size = os.path.getsize(jar_local)
+            r = subprocess.run([ADB, '-s', adb_addr, 'shell', 'test', '-f', jar_device],
+                               capture_output=True, timeout=8)
+            if r.returncode != 0:
+                # jar 不存在，需要 push
+                r2 = subprocess.run([ADB, '-s', adb_addr, 'push', jar_local, jar_device],
+                                    capture_output=True, timeout=60)
+                if r2.returncode != 0:
+                    err = (r2.stderr or r2.stdout or b'').decode('utf-8', 'replace').strip()
+                    print(f'[agent] push scrcpy-server 到 {adb_addr} 失败: {err}', flush=True)
+                else:
+                    print(f'[agent] 已 push scrcpy-server 到 {adb_addr} ({local_jar_size} bytes)', flush=True)
+            else:
+                print(f'[agent] {adb_addr} 设备端 scrcpy-server.jar 已存在，跳过 push', flush=True)
         else:
             print(f'[agent] 本机无 scrcpy-server {jar_local}，Agent 可能无法采集', flush=True)
+
         # 2. 授权 + 启动（后台常驻）
         # Agent 推流 URL：MediaMTX RTSP （含 stream path）
         push_url = f'{MEDIAMTX_RTSP_URL}/{_stream_name(adb_addr)}'
@@ -373,6 +412,7 @@ def _deploy_agent(adb_addr):
                   # setsid：彻底脱离 adb shell 会话，否则 adb shell 可能因会话未关闭而挂住。
                   # 曾出现设备端进程明明起来了、但 adb shell 10 秒不返回导致误判部署失败。
                   f"setsid nohup {AGENT_DEVICE_PATH} -relay '{push_url}' "
+                  f"-transport udp "
                   f">/data/local/tmp/myt-agent.log 2>&1 </dev/null &")
         # 超时放宽到 25s：慢设备（低端云手机）上 chmod + 启动可能超过 10s
         r3 = subprocess.run([ADB, '-s', adb_addr, 'shell', launch], capture_output=True, timeout=25)

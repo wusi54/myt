@@ -39,6 +39,7 @@ func (s *ScrcpyServer) Start() error {
 
 	// 清理旧实例（幂等）
 	exec.Command("pkill", "-f", "com.genymobile.scrcpy.Server").Run()
+	time.Sleep(500 * time.Millisecond)
 
 	// 参数：scid=-1 让 socket 名为 "scrcpy"，tunnel_forward=true 让 server 监听
 	args := []string{
