@@ -1691,9 +1691,10 @@ def screen_ensure():
     adb_addr = (d.get('adb_addr') or '').strip()
     if not adb_addr:
         return err('missing adb_addr')
+    max_size = d.get('max_size')
     stream_name = _agent_stream_name(adb_addr)
     c = db.row('SELECT * FROM containers WHERE adb_addr=?', (adb_addr,))
-    result, code = _relay_agent('deploy', adb_addr)
+    result, code = _relay_agent('deploy', adb_addr, {'max_size': max_size} if max_size else None)
     if code == 200:
         fields = {'agent_status': 'running', 'agent_stream_name': stream_name,
                   'agent_last_seen': db.now()}

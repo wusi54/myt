@@ -159,19 +159,24 @@ class AgentManager:
             st['last_sub_ts'] = time.time()
             st['last_seen'] = time.strftime('%Y-%m-%d %H:%M:%S')
 
-    def deploy(self, adb_addr):
+    def deploy(self, adb_addr, max_size=None):
         """部署并启动 Agent（幂等）。返回 (ok, msg)。
 
         已经是 running 时不重启 Agent：群控窗每次 WHEP 重连都会调用 ensure，
         重复 push/重启会把正常推流打断。
         """
-        if self.is_running(adb_addr):
+        if max_size is None and self.is_running(adb_addr):
             self.set_state(adb_addr, status='running',
                            stream_name=_agent_stream_name(adb_addr))
             self.touch_subscriber(adb_addr)
             return True, 'Agent 已在运行'
+        if max_size is not None:
+            try:
+                self.stop(adb_addr)
+            except Exception:
+                pass
         self.set_state(adb_addr, status='deploying')
-        ok = _deploy_agent(adb_addr)
+        ok = _deploy_agent(adb_addr, int(max_size) if max_size else None)
         if ok:
             self.set_state(adb_addr, status='running',
                            stream_name=_agent_stream_name(adb_addr))
@@ -320,7 +325,7 @@ def _md5_file(path):
     return h.hexdigest()
 
 
-def _deploy_agent(adb_addr):
+def _deploy_agent(adb_addr, max_size=None):
     """推送并启动设备端 Agent（幂等：MD5 一致则跳过推送）。
 
     推送两个文件：
@@ -399,6 +404,7 @@ def _deploy_agent(adb_addr):
 
         # 2. 授权 + 启动（后台常驻）
         # Agent 推流 URL：MediaMTX RTSP （含 stream path）
+        _max_size = int(max_size) if max_size else AGENT_MAX_SIZE
         push_url = f'{MEDIAMTX_RTSP_URL}/{_stream_name(adb_addr)}'
         # 先单独清理旧进程（避免启动命令自匹配被 kill），再启动新进程。
         _kill_agent_process(adb_addr)
@@ -406,7 +412,7 @@ def _deploy_agent(adb_addr):
         # stdout/stderr，否则 adb shell 会一直等后台进程退出（表现为部署超时）。
         launch = (f"{{ chmod 755 {AGENT_DEVICE_PATH} && "
                   f"setsid nohup {AGENT_DEVICE_PATH} -relay '{push_url}' "
-                  f"-transport {AGENT_TRANSPORT} -max-size {AGENT_MAX_SIZE} -bitrate {AGENT_BITRATE} "
+                  f"-transport {AGENT_TRANSPORT} -max-size {_max_size} -bitrate {AGENT_BITRATE} "
                   f"-keyframe-interval {AGENT_KEYFRAME_INTERVAL}; }} "
                   f">/data/local/tmp/myt-agent.log 2>&1 </dev/null &")
         # 超时放宽到 15s；即使 adb shell 返回超时，只要 Agent 进程已起来也算成功。
@@ -1357,7 +1363,7 @@ def _agent_cmd(self, action):
         self._send_json(400, {'code': 400, 'msg': 'missing adb_addr'})
         return
     if action == 'deploy':
-        ok, msg = agent_mgr.deploy(adb_addr)
+        ok, msg = agent_mgr.deploy(adb_addr, d.get('max_size') if isinstance(d, dict) else None)
     else:
         ok, msg = agent_mgr.stop(adb_addr)
     self._send_json(200 if ok else 500, {'code': 200 if ok else 500, 'msg': msg})

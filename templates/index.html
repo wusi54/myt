@@ -76,7 +76,8 @@ tr:hover td{background:#1e2e3e}
 .wall-2{grid-template-columns:1fr 1fr}.wall-3{grid-template-columns:1fr 1fr 1fr}.wall-4{grid-template-columns:1fr 1fr 1fr 1fr}
 .wall-5{grid-template-columns:repeat(5,1fr)}.wall-6{grid-template-columns:repeat(6,1fr)}.wall-7{grid-template-columns:repeat(7,1fr)}
 .wall-cell{background:#000;border-radius:4px;overflow:hidden;position:relative;aspect-ratio:9/16;border:1px solid #2a3a4a;display:flex;flex-direction:column}
-.wall-cell video{width:100%;height:100%;display:block;object-fit:contain;cursor:crosshair;touch-action:none;background:#000}
+.wall-cell video{width:100%;height:100%;display:block;object-fit:contain;cursor:crosshair;touch-action:none;background:#000;outline:none}
+.wall-cell video:focus{outline:none}
 .wc-video-wrap{position:relative;flex:1;min-height:0;display:flex;background:#000}
 .wc-video-wrap video{flex:1;min-width:0}
 .wc-status{position:absolute;left:0;top:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;padding:8px;text-align:center;color:#8899aa;font-size:12px;pointer-events:none;background:#00000066}
@@ -103,7 +104,7 @@ tr:hover td{background:#1e2e3e}
 #screenModal .screen-box{background:#0d1520;border:1px solid #2a3a4a;border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px;width:min(440px,94vw);height:min(92dvh,860px);max-height:94dvh}
 #screenModal .screen-title{font-size:13px;color:#cfe3f5;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:2px 4px}
 #screenModal .screen-video-wrap{position:relative;flex:1;min-height:0;display:flex;background:#000;border-radius:6px;overflow:hidden}
-#screenModal video{width:100%;height:100%;display:block;object-fit:contain;background:#000;touch-action:none;cursor:crosshair}
+#screenModal video{width:100%;height:100%;display:block;object-fit:contain;background:#000;touch-action:none;cursor:crosshair;outline:none}
 #screenModal .screen-kb-hint{position:absolute;left:0;right:0;bottom:0;padding:4px 8px;font-size:11px;color:#00d4ff;background:#000000a0;pointer-events:none;text-align:center}
 #screenModal .screen-toolbar{flex:0 0 auto;display:flex;gap:6px;flex-wrap:wrap;justify-content:center;align-items:center;padding:2px}
 #screenModal .screen-toolbar .wc-tb-btn{padding:8px 14px;font-size:12px}
@@ -476,9 +477,15 @@ tr:hover td{background:#1e2e3e}
       <span class="wc-tb-btn" id="screenModalBack">返回</span>
       <span class="wc-tb-btn" id="screenModalHome">主页</span>
       <span class="wc-tb-btn" id="screenModalRecent">最近</span>
-      <input id="screenModalInput" type="text" placeholder="回车发送文本">
+      <select id="screenModalRes" class="wc-tb-res" title="分辨率（切换会重启 Agent，约 3 秒）">
+    <option value="720" selected>720</option>
+    <option value="1080">1080</option>
+  </select>
+  <input id="screenModalInput" type="text" placeholder="回车发送文本">
       <span class="wc-tb-btn screen-close" id="screenModalClose">关闭</span>
+      <span class="wc-tb-btn" id="screenModalKbToggle">⌨ 键盘</span>
     </div>
+    <input id="screenModalKbInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="position:absolute;opacity:0;width:1px;height:1px;bottom:0;left:0;border:0;padding:0">
   </div>
 </div>
 
@@ -1403,7 +1410,7 @@ document.addEventListener('pointerdown',function(e){
   try{canvas.setPointerCapture(e.pointerId)}catch(_){}
   canvas._pt={sx:e.clientX,sy:e.clientY,cx:e.clientX,cy:e.clientY,t:Date.now()};
   // 独立弹窗：点击画面即捕获键盘，后续按键/输入直达设备
-  if(canvas.id==='screenModalVideo'){screenModalState.kbCapture=true;document.getElementById('screenModalKbHint').style.display='block'}
+  if(canvas.id==='screenModalVideo'){enableKbCapture()}
 });
 document.addEventListener('pointermove',function(e){
   const canvas=e.target;if(canvas&&canvas._pt){canvas._pt.cx=e.clientX;canvas._pt.cy=e.clientY;}
@@ -1419,12 +1426,18 @@ document.addEventListener('pointermove',function(e){
   const cell=canvas.closest('.wall-cell');
   const p1=wallNorm(canvas,s.sx,s.sy);
   const dist=Math.hypot(e.clientX-s.sx,e.clientY-s.sy);
-  if(dist<10&&(Date.now()-s.t)<600){wallSendTouch(adbAddr,'tap',{nx:p1.nx,ny:p1.ny});wallFlash(cell);}
+  if(dist<10&&(Date.now()-s.t)<600){wallSendTouch(adbAddr,'tap',{nx:p1.nx,ny:p1.ny});}
   else{const p2=wallNorm(canvas,e.clientX,e.clientY);wallSendTouch(adbAddr,'swipe',{nx:p1.nx,ny:p1.ny,nx2:p2.nx,ny2:p2.ny,duration:Math.max(120,Math.min(800,Math.round(dist/2)))});}
 });
 
 // ==================== 独立投屏浮层（页内弹框，复用 WHEP 播放器） ====================
-const screenModalState={player:null,adb:'',kbCapture:false};
+function screenModalStatus(t,color){
+  const el=document.getElementById('screenModalStatus');
+  if(!el)return;
+  el.textContent=t||'';
+  el.style.display=t?'flex':'none';
+  el.style.color=color||'#8899aa';
+}
 // 物理键 -> Android keycode（其余可打印字符按文本下发）
 const SCREEN_KEYCODES={Enter:66,Backspace:67,Tab:61,ArrowUp:19,ArrowDown:20,ArrowLeft:21,ArrowRight:22,PageUp:92,PageDown:93,Home:122,End:123};
 function screenSendTouch(action,params){
@@ -1448,11 +1461,22 @@ function openScreenModal(adb,name){
 function closeScreenModal(){
   document.getElementById('screenModal').classList.remove('active');
   if(screenModalState.player){screenModalState.player.destroy();screenModalState.player=null}
-  screenModalState.adb='';screenModalState.kbCapture=false;
-  document.getElementById('screenModalKbHint').style.display='none';
+  screenModalState.adb='';disableKbCapture();
   const inp=document.getElementById('screenModalInput');if(inp)inp.value='';
 }
 // 键盘捕获：点击画面后按键直达设备；Esc 退出捕获（未捕获时 Esc 关闭弹窗）
+function enableKbCapture(){
+  screenModalState.kbCapture=true;
+  document.getElementById('screenModalKbHint').style.display='block';
+  const kb=document.getElementById('screenModalKbInput');
+  if(kb){kb.value='';kb.focus();}
+}
+function disableKbCapture(){
+  screenModalState.kbCapture=false;
+  document.getElementById('screenModalKbHint').style.display='none';
+  const kb=document.getElementById('screenModalKbInput');
+  if(kb)kb.blur();
+}
 document.addEventListener('keydown',function(e){
   const modal=document.getElementById('screenModal');
   if(!modal||!modal.classList.contains('active'))return;
@@ -1462,19 +1486,52 @@ document.addEventListener('keydown',function(e){
     return;
   }
   if(e.key==='Escape'){
-    screenModalState.kbCapture=false;
-    document.getElementById('screenModalKbHint').style.display='none';
+    disableKbCapture();
     return;
   }
-  e.preventDefault();
-  if(SCREEN_KEYCODES[e.key]!==undefined){screenSendTouch('key',{keycode:SCREEN_KEYCODES[e.key]})}
-  else if(e.key.length===1){screenSendTouch('text',{text:e.key})}
+  // 特殊键：阻止默认并直接下发 keycode
+  if(SCREEN_KEYCODES[e.key]!==undefined){e.preventDefault();screenSendTouch('key',{keycode:SCREEN_KEYCODES[e.key]})}
+});
+// 隐藏输入框：捕获可打印字符与 IME 组合（CJK），通过 input 事件下发整段文本
+const _kbInput=document.getElementById('screenModalKbInput');
+if(_kbInput){
+  _kbInput.addEventListener('keydown',function(e){
+    if(!screenModalState.kbCapture)return;
+    if(e.key==='Escape'){e.preventDefault();disableKbCapture();return;}
+    if(SCREEN_KEYCODES[e.key]!==undefined){e.preventDefault();screenSendTouch('key',{keycode:SCREEN_KEYCODES[e.key]})}
+  });
+  _kbInput.addEventListener('input',function(e){
+    if(!screenModalState.kbCapture)return;
+    const v=this.value;
+    if(v){screenSendTouch('text',{text:v});this.value='';}
+  });
+  _kbInput.addEventListener('compositionend',function(e){
+    if(!screenModalState.kbCapture)return;
+    const v=e.data;
+    if(v){screenSendTouch('text',{text:v});}
+  });
+}
+// 点击画面 → 启用键盘捕获
+const _kbToggle=document.getElementById('screenModalKbToggle');
+if(_kbToggle)_kbToggle.addEventListener('click',function(){
+  if(screenModalState.kbCapture)disableKbCapture();else enableKbCapture();
 });
 // 工具栏：返回/主页/最近、文本输入、关闭；点遮罩关闭
 document.getElementById('screenModalBack').addEventListener('click',function(){screenSendTouch('key',{keycode:4})});
 document.getElementById('screenModalHome').addEventListener('click',function(){screenSendTouch('key',{keycode:3})});
 document.getElementById('screenModalRecent').addEventListener('click',function(){screenSendTouch('key',{keycode:187})});
 document.getElementById('screenModalClose').addEventListener('click',closeScreenModal);
+document.getElementById('screenModalRes').addEventListener('change', async function(){
+  const ms = parseInt(this.value) || 720;
+  screenModalStatus('切换分辨率，重部署 Agent 中…', '#ffa500');
+  try {
+    await fetch('/api/screen/ensure', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({adb_addr:screenModalState.adb,max_size:ms})});
+  } catch(e) {}
+  setTimeout(() => {
+    screenModalStatus('重连中…', '#ffa500');
+    if(screenModalState.player){screenModalState.player.reconnectDelay=1000;screenModalState.player.connect();}
+  }, 3000);
+});
 document.getElementById('screenModalInput').addEventListener('keydown',function(e){
   if(e.key!=='Enter')return;
   e.preventDefault();
