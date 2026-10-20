@@ -104,7 +104,21 @@ tr:hover td{background:#1e2e3e}
 .wall-cell .wc-info .wc-api{color:#ff4d4f;font-weight:700}
 .wall-cell .wc-info .wc-adb{color:#9fb3c8}
 /* 独立投屏浮层：页内浮动弹框（不跳转新页面），兼容手机竖屏 */
-#screenModal .screen-box{background:#0d1520;border:1px solid #2a3a4a;border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px;width:min(440px,94vw);height:min(92dvh,860px);max-height:94dvh}
+#screenModal .screen-box{background:#0d1520;border:1px solid #2a3a4a;border-radius:10px;padding:10px;display:flex;flex-direction:row;gap:10px;width:min(960px,96vw);height:min(94dvh,900px);max-height:96dvh}
+#screenModal .screen-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:8px}
+#screenModal .screen-side{flex:0 0 360px;display:flex;flex-direction:column;gap:10px;overflow-y:auto;background:#0f1923;border:1px solid #2a3a4a;border-radius:8px;padding:10px}
+#screenModal .screen-side .ss-section{background:#0d1520;border:1px solid #2a3a4a;border-radius:6px;padding:8px 10px;display:flex;flex-direction:column;gap:6px}
+#screenModal .screen-side .ss-title{font-size:12px;color:#5a6a7a;margin-bottom:2px}
+#screenModal .screen-side .ss-row{display:flex;gap:6px;flex-wrap:wrap}
+#screenModal .screen-side select{flex:1;min-width:0;width:100%;background:#0f1923;border:1px solid #3a4a5a;border-radius:4px;color:#fff;font-size:12px;padding:8px}
+#screenModal .screen-side select:focus{outline:none;border-color:#00d4ff}
+#screenModal .screen-side .ss-result{flex:0 0 auto;font-size:11px;color:#9fb3c8;white-space:pre-wrap;display:none;max-height:140px;overflow:auto;background:#0a121c;border:1px solid #1a2a3a;border-radius:4px;padding:6px}
+#screenModal .wc-tb-btn.screen-primary{color:#00d4ff;border-color:#1a5a7a}
+#screenModal .wc-tb-btn.screen-primary:hover{background:#0a3344;color:#66e6ff}
+#screenModal .wc-tb-btn.screen-success{color:#3ad07f;border-color:#1a5a3a}
+#screenModal .wc-tb-btn.screen-success:hover{background:#0a3320;color:#7df0ad}
+#screenModal .wc-tb-btn.screen-warn{color:#f0ad4e;border-color:#5a4a2a}
+#screenModal .wc-tb-btn.screen-warn:hover{background:#3a2e1a;color:#ffc966}
 #screenModal .screen-title{font-size:13px;color:#cfe3f5;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:2px 4px}
 #screenModal .screen-video-wrap{position:relative;flex:1;min-height:0;display:flex;background:#000;border-radius:6px;overflow:hidden}
 #screenModal video{width:100%;height:100%;display:block;object-fit:contain;background:#000;touch-action:none;cursor:crosshair;outline:none}
@@ -117,10 +131,10 @@ tr:hover td{background:#1e2e3e}
 #screenModal .screen-toolbar input:focus{outline:none;border-color:#00d4ff}
 #screenModal .screen-toolbar .wc-tb-btn.screen-stop{color:#f0ad4e;border-color:#5a4a2a}
 #screenModal .screen-toolbar .wc-tb-btn.screen-stop:hover{background:#3a2e1a;color:#ffc966}
-/* 设备详情面板：代理/机型/ADB/API 等信息 */
-#screenModal .screen-info{flex:0 0 auto;background:#0f1923;border:1px solid #2a3a4a;border-radius:6px;padding:8px 10px;font-size:11px;color:#9fb3c8;max-height:32%;overflow-y:auto}
+/* 设备详情面板：代理/机型/ADB/API 等信息（置于右侧栏，常驻可见） */
+#screenModal .screen-info{flex:0 0 auto;background:#0f1923;border:1px solid #2a3a4a;border-radius:6px;padding:8px 10px;font-size:11px;color:#9fb3c8}
 #screenModal .screen-info .si-row{display:flex;gap:8px;line-height:1.7}
-#screenModal .screen-info .si-k{flex:0 0 52px;color:#5a6a7a;text-align:right}
+#screenModal .screen-info .si-k{flex:0 0 56px;color:#5a6a7a;text-align:right}
 #screenModal .screen-info .si-v{flex:1;min-width:0;word-break:break-all;color:#cfe3f5}
 .wall-device{border-bottom:1px solid #22303e}
 .wall-device-head{display:flex;align-items:center;gap:6px;padding:6px 8px;background:#132030}
@@ -478,23 +492,52 @@ tr:hover td{background:#1e2e3e}
 <!-- ========== Modal: 独立投屏浮层（页内弹框，不跳转新页面） ========== -->
 <div id="screenModal" class="modal-overlay">
   <div class="screen-box">
-    <div class="screen-title"><span id="screenModalTitle"></span> <span class="wc-state" id="screenModalStateChip"></span></div>
-    <div class="screen-info" id="screenModalInfo" style="display:none"></div>
-    <div class="screen-video-wrap">
-      <video id="screenModalVideo" autoplay playsinline muted></video>
-      <div class="wc-status" id="screenModalStatus">连接中…</div>
-      <div class="screen-kb-hint" id="screenModalKbHint" style="display:none">键盘已捕获：按键/输入直接发送到设备，Esc 退出捕获</div>
+    <div class="screen-main">
+      <div class="screen-title"><span id="screenModalTitle"></span> <span class="wc-state" id="screenModalStateChip"></span></div>
+      <div class="screen-video-wrap">
+        <video id="screenModalVideo" autoplay playsinline muted></video>
+        <div class="wc-status" id="screenModalStatus">连接中…</div>
+        <div class="screen-kb-hint" id="screenModalKbHint" style="display:none">键盘已捕获：按键/输入直接发送到设备，Esc 退出捕获</div>
+      </div>
+      <div class="screen-toolbar">
+        <span class="wc-tb-btn" id="screenModalBack">返回</span>
+        <span class="wc-tb-btn" id="screenModalHome">主页</span>
+        <span class="wc-tb-btn" id="screenModalRecent">最近</span>
+        <input id="screenModalInput" type="text" placeholder="回车发送文本">
+        <span class="wc-tb-btn" id="screenModalKbToggle">⌨ 键盘</span>
+        <span class="wc-tb-btn screen-close" id="screenModalClose" title="收起弹窗（不影响投屏）">收起</span>
+      </div>
     </div>
-    <div class="screen-toolbar">
-      <span class="wc-tb-btn" id="screenModalBack">返回</span>
-      <span class="wc-tb-btn" id="screenModalHome">主页</span>
-      <span class="wc-tb-btn" id="screenModalRecent">最近</span>
-  <input id="screenModalInput" type="text" placeholder="回车发送文本">
-      <span class="wc-tb-btn" id="screenModalInfoToggle">详情</span>
-      <span class="wc-tb-btn" id="screenModalRedeploy" title="重启投屏 Agent：推流异常或更新 Agent 后一键恢复">重启投屏</span>
-      <span class="wc-tb-btn screen-stop" id="screenModalStop" title="停止设备端 Agent 推流，释放设备资源">关闭投屏</span>
-      <span class="wc-tb-btn" id="screenModalKbToggle">⌨ 键盘</span>
-      <span class="wc-tb-btn screen-close" id="screenModalClose" title="收起弹窗（不影响投屏）">收起</span>
+    <div class="screen-side">
+      <div class="ss-section">
+        <div class="ss-title">设备详情</div>
+        <div class="screen-info" id="screenModalInfo"></div>
+      </div>
+      <div class="ss-section">
+        <div class="ss-title">真机参数（导入指纹）</div>
+        <select id="screenModalFp" class="flex-grow"><option value="">-- 选择真机参数 --</option></select>
+        <div class="ss-row">
+          <span class="wc-tb-btn screen-primary" id="screenModalFpApply">导入指纹</span>
+          <span class="wc-tb-btn screen-stop" id="screenModalFpRelease" title="释放当前指纹">释放</span>
+        </div>
+        <div class="ss-result" id="screenModalFpResult"></div>
+      </div>
+      <div class="ss-section">
+        <div class="ss-title">代理配置</div>
+        <select id="screenModalProxy" class="flex-grow"><option value="">-- 选择代理 --</option></select>
+        <div class="ss-row">
+          <span class="wc-tb-btn screen-success" id="screenModalProxyApply">应用代理</span>
+          <span class="wc-tb-btn screen-stop" id="screenModalProxyRelease" title="关闭当前代理">关闭</span>
+        </div>
+        <div class="ss-result" id="screenModalProxyResult"></div>
+      </div>
+      <div class="ss-section">
+        <div class="ss-title">操作</div>
+        <div class="ss-row">
+          <span class="wc-tb-btn screen-warn" id="screenModalRedeploy" title="重启投屏 Agent：推流异常或更新 Agent 后一键恢复">重启投屏</span>
+          <span class="wc-tb-btn screen-stop" id="screenModalStop" title="停止设备端 Agent 推流，释放设备资源">关闭投屏</span>
+        </div>
+      </div>
     </div>
     <input id="screenModalKbInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="position:absolute;opacity:0;width:1px;height:1px;bottom:0;left:0;border:0;padding:0">
   </div>
@@ -1582,18 +1625,98 @@ function openScreenModal(adb,name){
   if(!adb)return;
   screenModalState.adb=adb;
   document.getElementById('screenModalTitle').textContent=name||adb;
-  const modal=document.getElementById('screenModal');
-  modal.classList.add('active');
+  document.getElementById('screenModal').classList.add('active');
   const video=document.getElementById('screenModalVideo');
   video.dataset.adb=adb;
   video.srcObject=null;
   const info=document.getElementById('screenModalInfo');
-  if(info){info.style.display='none';info.innerHTML=''}
-  loadScreenModalInfo(adb);   // 预取设备详情，点"详情"即显示
+  if(info){info.innerHTML='<div style="color:#5a6a7a">加载中…</div>'}
+  // 预取参数库/代理池/容器列表与设备详情，右侧栏直接展示
+  Promise.all([loadRealParams(),loadProxies(),loadContainers()]).catch(()=>{}).then(()=>{
+    const c=allContainers.find(x=>x.adb_addr===adb)||{};
+    populateScreenModalSelects(c);
+  });
+  loadScreenModalInfo(adb);
   if(screenModalState.player)screenModalState.player.destroy();
   const p=new WallPlayer(video,adb);
   screenModalState.player=p;
   p.connect();
+}
+// 弹窗右侧栏：真机参数 / 代理下拉（与容器详情一致的 MD5+应用状态语义）
+function populateScreenModalSelects(c){
+  const cid=c.id;
+  const fpSel=document.getElementById('screenModalFp');
+  if(fpSel){
+    fpSel.innerHTML='<option value="">-- 选择真机参数 --</option>'+
+      realParams.map(f=>{
+        const isCur=f.id===c.fp_id;
+        const appliedOther=f.in_use&&f.instance_id!==cid;
+        const tag=isCur?'已应用·本容器':appliedOther?('已应用·'+(f.instance_name||f.instance_id)):'未应用';
+        const disabled=!isCur&&appliedOther;
+        const md5=f.md5||f.uuid||'';
+        const dev=[f.brand,f.model].filter(Boolean).join(' ');
+        return `<option value="${f.id}" ${disabled?'disabled':''}>${esc(f.name)}${dev?' ('+esc(dev)+')':''} [${esc(md5.substring(0,8))}] [${esc(tag)}]</option>`;
+      }).join('');
+  }
+  const pxSel=document.getElementById('screenModalProxy');
+  if(pxSel){
+    pxSel.innerHTML='<option value="">-- 选择代理 --</option>'+
+      proxies.map(p=>{
+        const isCur=p.id===c.proxy_id;
+        const appliedOther=p.in_use&&p.instance_id!==cid;
+        const tag=isCur?'已应用·本容器':appliedOther?('已应用·'+(p.instance_name||p.instance_id)):(p.status==='fault'?'故障':'空闲');
+        const disabled=!isCur&&(appliedOther||p.status==='fault');
+        return `<option value="${p.id}" ${disabled?'disabled':''}>${esc(p.name)} (${esc(p.ip)}:${esc(p.port)}) [${esc(tag)}]</option>`;
+      }).join('');
+  }
+  const hasC=!!cid;
+  ['screenModalFpApply','screenModalFpRelease','screenModalProxyApply','screenModalProxyRelease']
+    .forEach(id=>{const b=document.getElementById(id);if(b)b.disabled=!hasC});
+  if(!hasC){
+    const r1=document.getElementById('screenModalFpResult'),r2=document.getElementById('screenModalProxyResult');
+    if(r1){r1.style.display='block';r1.textContent='未找到对应容器，请在「容器管理」中先同步该实例';}
+    if(r2)r2.style.display='none';
+  }
+}
+function showScreenResult(id,data){
+  const el=document.getElementById(id);if(!el)return;
+  el.style.display='block';el.textContent=JSON.stringify(data.data||data,null,2);
+}
+async function screenModalApplyFp(){
+  const c=allContainers.find(x=>x.adb_addr===screenModalState.adb);
+  if(!c){toast('未找到对应容器','error');return}
+  const fp_id=document.getElementById('screenModalFp').value;
+  if(!fp_id){toast('请选择真机参数','error');return}
+  const d=await api('/api/containers/'+c.id+'/apply_fp','POST',{fp_id});
+  showScreenResult('screenModalFpResult',d);
+  toast(d.code===200?'指纹已导入':(d.msg||'失败'),d.code===200?'success':'error');
+  if(d.code===200){await Promise.all([loadRealParams(),loadContainers()]);populateScreenModalSelects(c);loadScreenModalInfo(screenModalState.adb);}
+}
+async function screenModalReleaseFp(){
+  const c=allContainers.find(x=>x.adb_addr===screenModalState.adb);
+  if(!c){toast('未找到对应容器','error');return}
+  const d=await api('/api/containers/'+c.id+'/release_fp','POST',{});
+  showScreenResult('screenModalFpResult',d);
+  toast(d.code===200?'已释放指纹':(d.msg||'失败'),d.code===200?'success':'error');
+  if(d.code===200){await Promise.all([loadRealParams(),loadContainers()]);populateScreenModalSelects(c);loadScreenModalInfo(screenModalState.adb);}
+}
+async function screenModalApplyProxy(){
+  const c=allContainers.find(x=>x.adb_addr===screenModalState.adb);
+  if(!c){toast('未找到对应容器','error');return}
+  const proxy_id=document.getElementById('screenModalProxy').value;
+  if(!proxy_id){toast('请选择代理','error');return}
+  const d=await api('/api/containers/'+c.id+'/apply_proxy','POST',{proxy_id});
+  showScreenResult('screenModalProxyResult',d);
+  toast(d.code===200?'代理已配置':(d.msg||'失败'),d.code===200?'success':'error');
+  if(d.code===200){await Promise.all([loadProxies(),loadContainers()]);populateScreenModalSelects(c);loadScreenModalInfo(screenModalState.adb);}
+}
+async function screenModalReleaseProxy(){
+  const c=allContainers.find(x=>x.adb_addr===screenModalState.adb);
+  if(!c){toast('未找到对应容器','error');return}
+  const d=await api('/api/containers/'+c.id+'/release_proxy','POST',{});
+  showScreenResult('screenModalProxyResult',d);
+  toast(d.code===200?'已关闭代理':(d.msg||'失败'),d.code===200?'success':'error');
+  if(d.code===200){await Promise.all([loadProxies(),loadContainers()]);populateScreenModalSelects(c);loadScreenModalInfo(screenModalState.adb);}
 }
 function closeScreenModal(){
   document.getElementById('screenModal').classList.remove('active');
@@ -1660,10 +1783,10 @@ document.getElementById('screenModalRecent').addEventListener('click',function()
 document.getElementById('screenModalClose').addEventListener('click',closeScreenModal);
 document.getElementById('screenModalRedeploy').addEventListener('click',function(){redeployAgent(screenModalState.adb)});
 document.getElementById('screenModalStop').addEventListener('click',function(){stopAgentStream(screenModalState.adb)});
-document.getElementById('screenModalInfoToggle').addEventListener('click',function(){
-  const el=document.getElementById('screenModalInfo');
-  if(el)el.style.display=(el.style.display==='block')?'none':'block';
-});
+document.getElementById('screenModalFpApply').addEventListener('click',screenModalApplyFp);
+document.getElementById('screenModalFpRelease').addEventListener('click',screenModalReleaseFp);
+document.getElementById('screenModalProxyApply').addEventListener('click',screenModalApplyProxy);
+document.getElementById('screenModalProxyRelease').addEventListener('click',screenModalReleaseProxy);
 document.getElementById('screenModalInput').addEventListener('keydown',function(e){
   if(e.key!=='Enter')return;
   e.preventDefault();
