@@ -2048,9 +2048,54 @@ def _start_proxy_probe():
     threading.Thread(target=_proxy_probe_loop, daemon=True).start()
 
 
+# ==================== 容器定时对账（约 5 分钟） ====================
+# 设备侧改名/重建后，平台库里的实例名会滞后；周期性重新 list 所有在线设备并 upsert，
+# 自动纠正「平台实例名与设备真实名对不上」的问题，无需每次手动同步。
+_CONTAINER_SYNC_LOCK = '/tmp/myt_container_sync.lock'
+
+
+def _container_sync_loop():
+    while True:
+        try:
+            for dev in db.list_devices():
+                try:
+                    if (dev.get('status') or '') == 'online':
+                        _sync_one_device(dev)
+                except Exception:
+                    pass
+                time.sleep(0.3)
+        except Exception:
+            pass
+        try:
+            os.utime(_CONTAINER_SYNC_LOCK, None)
+        except Exception:
+            pass
+        time.sleep(random.randint(270, 360))
+
+
+def _start_container_sync():
+    # 多 worker / 重启时仅允许一个对账循环存活；lock 超过 10 分钟未刷新视为失效并接管
+    if os.path.exists(_CONTAINER_SYNC_LOCK):
+        try:
+            if time.time() - os.path.getmtime(_CONTAINER_SYNC_LOCK) < 600:
+                return
+        except Exception:
+            pass
+    try:
+        with open(_CONTAINER_SYNC_LOCK, 'w') as f:
+            f.write(str(os.getpid()))
+    except Exception:
+        return
+    threading.Thread(target=_container_sync_loop, daemon=True).start()
+
+
 if os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
     try:
         _start_proxy_probe()
+    except Exception:
+        pass
+    try:
+        _start_container_sync()
     except Exception:
         pass
     # 兼容历史数据：机型/型号为空时，按落盘文件重新识别一次
