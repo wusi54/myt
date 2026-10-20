@@ -1743,17 +1743,23 @@ function disableKbCapture(){
 document.addEventListener('keydown',function(e){
   const modal=document.getElementById('screenModal');
   if(!modal||!modal.classList.contains('active'))return;
-  if(e.target&&(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA'))return;
-  if(!screenModalState.kbCapture){
-    if(e.key==='Escape')closeScreenModal();
-    return;
-  }
+  const tag=e.target&&e.target.tagName;
+  const onKbInput=e.target&&e.target.id==='screenModalKbInput';
+  // Esc：捕获中则退出捕获；否则关闭弹窗（隐藏输入框自身也处理 Esc）
   if(e.key==='Escape'){
-    disableKbCapture();
+    if(screenModalState.kbCapture){e.preventDefault();disableKbCapture();return;}
+    if(tag!=='INPUT'&&tag!=='TEXTAREA'&&tag!=='SELECT'){closeScreenModal();return;}
     return;
   }
-  // 特殊键：阻止默认并直接下发 keycode
-  if(SCREEN_KEYCODES[e.key]!==undefined){e.preventDefault();screenSendTouch('key',{keycode:SCREEN_KEYCODES[e.key]})}
+  // 未开启捕获：不拦截键盘
+  if(!screenModalState.kbCapture)return;
+  // 焦点在隐藏输入框：可打印字符与 IME 交给输入框的 input/compositionend 处理，避免重复下发
+  if(onKbInput)return;
+  // 其它输入控件（文本框/下拉）：不占用键盘，避免与控件自身交互冲突
+  if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT')return;
+  // 焦点在画面/页面其它处：按文档级捕获直接下发，保证键盘捕获始终生效
+  if(SCREEN_KEYCODES[e.key]!==undefined){e.preventDefault();screenSendTouch('key',{keycode:SCREEN_KEYCODES[e.key]});return;}
+  if(e.key.length===1 && !e.ctrlKey && !e.metaKey && !e.altKey){e.preventDefault();screenSendTouch('text',{text:e.key});}
 });
 // 隐藏输入框：捕获可打印字符与 IME 组合（CJK），通过 input 事件下发整段文本
 const _kbInput=document.getElementById('screenModalKbInput');
@@ -1765,6 +1771,7 @@ if(_kbInput){
   });
   _kbInput.addEventListener('input',function(e){
     if(!screenModalState.kbCapture)return;
+    if(e.isComposing||this.isComposing)return;  // IME 组合中：等 compositionend 下发整词，避免发送拼音碎片
     const v=this.value;
     if(v){screenSendTouch('text',{text:v});this.value='';}
   });
