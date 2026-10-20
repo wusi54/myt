@@ -524,12 +524,12 @@ def _sync_one_device(dev):
     if res.get('code') != 200:
         db.update_device(dev['id'], status='offline')
         return 0
-    # 设备 list 接口返回结构因 myt 固件/版本而异：
-    #   - 容器数组可能在 data 或 msg 字段下；
+    # 容器列表接口为 /get/{ip}，返回结构因 myt 固件/版本而异：
+    #   - 容器数组优先在 msg 字段下（/get 返回 {code,msg:[...]}），也兼容 data；
     #   - 实例名在 name 或 Names；状态在 state 或 State；data 路径在 data 或 Data。
-    # 之前只认 data/name/state，新固件下数组取不到(容器被清空)且实例名/状态全空，
-    # 表现为「平台实例名与设备真实名对不上」。这里做兼容。
-    data = res.get('data') or res.get('msg') or []
+    data = res.get('msg') or res.get('data') or []
+    if not isinstance(data, list):
+        data = []
     host_ver = ''
     hv = cli.host_ver(dev['ip'])
     if hv.get('code') == 200:

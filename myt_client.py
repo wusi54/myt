@@ -45,11 +45,12 @@ class MytClient:
         self.timeout = timeout
 
     # ---------- 底层 ----------
-    def get(self, path, params=None, timeout=None):
+    def get(self, path, params=None, timeout=None, headers=None):
         if not self.base:
             return {'code': 500, 'msg': 'api base 未配置'}
         try:
             r = requests.get(f"{self.base}{path}", params=params or {},
+                             headers=headers or {},
                              timeout=timeout or self.timeout)
             return r.json() if r.text else {'code': 500, 'msg': 'empty response'}
         except Exception as e:
@@ -82,7 +83,10 @@ class MytClient:
 
     # ---------- 容器 ----------
     def list_containers(self, ip):
-        return self.get(f'/dc_api/v1/list/{ip}')
+        # 正确的容器列表接口是 /get/{ip}（不是 /dc_api/v1/list/{ip}）；
+        # 后者返回的不是设备真实容器数据，会导致平台实例名与设备真实名对不上。
+        # 该接口需带 accept: application/json 头，否则可能不返回 JSON。
+        return self.get(f'/get/{ip}', headers={'accept': 'application/json'})
 
     def android_detail(self, ip, name):
         return self.get(f'/dc_api/v1/get_android_detail/{ip}/{name}')
