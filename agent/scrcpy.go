@@ -14,16 +14,18 @@ import (
 	"time"
 )
 
-// ScrcpyServer 负责在设备端启动 scrcpy-server（tunnel_forward 模式）。
+// ScrcpyServer 负责在设备端启动并管理 scrcpy-server（tunnel_forward 模式）的生命周期。
 type ScrcpyServer struct {
 	JarPath          string
 	MaxSize          int
 	Bitrate          int
 	KeyFrameInterval int
 	cmd              *exec.Cmd
+	stopCh           chan struct{} // 主动停止时关闭，通知 watcher 忽略此次退出
+	exitCh           chan error    // watcher 在进程意外退出时上报退出错误
 }
 
-// Start 启动 scrcpy-server 进程（app_process，tunnel_forward 模式）。
+// Start 启动 scrcpy-server 进程（app_process，tunnel_forward 模式），并启动进程监控。
 func (s *ScrcpyServer) Start() error {
 	if s.JarPath == "" {
 		s.JarPath = "/data/local/tmp/scrcpy-server.jar"
@@ -80,7 +82,7 @@ func (s *ScrcpyServer) Start() error {
 	cmd := exec.Command(args[0], args[1:]...)
 	// 继承父进程环境变量，追加 CLASSPATH
 	cmd.Env = append(os.Environ(), "CLASSPATH="+s.JarPath)
-	// 输出到日志文件，避免阻塞
+	// scrcpy-server 输出（含 Java 崩溃栈）写入日志，便于排查为何没起来
 	logf, err := os.OpenFile("/data/local/tmp/scrcpy-agent.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
 		cmd.Stdout = logf
@@ -91,12 +93,40 @@ func (s *ScrcpyServer) Start() error {
 		return fmt.Errorf("app_process 启动失败: %w", err)
 	}
 	s.cmd = cmd
+
+	// 进程监控：另起 goroutine 等待进程退出，意外退出时通过 exitCh 上报。
+	// 之前没有这一步，scrcpy-server 崩溃后 agent 只能在连 socket 超时(20s)后才发现，
+	// 且拿不到退出原因（Java 异常/退出码），盲重启循环。
+	s.stopCh = make(chan struct{})
+	s.exitCh = make(chan error, 1)
+	go func() {
+		err := cmd.Wait()
+		select {
+		case <-s.stopCh:
+			return // 主动停止，忽略
+		case s.exitCh <- err:
+		}
+	}()
+
+	// 立即校验进程是否真活着（cmd.Start 成功只代表被 spawn，不代表没瞬间退出）
+	if !s.alive() {
+		return fmt.Errorf("scrcpy-server 启动后立即退出（jar 或设备兼容问题），详见 scrcpy-agent.log")
+	}
 	log.Printf("[agent] scrcpy-server 已启动 (pid=%d), tunnel_forward=true", cmd.Process.Pid)
 	return nil
 }
 
+// alive 判断 scrcpy-server 进程是否仍存活。
+func (s *ScrcpyServer) alive() bool {
+	if s.cmd == nil || s.cmd.Process == nil {
+		return false
+	}
+	return s.cmd.Process.Signal(syscall.Signal(0)) == nil
+}
+
 // Connect 连接 scrcpy-server 监听的本地 abstract socket "scrcpy"。
 // 握手会读取 dummy、codec、首个视频尺寸元数据；返回连接从第一条 12 字节帧头开始。
+// 连接等待期间若 scrcpy-server 进程意外退出，立即报错返回（不再干等 20s）。
 func (s *ScrcpyServer) Connect() (net.Conn, error) {
 	// abstract namespace socket: 名字前面加 \x00
 	addr := &net.UnixAddr{Name: "\x00scrcpy", Net: "unix"}
@@ -107,6 +137,12 @@ func (s *ScrcpyServer) Connect() (net.Conn, error) {
 		conn, err = net.DialUnix("unix", nil, addr)
 		if err == nil {
 			break
+		}
+		// 连接等待期间若 scrcpy-server 进程已退出，立即返回，避免盲等满 20s
+		select {
+		case e := <-s.exitCh:
+			return nil, fmt.Errorf("scrcpy-server 进程在连接前退出: %v（详见 scrcpy-agent.log）", e)
+		default:
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -154,6 +190,13 @@ func (s *ScrcpyServer) Connect() (net.Conn, error) {
 
 // Stop 停止 scrcpy-server。
 func (s *ScrcpyServer) Stop() {
+	if s.stopCh != nil {
+		select {
+		case <-s.stopCh: // 已关闭，避免重复 close panic
+		default:
+			close(s.stopCh)
+		}
+	}
 	if s.cmd != nil && s.cmd.Process != nil {
 		s.cmd.Process.Signal(syscall.SIGTERM)
 		time.Sleep(500 * time.Millisecond)

@@ -42,8 +42,9 @@ func main() {
 		}
 
 		runOnce(*relayURL, *maxSize, *bitrate, *jarPath, *transport, *keyFrameInterval)
-		log.Printf("[agent] session ended, restarting scrcpy-server immediately...")
-		// 不需要 sleep，立即重启 scrcpy-server
+		// 会话结束后退避 1s 再重启，避免 scrcpy 持续崩溃时形成死循环刷日志/抢 CPU
+		log.Printf("[agent] session ended, restarting scrcpy-server in 1s...")
+		time.Sleep(1 * time.Second)
 	}
 }
 
@@ -54,6 +55,19 @@ func runOnce(relayURL string, maxSize, bitrate int, jarPath, transport string, k
 		Bitrate:          bitrate,
 		KeyFrameInterval: keyFrameInterval,
 	}
+	// 会话结束时，若 scrcpy-server 是意外崩溃（而非主动 Stop），记录退出原因。
+	// 之前没有任何进程管理，崩溃退出码/Java 异常会被完全吞掉，只能在 socket 超时后盲重启。
+	defer func() {
+		if server.exitCh != nil {
+			select {
+			case e := <-server.exitCh:
+				if e != nil {
+					log.Printf("[agent] scrcpy-server 异常退出: %v（详见 scrcpy-agent.log 的 Java 崩溃栈）", e)
+				}
+			default:
+			}
+		}
+	}()
 	if err := server.Start(); err != nil {
 		log.Printf("[agent] start scrcpy-server failed: %v, retrying in 3s", err)
 		time.Sleep(3 * time.Second)
