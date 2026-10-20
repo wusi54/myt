@@ -40,11 +40,12 @@ services:
       - ./certs:/etc/nginx/certs:ro
     networks:
       - myt-net
-    # 用 .env 的 MTX_WEBRTC_UP 替换模板占位符生成 /etc/nginx/nginx.conf 后启动
+    # 关键：用 compose 插值(解析时)把 MTX_WEBRTC_UP 的值直接填进命令，
+    # 不依赖容器内 shell 再展开环境变量(那种 $$ 写法常跨版本留原样导致 nginx unknown variable)
     command:
       - /bin/sh
       - -c
-      - "sed 's|__MTX_WEBRTC_UP__|$$MTX_WEBRTC_UP|g' /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf && exec nginx -g 'daemon off;'"
+      - "sed 's|__MTX_WEBRTC_UP__|${MTX_WEBRTC_UP:-192.168.10.43:8889}|g' /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf && exec nginx -g 'daemon off;'"
 
   # Web 服务（Flask + waitress）
   web:
