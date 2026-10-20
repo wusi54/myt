@@ -524,7 +524,12 @@ def _sync_one_device(dev):
     if res.get('code') != 200:
         db.update_device(dev['id'], status='offline')
         return 0
-    data = res.get('data') or []
+    # 设备 list 接口返回结构因 myt 固件/版本而异：
+    #   - 容器数组可能在 data 或 msg 字段下；
+    #   - 实例名在 name 或 Names；状态在 state 或 State；data 路径在 data 或 Data。
+    # 之前只认 data/name/state，新固件下数组取不到(容器被清空)且实例名/状态全空，
+    # 表现为「平台实例名与设备真实名对不上」。这里做兼容。
+    data = res.get('data') or res.get('msg') or []
     host_ver = ''
     hv = cli.host_ver(dev['ip'])
     if hv.get('code') == 200:
@@ -533,22 +538,29 @@ def _sync_one_device(dev):
                      host_ver=str(host_ver or ''))
     seen = set()
     for c in data:
-        cid = c.get('id') or f"{dev['ip']}:{c.get('name')}"
+        raw_name = c.get('Names') or c.get('name') or ''
+        cid = c.get('id') or f"{dev['ip']}:{raw_name or c.get('index')}"
         seen.add(cid)
         adb_port = str(c.get('adb') or '')
         s5 = c.get('s5') or {}
+        state = c.get('State') or c.get('state') or ''
         db.upsert_container({
             'id': cid, 'device_id': dev['id'], 'device_ip': dev['ip'],
-            'name': c.get('name', ''), 'index_num': c.get('index', 0),
-            'short_id': c.get('short_id', ''), 'adb_port': adb_port,
+            'name': raw_name, 'index_num': c.get('index', 0),
+            'short_id': c.get('short_id') or c.get('ShortId') or '',
+            'adb_port': adb_port,
             'adb_addr': f"{adb_host_for(dev)}:{adb_port}" if adb_port else '',
-            'image': c.get('image', ''), 'state': c.get('state', ''),
-            'status': c.get('status', ''), 'and_state': c.get('and_state', 0),
-            'api_port': str(c.get('api_port') or ''), 'ctr_port': str(c.get('ctr_port') or ''),
-            'webrtc': str(c.get('webrtc') or ''), 's5_addr': s5.get('addr', ''),
+            'image': c.get('image') or c.get('Image') or '',
+            'state': state,
+            'status': c.get('status') or state,
+            'and_state': c.get('and_state', 0),
+            'api_port': str(c.get('api_port') or c.get('ApiPort') or ''),
+            'ctr_port': str(c.get('ctr_port') or c.get('CtrPort') or ''),
+            'webrtc': str(c.get('webrtc') or c.get('Webrtc') or ''),
+            's5_addr': s5.get('addr', ''),
             's5_status': s5.get('status', 0),
             'resolution': f"{c.get('width', '')}x{c.get('height', '')}",
-            'data_path': c.get('data', ''),
+            'data_path': c.get('data') or c.get('Data') or '',
         })
     # 清理该设备下已消失的容器
     for row in db.list_containers():
