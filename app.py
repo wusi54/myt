@@ -944,6 +944,25 @@ def _read_param_file(p):
     return b''
 
 
+def _build_devinfo_body(fp):
+    """构造 set_custom_devinfo 的请求体。
+
+    myt 的 set_custom_devinfo 需要「完整指纹 JSON」(env/sensors/cpuinfo/... 结构)。
+    而 fp['data'] 是 _flatten_props 摊平后的 {属性:值} dict，直接发会触发 myt code 3
+    「自定义设备信息设置失败」。因此优先用导入时落盘的原始指纹文件(保留完整结构)；
+    手动新增(无文件)时才退化为扁平字段。
+    """
+    raw = _read_param_file(fp)
+    if raw:
+        text = raw.decode('utf-8', 'ignore').strip()
+        if text[:1] in ('{', '['):
+            try:
+                return json.loads(text)
+            except Exception:
+                pass
+    return json.loads(fp.get('data') or '{}')
+
+
 def _reparse_real_params():
     """重新识别已导入参数的机型/型号（修复前导入的历史数据机型为空）。"""
     fixed = []
@@ -1136,8 +1155,10 @@ def _do_apply_fp(fp_id, cid):
     if fp['in_use'] and fp['instance_id'] != cid:
         return err(f"参数已被容器 {fp['instance_name'] or fp['instance_id']} 占用")
     dev = db.get_device(c['device_id'])
-    params = json.loads(fp['data'] or '{}')
-    res = client_for(dev).set_custom_devinfo(dev['ip'], c['name'], params)
+    # set_custom_devinfo 需要「完整指纹 JSON」(env/sensors/cpuinfo/... 结构)，
+    # 不能用 fp['data']（_flatten_props 摊平后的 {属性:值} dict，会触发 myt code 3）。
+    body = _build_devinfo_body(fp)
+    res = client_for(dev).set_custom_devinfo(dev['ip'], c['name'], body)
     if res.get('code') == 200:
         if c['fp_id'] and c['fp_id'] != fp_id:
             _release_fp(c['fp_id'])
