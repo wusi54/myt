@@ -536,14 +536,28 @@ def _sync_one_device(dev):
         host_ver = hv.get('data') or hv.get('message') or ''
     db.update_device(dev['id'], status='online', container_count=len(data),
                      host_ver=str(host_ver or ''))
+    # 实例名/状态在不同 myt 固件下字段名不一致，做多候选兜底
+    NAME_KEYS = ('Names', 'name', 'container_name', 'vm_name', 'cname',
+                 'container', 'containerId')
+    STATE_KEYS = ('State', 'state', 'status')
     seen = set()
     for c in data:
-        raw_name = c.get('Names') or c.get('name') or ''
+        raw_name = ''
+        for k in NAME_KEYS:
+            v = c.get(k)
+            if isinstance(v, str) and v.strip():
+                raw_name = v.strip()
+                break
         cid = c.get('id') or f"{dev['ip']}:{raw_name or c.get('index')}"
         seen.add(cid)
         adb_port = str(c.get('adb') or '')
         s5 = c.get('s5') or {}
-        state = c.get('State') or c.get('state') or ''
+        state = ''
+        for k in STATE_KEYS:
+            v = c.get(k)
+            if isinstance(v, str) and v.strip():
+                state = v.strip()
+                break
         db.upsert_container({
             'id': cid, 'device_id': dev['id'], 'device_ip': dev['ip'],
             'name': raw_name, 'index_num': c.get('index', 0),
