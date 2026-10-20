@@ -61,6 +61,13 @@ tr:hover td{background:#1e2e3e}
 .toast.success{background:#107c10;color:#fff;display:block}
 .toast.error{background:#c42b1c;color:#fff;display:block}
 .toast.info{background:#0078d4;color:#fff;display:block}
+/* 全局“处理中”提示 + 按钮加载态 */
+#globalBusy{position:fixed;top:20px;left:50%;transform:translateX(-50%);display:none;align-items:center;gap:6px;padding:10px 20px;border-radius:24px;background:#1f3140;border:1px solid #3a4a5a;color:#cfe3f5;font-size:13px;z-index:4000;box-shadow:0 6px 20px #0007}
+#globalBusy.active{display:flex}
+.spinner{width:16px;height:16px;flex:none;border:2px solid #3a4a5a;border-top-color:#00d4ff;border-radius:50%;animation:spin .8s linear infinite;display:inline-block;vertical-align:-3px;margin-right:6px}
+.spinner.sm{width:12px;height:12px;border-width:2px;vertical-align:-2px;margin-right:5px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.btn.is-busy,.wc-tb-btn.is-busy{opacity:.6;pointer-events:none}
 .json-view{background:#0f1923;padding:10px;border-radius:4px;font-family:Consolas,monospace;font-size:12px;white-space:pre-wrap;max-height:320px;overflow:auto;margin-top:8px;word-break:break-all}
 .link{color:#00d4ff;cursor:pointer}.link:hover{text-decoration:underline}
 .page{display:none}.page.active{display:block}
@@ -169,6 +176,7 @@ tr:hover td{background:#1e2e3e}
 </div>
 </div>
 <div id="toast" class="toast"></div>
+<div id="globalBusy"><span class="spinner"></span><span id="busyText">处理中…</span></div>
 <div class="container">
 
 <!-- ==================== 设备管理 ==================== -->
@@ -216,8 +224,8 @@ tr:hover td{background:#1e2e3e}
 <span class="hint">文件内容 MD5 唯一去重</span>
 <button class="btn btn-sm btn-outline" onclick="showRealParamModal()">手动新增</button>
 <button class="btn btn-sm btn-outline" onclick="showModal('uploadParamModal')">上传参数(可批量)</button>
-<button class="btn btn-sm btn-outline" onclick="reparseParams()" title="对机型/型号为空的历史参数重新识别">重新识别机型</button>
-<button class="btn btn-sm btn-warning" onclick="batchApplyParams()">批量应用</button>
+<button class="btn btn-sm btn-outline" onclick="reparseParams(this)" title="对机型/型号为空的历史参数重新识别">重新识别机型</button>
+<button class="btn btn-sm btn-warning" onclick="batchApplyParams(this)">批量应用</button>
 <button class="btn btn-sm btn-danger" onclick="batchDeleteParams()">批量删除</button>
 </div></div>
 <div id="realParamList"></div>
@@ -245,7 +253,7 @@ tr:hover td{background:#1e2e3e}
 <button class="btn btn-sm btn-outline" onclick="probeAllProxies()">全部探测</button>
 <button class="btn btn-sm btn-outline" onclick="showModal('importProxyModal')">批量导入</button>
 <button class="btn btn-sm btn-outline" onclick="showProxyModal()">+ 新增代理</button>
-<button class="btn btn-sm btn-warning" onclick="batchApplyProxies()">批量应用</button>
+<button class="btn btn-sm btn-warning" onclick="batchApplyProxies(this)">批量应用</button>
 <button class="btn btn-sm btn-danger" onclick="batchDeleteProxies()">批量删除</button>
 </div></div>
 <div id="proxyList"></div>
@@ -388,11 +396,11 @@ tr:hover td{background:#1e2e3e}
 <p class="hint mb-8">从真机参数库选择并导入到该容器 (set_custom_devinfo)</p>
 <div class="flex mb-8">
 <select id="detailFpSelect" class="flex-grow"><option value="">-- 选择真机参数 --</option></select>
-<button class="btn btn-sm btn-primary" onclick="detailApplyFp()">导入参数</button>
+<button class="btn btn-sm btn-primary" onclick="detailApplyFp(this)">导入参数</button>
 <button class="btn btn-sm btn-danger" onclick="detailReleaseFp()">释放参数</button>
 </div>
 <div class="flex mb-8">
-<button class="btn btn-sm btn-warning" onclick="detailRandomDevInfo()">一键新机(随机)</button>
+<button class="btn btn-sm btn-warning" onclick="detailRandomDevInfo(this)">一键新机(随机)</button>
 </div>
 <div id="detailFpResult" class="json-view" style="display:none"></div>
 </div>
@@ -400,7 +408,7 @@ tr:hover td{background:#1e2e3e}
 <p class="hint mb-8">从代理池选择并配置到该容器 (s5_set)</p>
 <div class="flex mb-8">
 <select id="detailProxySelect" class="flex-grow"><option value="">-- 选择代理 --</option></select>
-<button class="btn btn-sm btn-success" onclick="detailApplyProxy()">配置代理</button>
+<button class="btn btn-sm btn-success" onclick="detailApplyProxy(this)">配置代理</button>
 <button class="btn btn-sm btn-danger" onclick="detailReleaseProxy()">关闭代理</button>
 <button class="btn btn-sm btn-outline" onclick="detailQueryProxy()">查询</button>
 </div>
@@ -435,7 +443,7 @@ tr:hover td{background:#1e2e3e}
 <div class="form-row"><label>选择文件 (支持多选，.json/.txt/.dat/.bin)</label><input id="rp_files" type="file" multiple accept=".json,.txt,.dat,.bin"></div>
 <p class="hint">系统按文件内容计算 MD5 作为唯一值，重复文件会被跳过。</p>
 <div id="uploadParamResult" class="json-view" style="display:none"></div>
-<div class="modal-actions"><button class="btn btn-outline" onclick="closeModal('uploadParamModal')">取消</button><button class="btn btn-primary" onclick="uploadParams()">上传</button></div>
+<div class="modal-actions"><button class="btn btn-outline" onclick="closeModal('uploadParamModal')">取消</button><button class="btn btn-primary" onclick="uploadParams(this)">上传</button></div>
 </div></div>
 
 <!-- ========== Modal: 手动新增真机参数 ========== -->
@@ -489,7 +497,7 @@ tr:hover td{background:#1e2e3e}
 <div id="importProxyModal" class="modal-overlay"><div class="modal" style="max-width:520px">
 <h2>批量导入代理</h2>
 <div class="form-row"><label>每行一条: ip:port 或 ip:port:user:pwd</label><textarea id="ipx_text" rows="8" placeholder="1.2.3.4:1080&#10;5.6.7.8:1080:user:pass"></textarea></div>
-<div class="modal-actions"><button class="btn btn-outline" onclick="closeModal('importProxyModal')">取消</button><button class="btn btn-primary" onclick="importProxies()">导入</button></div>
+<div class="modal-actions"><button class="btn btn-outline" onclick="closeModal('importProxyModal')">取消</button><button class="btn btn-primary" onclick="importProxies(this)">导入</button></div>
 </div></div>
 
 <!-- ========== Modal: 独立投屏浮层（页内弹框，不跳转新页面） ========== -->
@@ -579,6 +587,19 @@ let proxyPage=0; const PROXY_PAGE_SIZE=20;
 let CURRENT_USER=null;
 
 function toast(msg,type='info'){const t=document.getElementById('toast');t.textContent=msg;t.className='toast '+type;setTimeout(()=>{t.style.display='none'},3200)}
+// 全局“处理中”提示：并发计数，避免嵌套时提前隐藏
+let _busyCount=0;
+function startBusy(msg){_busyCount++;const t=document.getElementById('busyText'),b=document.getElementById('globalBusy');if(t)t.textContent=msg||'处理中…';if(b)b.classList.add('active')}
+function stopBusy(){_busyCount=Math.max(0,_busyCount-1);if(_busyCount===0){const b=document.getElementById('globalBusy');if(b)b.classList.remove('active')}}
+// 用“处理中”包裹一个耗时异步操作：按钮显示转圈+文案并禁用防重，同时顶部显示全局提示
+async function withBusy(btn,msg,fn){
+  const el=(typeof btn==='string')?document.getElementById(btn):btn;
+  const prev=el?el.innerHTML:null;
+  if(el){el.classList.add('is-busy');el.innerHTML='<span class="spinner sm"></span>'+(msg||'处理中…');}
+  startBusy(msg);
+  try{return await fn();}
+  finally{stopBusy();if(el){el.classList.remove('is-busy');if(prev!=null)el.innerHTML=prev;}}
+}
 function closeModal(id){document.getElementById(id).classList.remove('active')}
 function showModal(id){document.getElementById(id).classList.add('active')}
 function esc(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
@@ -881,27 +902,32 @@ function populateDetailSelects(){
     apps.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('');
 }
 function showDetailResult(id,data){const el=document.getElementById(id);el.style.display='block';el.textContent=JSON.stringify(data,null,2)}
-async function detailApplyFp(){
+async function detailApplyFp(btn){
   const fp_id=document.getElementById('detailFpSelect').value;if(!fp_id){toast('请选择真机参数','error');return}
-  const d=await api('/api/containers/'+currentContainer.id+'/apply_fp','POST',{fp_id});
-  showDetailResult('detailFpResult',d);toast(d.code===200?'参数已导入':(d.msg||'失败'),d.code===200?'success':'error');
-  if(d.code===200){await reloadCurrent();await loadRealParams();renderContainers();}
+  await withBusy(btn,'参数生效中…',async()=>{
+    const d=await api('/api/containers/'+currentContainer.id+'/apply_fp','POST',{fp_id});
+    showDetailResult('detailFpResult',d);toast(d.code===200?'参数已导入':(d.msg||'失败'),d.code===200?'success':'error');
+    if(d.code===200){await reloadCurrent();await loadRealParams();renderContainers();}
+  });
 }
 async function detailReleaseFp(){const d=await api('/api/containers/'+currentContainer.id+'/release_fp','POST',{});showDetailResult('detailFpResult',d);toast(d.msg||'已释放','success');await reloadCurrent();await loadRealParams();renderContainers()}
-async function detailRandomDevInfo(){const d=await api('/api/containers/'+currentContainer.id+'/random_devinfo','POST',{});showDetailResult('detailFpResult',d);toast(d.message||d.msg||'已提交',d.code===200?'success':'error')}
-async function detailApplyProxy(){
+async function detailRandomDevInfo(btn){await withBusy(btn,'处理中…',async()=>{const d=await api('/api/containers/'+currentContainer.id+'/random_devinfo','POST',{});showDetailResult('detailFpResult',d);toast(d.message||d.msg||'已提交',d.code===200?'success':'error')})}
+async function detailApplyProxy(btn){
   const proxy_id=document.getElementById('detailProxySelect').value;if(!proxy_id){toast('请选择代理','error');return}
-  const d=await api('/api/containers/'+currentContainer.id+'/apply_proxy','POST',{proxy_id});
-  showDetailResult('detailProxyResult',d);toast(d.code===200?'代理已配置':(d.msg||'失败'),d.code===200?'success':'error');
-  if(d.code===200){await reloadCurrent();await loadProxies();renderContainers();}
+  await withBusy(btn,'代理配置中…',async()=>{
+    const d=await api('/api/containers/'+currentContainer.id+'/apply_proxy','POST',{proxy_id});
+    showDetailResult('detailProxyResult',d);toast(d.code===200?'代理已配置':(d.msg||'失败'),d.code===200?'success':'error');
+    if(d.code===200){await reloadCurrent();await loadProxies();renderContainers();}
+  });
 }
 async function detailReleaseProxy(){const d=await api('/api/containers/'+currentContainer.id+'/release_proxy','POST',{});showDetailResult('detailProxyResult',d);toast(d.msg||'已关闭','success');await reloadCurrent();await loadProxies();renderContainers()}
 async function detailQueryProxy(){const d=await api('/api/containers/'+currentContainer.id+'/s5_query');showDetailResult('detailProxyResult',d)}
 async function detailInstallApp(){
   const app_id=document.getElementById('detailAppSelect').value;if(!app_id){toast('请选择应用','error');return}
-  toast('安装中，请稍候...','info');
-  const d=await api('/api/containers/'+currentContainer.id+'/install_apk','POST',{app_id});
-  showDetailResult('detailAppResult',d);toast(d.msg||'完成',d.code===200?'success':'error');
+  await withBusy(null,'安装中，请稍候…',async()=>{
+    const d=await api('/api/containers/'+currentContainer.id+'/install_apk','POST',{app_id});
+    showDetailResult('detailAppResult',d);toast(d.msg||'完成',d.code===200?'success':'error');
+  });
 }
 async function detailAction(action){
   const names={start:'启动',stop:'停止',reboot:'重启',reset:'重置',remove:'删除'};
@@ -949,27 +975,31 @@ function renderRealParams(){
   h+='</tbody></table>';el.innerHTML=h;
 }
 function toggleAll(cls,checked){document.querySelectorAll('.'+cls).forEach(cb=>cb.checked=checked)}
-async function uploadParams(){
+async function uploadParams(btn){
   const files=document.getElementById('rp_files').files;
   if(!files.length){toast('请选择文件','error');return}
   const fd=new FormData();for(const f of files)fd.append('file',f);
-  const d=await api('/api/real_params/upload','POST',fd,true);
-  const res=document.getElementById('uploadParamResult');res.style.display='block';
-  const data=d.data||{};
-  let h='';
-  (data.added||[]).forEach(a=>{
-    h+=`<div style="color:#3ad07f">✓ ${esc(a.file||a.name)} → ${esc(a.brand||'?')} / ${esc(a.model||'?')} · MD5 ${esc((a.md5||'').substring(0,8))}`
-      + (a.warn?`<span style="color:#ffb020">（${esc(a.warn)}）</span>`:'')+`</div>`;
+  await withBusy(btn,'上传中，解析参数…',async()=>{
+    const d=await api('/api/real_params/upload','POST',fd,true);
+    const res=document.getElementById('uploadParamResult');res.style.display='block';
+    const data=d.data||{};
+    let h='';
+    (data.added||[]).forEach(a=>{
+      h+=`<div style="color:#3ad07f">✓ ${esc(a.file||a.name)} → ${esc(a.brand||'?')} / ${esc(a.model||'?')} · MD5 ${esc((a.md5||'').substring(0,8))}`
+        + (a.warn?`<span style="color:#ffb020">（${esc(a.warn)}）</span>`:'')+`</div>`;
+    });
+    (data.skipped||[]).forEach(s=>{
+      h+=`<div style="color:#ffb020">- ${esc(s.name)} 跳过：${esc(s.reason)}</div>`;
+    });
+    res.innerHTML = h || `<pre>${esc(JSON.stringify(d,null,2))}</pre>`;
+    toast(d.msg,d.code===200?'success':'error');loadRealParams();
   });
-  (data.skipped||[]).forEach(s=>{
-    h+=`<div style="color:#ffb020">- ${esc(s.name)} 跳过：${esc(s.reason)}</div>`;
-  });
-  res.innerHTML = h || `<pre>${esc(JSON.stringify(d,null,2))}</pre>`;
-  toast(d.msg,d.code===200?'success':'error');loadRealParams();
 }
-async function reparseParams(){
-  const d=await api('/api/real_params/reparse','POST',{});
-  toast(d.msg||'已重新识别',d.code===200?'success':'error');loadRealParams();
+async function reparseParams(btn){
+  await withBusy(btn,'重新识别机型中…',async()=>{
+    const d=await api('/api/real_params/reparse','POST',{});
+    toast(d.msg||'已重新识别',d.code===200?'success':'error');loadRealParams();
+  });
 }
 function showRealParamModal(){['rp_name','rp_brand','rp_model','rp_imei','rp_imsi','rp_androidId','rp_iccid','rp_serialNum','rp_wifiMac','rp_btaddr','rp_oaid','rp_aaid','rp_vaid'].forEach(id=>document.getElementById(id).value='');showModal('realParamModal')}
 async function saveRealParam(){
@@ -991,12 +1021,15 @@ function batchDeleteParams(){
   if(!confirm('确定删除选中的 '+ids.length+' 条参数?'))return;
   api('/api/real_params/batch_delete','POST',{ids}).then(d=>{toast(d.msg,d.code===200?'success':'error');loadRealParams()});
 }
-function batchApplyParams(){
+function batchApplyParams(btn){
   const ids=Array.from(document.querySelectorAll('.rp-cb:checked')).map(c=>c.value);
   if(!ids.length){toast('请勾选参数','error');return}
   pickContainers('选择容器（参数与容器按顺序一一对应）', true, async (cids)=>{
-    const d=await api('/api/real_params/batch_apply','POST',{ids,container_ids:cids});
-    toast(d.msg,d.code===200?'success':'error');loadRealParams();loadContainers();
+    startBusy('批量应用参数中…');
+    try{
+      const d=await api('/api/real_params/batch_apply','POST',{ids,container_ids:cids});
+      toast(d.msg,d.code===200?'success':'error');loadRealParams();loadContainers();
+    }finally{stopBusy();}
   });
 }
 
@@ -1092,10 +1125,12 @@ async function saveProxy(){
   const d=id?await api('/api/proxies/'+id,'PUT',body):await api('/api/proxies','POST',body);
   toast(d.msg,d.code===200?'success':'error');if(d.code===200){closeModal('proxyModal');loadProxies()}
 }
-async function importProxies(){
+async function importProxies(btn){
   const text=document.getElementById('ipx_text').value;
   if(!text.trim()){toast('请输入代理列表','error');return}
-  const d=await api('/api/proxies/import','POST',{text});toast(d.msg,d.code===200?'success':'error');if(d.code===200){closeModal('importProxyModal');loadProxies()}
+  await withBusy(btn,'导入中…',async()=>{
+    const d=await api('/api/proxies/import','POST',{text});toast(d.msg,d.code===200?'success':'error');if(d.code===200){closeModal('importProxyModal');loadProxies()}
+  });
 }
 async function deleteProxy(id){if(!confirm('确定删除该代理?'))return;const d=await api('/api/proxies/'+id,'DELETE');toast(d.msg,d.code===200?'success':'error');loadProxies()}
 async function releaseProxy(id){const d=await api('/api/proxies/'+id+'/release','POST',{});toast(d.msg||'已释放','success');loadProxies();loadContainers()}
@@ -1115,12 +1150,15 @@ function batchDeleteProxies(){
   if(!confirm('确定删除选中的 '+ids.length+' 个代理?'))return;
   api('/api/proxies/batch_delete','POST',{ids}).then(d=>{toast(d.msg,d.code===200?'success':'error');loadProxies()});
 }
-function batchApplyProxies(){
+function batchApplyProxies(btn){
   const ids=Array.from(document.querySelectorAll('.px-cb:checked')).map(c=>c.value);
   if(!ids.length){toast('请勾选代理','error');return}
   pickContainers('选择容器（代理与容器按顺序一一对应）', true, async (cids)=>{
-    const d=await api('/api/proxies/batch_apply','POST',{ids,container_ids:cids});
-    toast(d.msg,d.code===200?'success':'error');loadProxies();loadContainers();
+    startBusy('批量应用代理中…');
+    try{
+      const d=await api('/api/proxies/batch_apply','POST',{ids,container_ids:cids});
+      toast(d.msg,d.code===200?'success':'error');loadProxies();loadContainers();
+    }finally{stopBusy();}
   });
 }
 
@@ -1690,36 +1728,44 @@ async function screenModalApplyFp(){
   if(!c){toast('未找到对应容器','error');return}
   const fp_id=document.getElementById('screenModalFp').value;
   if(!fp_id){toast('请选择真机参数','error');return}
-  const d=await api('/api/containers/'+c.id+'/apply_fp','POST',{fp_id});
-  showScreenResult('screenModalFpResult',d);
-  toast(d.code===200?'指纹已导入':(d.msg||'失败'),d.code===200?'success':'error');
-  if(d.code===200){await Promise.all([loadRealParams(),loadContainers()]);populateScreenModalSelects(c);loadScreenModalInfo(screenModalState.adb);}
+  await withBusy(document.getElementById('screenModalFpApply'),'指纹生效中…',async()=>{
+    const d=await api('/api/containers/'+c.id+'/apply_fp','POST',{fp_id});
+    showScreenResult('screenModalFpResult',d);
+    toast(d.code===200?'指纹已导入':(d.msg||'失败'),d.code===200?'success':'error');
+    if(d.code===200){await Promise.all([loadRealParams(),loadContainers()]);populateScreenModalSelects(c);loadScreenModalInfo(screenModalState.adb);}
+  });
 }
 async function screenModalReleaseFp(){
   const c=allContainers.find(x=>x.adb_addr===screenModalState.adb);
   if(!c){toast('未找到对应容器','error');return}
-  const d=await api('/api/containers/'+c.id+'/release_fp','POST',{});
-  showScreenResult('screenModalFpResult',d);
-  toast(d.code===200?'已释放指纹':(d.msg||'失败'),d.code===200?'success':'error');
-  if(d.code===200){await Promise.all([loadRealParams(),loadContainers()]);populateScreenModalSelects(c);loadScreenModalInfo(screenModalState.adb);}
+  await withBusy(document.getElementById('screenModalFpRelease'),'释放中…',async()=>{
+    const d=await api('/api/containers/'+c.id+'/release_fp','POST',{});
+    showScreenResult('screenModalFpResult',d);
+    toast(d.code===200?'已释放指纹':(d.msg||'失败'),d.code===200?'success':'error');
+    if(d.code===200){await Promise.all([loadRealParams(),loadContainers()]);populateScreenModalSelects(c);loadScreenModalInfo(screenModalState.adb);}
+  });
 }
 async function screenModalApplyProxy(){
   const c=allContainers.find(x=>x.adb_addr===screenModalState.adb);
   if(!c){toast('未找到对应容器','error');return}
   const proxy_id=document.getElementById('screenModalProxy').value;
   if(!proxy_id){toast('请选择代理','error');return}
-  const d=await api('/api/containers/'+c.id+'/apply_proxy','POST',{proxy_id});
-  showScreenResult('screenModalProxyResult',d);
-  toast(d.code===200?'代理已配置':(d.msg||'失败'),d.code===200?'success':'error');
-  if(d.code===200){await Promise.all([loadProxies(),loadContainers()]);populateScreenModalSelects(c);loadScreenModalInfo(screenModalState.adb);}
+  await withBusy(document.getElementById('screenModalProxyApply'),'代理配置中…',async()=>{
+    const d=await api('/api/containers/'+c.id+'/apply_proxy','POST',{proxy_id});
+    showScreenResult('screenModalProxyResult',d);
+    toast(d.code===200?'代理已配置':(d.msg||'失败'),d.code===200?'success':'error');
+    if(d.code===200){await Promise.all([loadProxies(),loadContainers()]);populateScreenModalSelects(c);loadScreenModalInfo(screenModalState.adb);}
+  });
 }
 async function screenModalReleaseProxy(){
   const c=allContainers.find(x=>x.adb_addr===screenModalState.adb);
   if(!c){toast('未找到对应容器','error');return}
-  const d=await api('/api/containers/'+c.id+'/release_proxy','POST',{});
-  showScreenResult('screenModalProxyResult',d);
-  toast(d.code===200?'已关闭代理':(d.msg||'失败'),d.code===200?'success':'error');
-  if(d.code===200){await Promise.all([loadProxies(),loadContainers()]);populateScreenModalSelects(c);loadScreenModalInfo(screenModalState.adb);}
+  await withBusy(document.getElementById('screenModalProxyRelease'),'关闭中…',async()=>{
+    const d=await api('/api/containers/'+c.id+'/release_proxy','POST',{});
+    showScreenResult('screenModalProxyResult',d);
+    toast(d.code===200?'已关闭代理':(d.msg||'失败'),d.code===200?'success':'error');
+    if(d.code===200){await Promise.all([loadProxies(),loadContainers()]);populateScreenModalSelects(c);loadScreenModalInfo(screenModalState.adb);}
+  });
 }
 function closeScreenModal(){
   document.getElementById('screenModal').classList.remove('active');
