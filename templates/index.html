@@ -88,6 +88,9 @@ tr:hover td{background:#1e2e3e}
 .wall-cell .wc-label .wc-name{color:#ffa500;font-size:11px;font-weight:700;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .wall-cell .wc-label .wc-close{color:#ff6b6b;cursor:pointer;font-size:14px;line-height:1;padding:0 4px}
 .wall-cell .wc-label .wc-adb{color:#9fb3c8;font-size:10px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 投屏状态标签：常驻显示 部署中/连接中/拉流中/重连中/失败/已停止 */
+.wall-cell .wc-state{font-size:10px;display:none;white-space:nowrap;flex:0 0 auto}
+#screenModal .screen-title .wc-state{font-size:11px;display:none;white-space:nowrap}
 .wall-pager{display:flex;align-items:center;justify-content:center;gap:6px;padding:10px}
 .wall-cell .wc-placeholder{display:flex;align-items:center;justify-content:center;height:100%;color:#3a4a5a;font-size:12px}
 .wall-cell .wc-toolbar{flex:0 0 auto;padding:3px 6px;background:#0f1923;border-top:1px solid #2a3a4a;display:flex;gap:4px;justify-content:center;align-items:center;flex-wrap:wrap}
@@ -474,7 +477,7 @@ tr:hover td{background:#1e2e3e}
 <!-- ========== Modal: 独立投屏浮层（页内弹框，不跳转新页面） ========== -->
 <div id="screenModal" class="modal-overlay">
   <div class="screen-box">
-    <div class="screen-title" id="screenModalTitle"></div>
+    <div class="screen-title"><span id="screenModalTitle"></span> <span class="wc-state" id="screenModalStateChip"></span></div>
     <div class="screen-info" id="screenModalInfo" style="display:none"></div>
     <div class="screen-video-wrap">
       <video id="screenModalVideo" autoplay playsinline muted></video>
@@ -1115,14 +1118,34 @@ class WallPlayer{
   constructor(video,adbAddr){
     this.video=video;this.adbAddr=adbAddr;
     this.statusEl=video.parentElement?video.parentElement.querySelector('.wc-status'):null;
+    const cell=video.closest?video.closest('.wall-cell'):null;
+    this.stateChip=(cell?cell.querySelector('.wc-state'):null)
+      ||(video.id==='screenModalVideo'?document.getElementById('screenModalStateChip'):null);
     this.pc=null;this.whepLocation='';this.reconnectDelay=1000;this.reconnectTimer=null;
     this.destroyed=false;this.paused=false;this._connecting=false;
+    this.state='';this.attempts=0;
   }
   _status(text,color){
     if(!this.statusEl)return;
     this.statusEl.textContent=text||'';
     this.statusEl.style.color=color||'#8899aa';
     this.statusEl.style.display=text?'flex':'none';
+  }
+  // 状态机：已停止/部署中/连接中/拉流中/重连中(第N次)/失败
+  // 标题旁状态标签常驻显示；中央浮层仅在非播放状态显示
+  _setState(st){
+    this.state=st;
+    const map={
+      stopped:['已停止','#8899aa'],
+      deploying:['部署中…','#4fc3f7'],
+      connecting:['连接中…','#4fc3f7'],
+      playing:['拉流中','#36d399'],
+      reconnecting:['重连中'+(this.attempts>0?'（第'+this.attempts+'次）':''),'#ffa500'],
+      failed:['连接失败'+(this.attempts>0?'（重试第'+this.attempts+'次）':''),'#ff6b6b']
+    };
+    const m=map[st]||[st,'#8899aa'];
+    if(this.stateChip){this.stateChip.textContent=m[0];this.stateChip.style.color=m[1];this.stateChip.style.display='inline-block'}
+    if(st==='playing'){this._status('')}else{this._status(m[0],m[1])}
   }
   async _ensureAgent(){
     const now=Date.now(),last=wallEnsureAt.get(this.adbAddr)||0;
@@ -1138,9 +1161,10 @@ class WallPlayer{
     this._connecting=true;
     this._clearReconnect();
     await this._closePeer();
-    this._status('连接中…');
+    this._setState('deploying');          // ensure 可能触发 Agent 部署（10~30 秒）
     await this._ensureAgent();
     if(this.destroyed){this._connecting=false;return}
+    this._setState('connecting');         // Agent 就绪，开始 WHEP 信令连接
     let pc=null;
     try{
       pc=new RTCPeerConnection({iceServers:[]});
@@ -1152,14 +1176,14 @@ class WallPlayer{
           this.video.srcObject=e.streams[0];
           this.video.play().catch(()=>{});
         }catch(_){}
-        this._status('');
+        this.attempts=0;
         this.reconnectDelay=1000;
+        this._setState('playing');
       };
       pc.onconnectionstatechange=()=>{
         if(this.destroyed||this.pc!==pc)return;
         const st=pc.connectionState;
         if(st==='failed'||st==='disconnected'||st==='closed'){
-          this._status('重连中…','#ffa500');
           this._scheduleReconnect();
         }
       };
@@ -1188,13 +1212,14 @@ class WallPlayer{
       if(this.pc===pc){try{pc.close()}catch(_){}this.pc=null}
       if(this.destroyed)return;
       console.warn('[wall] WHEP failed',this.adbAddr,e.message||e);
-      this._status('连接失败，重试中…','#ff6b6b');
       this._scheduleReconnect();
     }
   }
   _clearReconnect(){if(this.reconnectTimer){clearTimeout(this.reconnectTimer);this.reconnectTimer=null}}
   _scheduleReconnect(){
     if(this.destroyed||this.reconnectTimer)return;
+    this.attempts++;
+    this._setState(this.attempts>=5?'failed':'reconnecting');
     const delay=this.reconnectDelay;
     this.reconnectDelay=Math.min(Math.round(this.reconnectDelay*1.5),15000);
     this.reconnectTimer=setTimeout(()=>{this.reconnectTimer=null;this.connect()},delay);
@@ -1211,7 +1236,7 @@ class WallPlayer{
     if(pc){try{pc.close()}catch(_){}}
     try{if(this.video.srcObject){this.video.srcObject.getTracks().forEach(t=>t.stop());this.video.srcObject=null}}catch(_){}
   }
-  destroy(){this.destroyed=true;this._closePeer();try{this.video.pause()}catch(_){}}
+  destroy(){this.destroyed=true;this._closePeer();try{this.video.pause()}catch(_){}this._setState('stopped')}
   _concat(a,b){const c=new Uint8Array(a.length+b.length);c.set(a);c.set(b,a.length);return c}
 }
 // 前台恢复：从后台标签切回时，死连接重连、活连接请求 IDR 刷新，避免"静止也重连/黑屏"
@@ -1263,7 +1288,7 @@ function makeWallCell(item){
   const el=c?c.el:document.createElement('div');
   if(!c){
     el.className='wall-cell';
-    el.innerHTML='<div class="wc-label"><div class="wc-meta"><div class="wc-name" title="点击查看连接信息"></div></div><span class="wc-close">×</span></div><div class="wc-info"></div><div class="wc-video-wrap"><video autoplay playsinline muted></video><div class="wc-status">连接中…</div></div><div class="wc-toolbar"><span class="wc-tb-btn" data-tb="back">返回</span><span class="wc-tb-btn" data-tb="home">主页</span><span class="wc-tb-btn" data-tb="recent">最近</span><input class="wc-tb-input" type="text" placeholder="回车发送"><span class="wc-tb-btn" data-tb="popup">弹窗</span><span class="wc-tb-btn" data-tb="redeploy" title="重启投屏 Agent：推流异常或更新 Agent 后一键恢复">重推</span></div>';
+    el.innerHTML='<div class="wc-label"><div class="wc-meta"><div class="wc-name" title="点击查看连接信息"></div><span class="wc-state"></span></div><span class="wc-close">×</span></div><div class="wc-info"></div><div class="wc-video-wrap"><video autoplay playsinline muted></video><div class="wc-status">连接中…</div></div><div class="wc-toolbar"><span class="wc-tb-btn" data-tb="back">返回</span><span class="wc-tb-btn" data-tb="home">主页</span><span class="wc-tb-btn" data-tb="recent">最近</span><input class="wc-tb-input" type="text" placeholder="回车发送"><span class="wc-tb-btn" data-tb="popup">弹窗</span><span class="wc-tb-btn" data-tb="redeploy" title="重启投屏 Agent：推流异常或更新 Agent 后一键恢复">重推</span></div>';
   }
   const nmEl=el.querySelector('.wc-name');nmEl.textContent=item.name;
   // 顶部只留一行实例名；api/adb 收进点击弹出的信息浮层
@@ -1378,7 +1403,7 @@ async function stopAgentStream(adb){
       toast('投屏已关闭（点重启投屏可恢复）','success');
       // 销毁本地播放器，避免它的自动重连把 Agent 再次拉起
       const c=wallCells.get(adb);
-      if(c&&c.player){c.player.destroy();c.player._status('投屏已关闭','#8899aa')}
+      if(c&&c.player){c.player.destroy()}
       if(screenModalState.adb===adb&&screenModalState.player){
         screenModalState.player.destroy();screenModalState.player=null;
         const st=document.getElementById('screenModalStatus');
@@ -1445,7 +1470,8 @@ function onWallInstanceChange(cb){const adb=cb.dataset.adb;if(cb.checked)wallPen
 function syncWallDeviceCb(devCb){if(!devCb)return;const host=devCb.dataset.host;const boxes=document.querySelectorAll('#wallContainerList .wall-cb[data-host="'+host+'"]');let t=0,c=0;boxes.forEach(b=>{t++;if(b.checked)c++});devCb.checked=t>0&&c===t;devCb.indeterminate=c>0&&c<t}
 function toggleWallDeviceAll(devCb){const host=devCb.dataset.host;const on=devCb.checked;document.querySelectorAll('#wallContainerList .wall-cb[data-host="'+host+'"]:not(:disabled)').forEach(b=>{b.checked=on;if(on)wallPending.add(b.dataset.adb);else wallPending.delete(b.dataset.adb)});syncWallDeviceCb(devCb)}
 function toggleWallCbs(v){document.querySelectorAll('#wallContainerList .wall-cb:not(:disabled)').forEach(cb=>{cb.checked=v;if(v)wallPending.add(cb.dataset.adb);else wallPending.delete(cb.dataset.adb)});document.querySelectorAll('#wallContainerList .wall-device-cb').forEach(syncWallDeviceCb)}
-function addSelectedToWall(){const max=wallCols()*wallRows();const cbs=document.querySelectorAll('#wallContainerList .wall-cb:checked:not(:disabled)');let added=0;cbs.forEach(cb=>{if(wallItems.length>=max)return;wallItems.push({name:cb.value,adbAddr:cb.dataset.adb,apiUrl:cb.dataset.url||'',player:null,canvas:null});added++});wallPending.clear();closeModal('addToWallModal');renderWall();toast(added?('已添加 '+added+' 个'):'未添加','info')}
+// 添加上限放宽到 500：超出一页的部分通过分页器翻页查看（之前的上限=单页容量，导致分页永不出现）
+function addSelectedToWall(){const CAP=500;const cbs=document.querySelectorAll('#wallContainerList .wall-cb:checked:not(:disabled)');let added=0;cbs.forEach(cb=>{if(wallItems.length>=CAP)return;wallItems.push({name:cb.value,adbAddr:cb.dataset.adb,apiUrl:cb.dataset.url||'',player:null,canvas:null});added++});wallPending.clear();closeModal('addToWallModal');renderWall();const over=wallItems.length>wallCols()*wallRows();toast(added?('已添加 '+added+' 个'+(over?'，超出单页部分请翻页查看':'')):'未添加','info')}
 document.addEventListener('click',function(e){
   // 单元格标题：点击弹出/收起连接信息浮层
   if(e.target.classList&&e.target.classList.contains('wc-name')){
