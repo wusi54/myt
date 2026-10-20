@@ -1708,6 +1708,32 @@ def screen_ensure():
     return jsonify(result), code
 
 
+@app.route('/api/screen/redeploy', methods=['POST'])
+def screen_redeploy():
+    """一键重启设备端投屏 Agent（stop + deploy）。
+
+    用于：推流异常恢复、relay 更新了 Agent 二进制后按 MD5 自动推送新版本。
+    页面（群控墙单元格/独立投屏弹窗）的"重推"按钮调用此接口，无需手动 curl。
+    """
+    d = request.json or {}
+    adb_addr = (d.get('adb_addr') or '').strip()
+    if not adb_addr:
+        return err('missing adb_addr')
+    stream_name = _agent_stream_name(adb_addr)
+    c = db.row('SELECT * FROM containers WHERE adb_addr=?', (adb_addr,))
+    _relay_agent('stop', adb_addr)
+    result, code = _relay_agent('deploy', adb_addr)
+    if code == 200:
+        if c:
+            db.update_container(c['id'], agent_status='running',
+                                agent_stream_name=stream_name,
+                                agent_last_seen=db.now())
+        return ok({'adb_addr': adb_addr, 'stream_name': stream_name,
+                   'whep_path': f'/mtx/{stream_name}/whep'})
+    if c:
+        db.update_container(c['id'], agent_status='error')
+    return jsonify(result), code
+
 
 # ==================== Agent 生命周期管理 ====================
 def _relay_agent(action, adb_addr, body=None):

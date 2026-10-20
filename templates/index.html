@@ -478,6 +478,7 @@ tr:hover td{background:#1e2e3e}
       <span class="wc-tb-btn" id="screenModalHome">主页</span>
       <span class="wc-tb-btn" id="screenModalRecent">最近</span>
   <input id="screenModalInput" type="text" placeholder="回车发送文本">
+      <span class="wc-tb-btn" id="screenModalRedeploy" title="重启投屏 Agent：推流异常或更新 Agent 后一键恢复">重推流</span>
       <span class="wc-tb-btn screen-close" id="screenModalClose">关闭</span>
       <span class="wc-tb-btn" id="screenModalKbToggle">⌨ 键盘</span>
     </div>
@@ -1252,7 +1253,7 @@ function makeWallCell(item){
   const el=c?c.el:document.createElement('div');
   if(!c){
     el.className='wall-cell';
-    el.innerHTML='<div class="wc-label"><div class="wc-meta"><div class="wc-name" title="点击查看连接信息"></div></div><span class="wc-close">×</span></div><div class="wc-info"></div><div class="wc-video-wrap"><video autoplay playsinline muted></video><div class="wc-status">连接中…</div></div><div class="wc-toolbar"><span class="wc-tb-btn" data-tb="back">返回</span><span class="wc-tb-btn" data-tb="home">主页</span><span class="wc-tb-btn" data-tb="recent">最近</span><input class="wc-tb-input" type="text" placeholder="回车发送"><span class="wc-tb-btn" data-tb="popup">弹窗</span></div>';
+    el.innerHTML='<div class="wc-label"><div class="wc-meta"><div class="wc-name" title="点击查看连接信息"></div></div><span class="wc-close">×</span></div><div class="wc-info"></div><div class="wc-video-wrap"><video autoplay playsinline muted></video><div class="wc-status">连接中…</div></div><div class="wc-toolbar"><span class="wc-tb-btn" data-tb="back">返回</span><span class="wc-tb-btn" data-tb="home">主页</span><span class="wc-tb-btn" data-tb="recent">最近</span><input class="wc-tb-input" type="text" placeholder="回车发送"><span class="wc-tb-btn" data-tb="popup">弹窗</span><span class="wc-tb-btn" data-tb="redeploy" title="重启投屏 Agent：推流异常或更新 Agent 后一键恢复">重推</span></div>';
   }
   const nmEl=el.querySelector('.wc-name');nmEl.textContent=item.name;
   // 顶部只留一行实例名；api/adb 收进点击弹出的信息浮层
@@ -1332,6 +1333,24 @@ function autoFillWall(){
   if(added)wallAutoFilled=true;
 }
 function removeFromWall(adb){const i=wallItems.findIndex(w=>w.adbAddr===adb);if(i<0)return;wallItems.splice(i,1);renderWall()}
+// 一键重启投屏 Agent（stop+deploy，relay 按 MD5 自动推送最新二进制）
+async function redeployAgent(adb){
+  if(!adb)return;
+  toast('正在重启投屏 Agent（约 10~30 秒）…','info');
+  try{
+    const r=await fetch('/api/screen/redeploy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({adb_addr:adb})});
+    const j=await r.json().catch(()=>({}));
+    if(r.ok&&j.code===200){
+      toast('Agent 已重启，画面稍候自动恢复','success');
+      // 主动加速重连（推流被重启会断开，播放器本身也有自动重连兜底）
+      const c=wallCells.get(adb);
+      if(c&&c.player){c.player.reconnectDelay=1000;c.player.connect()}
+      if(screenModalState.adb===adb&&screenModalState.player){screenModalState.player.reconnectDelay=1000;screenModalState.player.connect()}
+    }else{
+      toast('Agent 重启失败: '+(j.msg||('HTTP '+r.status)),'error');
+    }
+  }catch(e){toast('Agent 重启失败: '+e,'error')}
+}
 function showAddToWallModal(){wallPending.clear();document.getElementById('wallContainerList').innerHTML='<div style="padding:12px;color:#8899aa">加载中...</div>';loadContainers().then(renderWallContainerList);document.getElementById('wallSearch').value='';showModal('addToWallModal')}
 function wallHostOf(adb){return (adb||'').split(':')[0]}
 function renderWallContainerList(){
@@ -1375,7 +1394,8 @@ document.addEventListener('click',function(e){
     if(tb==='back')wallSendTouch(item.adbAddr,'key',{keycode:'4'});
     else if(tb==='home')wallSendTouch(item.adbAddr,'key',{keycode:'3'});
     else if(tb==='recent')wallSendTouch(item.adbAddr,'key',{keycode:'187'});
-    else if(tb==='popup'){openScreenModal(item.adbAddr,item.name)}}
+    else if(tb==='popup'){openScreenModal(item.adbAddr,item.name)}
+    else if(tb==='redeploy'){redeployAgent(item.adbAddr)}}
 });
 // 分辨率由 Agent 启动参数（AGENT_MAX_SIZE）决定，WHEP 重连无法切换，已移除下拉
 // 内联输入：回车直发文本到设备（无需 prompt），发完清空并保持聚焦可连续输入
@@ -1518,6 +1538,7 @@ document.getElementById('screenModalBack').addEventListener('click',function(){s
 document.getElementById('screenModalHome').addEventListener('click',function(){screenSendTouch('key',{keycode:3})});
 document.getElementById('screenModalRecent').addEventListener('click',function(){screenSendTouch('key',{keycode:187})});
 document.getElementById('screenModalClose').addEventListener('click',closeScreenModal);
+document.getElementById('screenModalRedeploy').addEventListener('click',function(){redeployAgent(screenModalState.adb)});
 document.getElementById('screenModalInput').addEventListener('keydown',function(e){
   if(e.key!=='Enter')return;
   e.preventDefault();
