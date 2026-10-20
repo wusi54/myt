@@ -21,6 +21,7 @@ func main() {
 	jarPath := flag.String("jar", "/data/local/tmp/scrcpy-server.jar", "jar path")
 	transport := flag.String("transport", "tcp", "RTSP transport: tcp or udp")
 	keyFrameInterval := flag.Int("keyframe-interval", 0, "video keyframe interval seconds; 0 = every frame")
+	hbURL := flag.String("hb", "", "relay heartbeat websocket URL (optional)")
 	flag.Parse()
 
 	if *relayURL == "" {
@@ -29,12 +30,20 @@ func main() {
 	if *relayURL == "" {
 		log.Fatal("must specify -relay or RELAY_URL")
 	}
+	if *hbURL == "" {
+		*hbURL = os.Getenv("HB_URL")
+	}
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	log.Printf("[agent] starting, push=%s max_size=%d bitrate=%d transport=%s keyframe_interval=%ds", *relayURL, *maxSize, *bitrate, *transport, *keyFrameInterval)
+	log.Printf("[agent] starting, push=%s max_size=%d bitrate=%d transport=%s keyframe_interval=%ds hb=%q", *relayURL, *maxSize, *bitrate, *transport, *keyFrameInterval, *hbURL)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+
+	// 心跳通道：进程级保活，独立于 runOnce 的会话循环
+	stopHb := make(chan struct{})
+	defer close(stopHb)
+	startHeartbeat(*hbURL, stopHb)
 
 	for {
 		select {

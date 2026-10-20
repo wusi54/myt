@@ -90,6 +90,9 @@ MEDIAMTX_RTSP_URL = os.environ.get('MEDIAMTX_RTSP_URL', 'rtsp://113.105.100.58:8
 MEDIAMTX_WEBRTC_URL = os.environ.get('MEDIAMTX_WEBRTC_URL', 'http://113.105.100.58:8889')
 
 AGENT_TOKEN = os.environ.get('AGENT_TOKEN', '')
+# 设备可达的 relay WS 基地址（供设备端 Agent 回连心跳 /agent/hb），如 ws://1.2.3.4:9000。
+# 为空则 agent 不发心跳：relay 不做自动探活/重部署，由用户看画面手动「重启投屏」。
+RELAY_WS_URL = os.environ.get('RELAY_WS_URL', '').rstrip('/')
 # Agent 推流传输协议：tcp 为默认（RTP 内嵌 RTSP 连接，NAT/防火墙穿透稳定，已验证）。
 # udp 仅在同网段/无 NAT 的链路排障或低延迟场景下使用（外网 UDP 媒体端口映射不可靠）。
 AGENT_TRANSPORT = os.environ.get('AGENT_TRANSPORT', 'tcp')
@@ -111,6 +114,17 @@ agent_states_lock = threading.Lock()
 agent_deploy_locks = {}     # adb_addr -> per-device deploy lock
 agent_deploy_locks_lock = threading.Lock()
 
+# 心跳跟踪：adb_addr -> 最后一次心跳时间戳（替代 relay 主动 adb ps 探活）
+hb_last = {}
+hb_lock = threading.Lock()
+HB_STALE_SEC = 20           # 超过该秒数未收到心跳视为离线
+
+
+def _hb_age(adb_addr):
+    with hb_lock:
+        ts = hb_last.get(adb_addr)
+    return (time.time() - ts) if ts else None
+
 
 def _agent_deploy_lock(adb_addr):
     """Return a lock that serializes lifecycle operations for one device."""
@@ -127,19 +141,21 @@ class AgentManager:
         self._started = False
 
     def start(self):
-        """启动后台健康检查 + 空闲停止线程（仅启动一次）。"""
+        """启动后台线程（仅启动一次）。
+
+        健康检查改为 agent 主动心跳（/agent/hb），不再由 relay 每 N 秒对每台设备
+        adb connect + ps -ef 探活（避免 adb 风暴拖慢触控/部署）。也不再自动重部署——
+        Agent 掉线由用户看画面后手动「重启投屏」。此处仅保留空闲停止线程。
+        """
         with agent_states_lock:
             if self._started:
                 return
             self._started = True
-        self._health_thread = threading.Thread(target=self._health_check_loop, daemon=True,
-                                               name='agent-health')
         self._idle_thread = threading.Thread(target=self._idle_stop_loop, daemon=True,
                                              name='agent-idle-stop')
-        self._health_thread.start()
         self._idle_thread.start()
-        print('[agent-mgr] Agent 生命周期管理已启动 (health_check=%ds, idle_stop=%ds)' % (
-            AGENT_HEALTH_CHECK_SEC, AGENT_IDLE_STOP_SEC), flush=True)
+        print('[agent-mgr] Agent 生命周期管理已启动 (心跳保活 via /agent/hb, idle_stop=%ds)' % (
+            AGENT_IDLE_STOP_SEC,), flush=True)
 
     def get_state(self, adb_addr):
         with agent_states_lock:
@@ -209,26 +225,9 @@ class AgentManager:
     # ---- 后台循环 ----
 
     def _health_check_loop(self):
-        """每 AGENT_HEALTH_CHECK_SEC 检查一次已知设备的 Agent 存活，死掉则重新部署。"""
-        while True:
-            time.sleep(AGENT_HEALTH_CHECK_SEC)
-            with agent_states_lock:
-                addrs = list(agent_states.keys())
-            for addr in addrs:
-                try:
-                    if self.is_running(addr):
-                        self.set_state(addr, status='running')
-                    else:
-                        st = self.get_state(addr)
-                        if st['status'] == 'running':
-                            # 之前是 running，现在死了 -> 自愈重新部署
-                            print(f'[agent-mgr] {addr} Agent 非正常退出，自愈重新部署', flush=True)
-                            self.deploy(addr)
-                        elif st['status'] in ('unknown', 'error', 'stopped'):
-                            # 非运行状态，不主动部署（等用户触发或有订阅者时按需部署）
-                            pass
-                except Exception as e:
-                    print(f'[agent-mgr] {addr} 健康检查异常: {e}', flush=True)
+        """已废弃：健康检查改为 agent 主动心跳(/agent/hb)，不再 adb ps 探活、不自动重部署。
+        保留空实现以免外部引用报错；确认无引用后可删除。"""
+        return
 
     def _idle_stop_loop(self):
         """每 AGENT_HEALTH_CHECK_SEC 检查空闲设备，无订阅者超过 AGENT_IDLE_STOP_SEC 则停止 Agent。"""
@@ -445,12 +444,20 @@ def _deploy_agent(adb_addr, max_size=None):
         # Agent 推流 URL：MediaMTX RTSP （含 stream path）
         _max_size = int(max_size) if max_size else AGENT_MAX_SIZE
         push_url = f'{MEDIAMTX_RTSP_URL}/{_stream_name(adb_addr)}'
+        # 心跳 URL（可选）：让 Agent 回连 relay 上报存活，取代 relay 主动 adb ps 探活。
+        hb_url = ''
+        if RELAY_WS_URL:
+            hb_url = f"{RELAY_WS_URL}/agent/hb?adb_addr={adb_addr}"
+            if AGENT_TOKEN:
+                hb_url += f"&token={AGENT_TOKEN}"
         # 先单独清理旧进程（避免启动命令自匹配被 kill），再启动新进程。
         _kill_agent_process(adb_addr)
         # 整个 { ... } & 组合重定向到日志文件：后台 shell 不再持有 adb shell 的
         # stdout/stderr，否则 adb shell 会一直等后台进程退出（表现为部署超时）。
+        hb_arg = f"-hb '{hb_url}' " if hb_url else ""
         launch = (f"{{ chmod 755 {AGENT_DEVICE_PATH} && "
                   f"setsid nohup {AGENT_DEVICE_PATH} -relay '{push_url}' "
+                  f"{hb_arg}"
                   f"-transport {AGENT_TRANSPORT} -max-size {_max_size} -bitrate {AGENT_BITRATE} "
                   f"-keyframe-interval {AGENT_KEYFRAME_INTERVAL}; }} "
                   f">/data/local/tmp/myt-agent.log 2>&1 </dev/null &")
@@ -1276,6 +1283,40 @@ async def agent_handler(ws):
         threading.Thread(target=lambda: agent_mgr.deploy(adb_addr), daemon=True).start()
 
 
+async def agent_hb_handler(ws):
+    """Agent 心跳端点：设备端 Agent 周期性上报存活。
+
+    路径: /agent/hb?adb_addr=xxx&token=xxx
+    作用: 取代 relay 主动 adb ps 探活——Agent 每 5s 发一条文本心跳，relay 记录时间戳；
+    WS 断开/心跳超时即视为离线（仅供状态展示，不自动重部署，由用户手动「重启投屏」）。
+    """
+    from urllib.parse import urlparse, parse_qs
+    path = ws.request.path if hasattr(ws, 'request') else '/'
+    qs = parse_qs(urlparse(path).query)
+    adb_addr = (qs.get('adb_addr') or [''])[0]
+    token = (qs.get('token') or [''])[0]
+    if not adb_addr:
+        await ws.close(4000, 'missing_adb_addr')
+        return
+    if AGENT_TOKEN and token != AGENT_TOKEN:
+        await ws.close(4001, 'unauthorized')
+        return
+    with hb_lock:
+        hb_last[adb_addr] = time.time()
+    agent_mgr.set_state(adb_addr, status='running', stream_name=_agent_stream_name(adb_addr))
+    print(f'[relay][agent-hb] heartbeat connected adb_addr={adb_addr}', flush=True)
+    try:
+        async for _ in ws:
+            with hb_lock:
+                hb_last[adb_addr] = time.time()
+    except Exception:
+        pass
+    finally:
+        with hb_lock:
+            hb_last.pop(adb_addr, None)
+        print(f'[relay][agent-hb] heartbeat disconnected adb_addr={adb_addr}', flush=True)
+
+
 def build_input_cmd(adb_addr, d):
     """根据归一化坐标/参数构造设备端 `input` 命令；参数缺失/不支持返回 None。"""
     if not isinstance(d, dict):
@@ -1422,7 +1463,10 @@ def _agent_cmd(self, action):
 
 def _agent_status(self, adb_addr):
     st = agent_mgr.get_state(adb_addr)
-    st['running_now'] = agent_mgr.is_running(adb_addr)
+    # 用心跳新鲜度判定存活，不再每次查询都 adb ps（避免控制面 adb 压力）
+    age = _hb_age(adb_addr)
+    st['hb_age'] = round(age, 1) if age is not None else None
+    st['running_now'] = age is not None and age < HB_STALE_SEC
     if st['running_now'] and not st.get('stream_name'):
         st['stream_name'] = _agent_stream_name(adb_addr)
     stream = st.get('stream_name') or _agent_stream_name(adb_addr)
@@ -1465,9 +1509,11 @@ async def main():
     threading.Thread(target=_start_control_http, daemon=True).start()
 
     async def router(ws):
-        """按路径分发：/agent 走 Agent 上行流，其余走浏览器投屏。"""
+        """按路径分发：/agent/hb 心跳、/agent 上行流、其余浏览器投屏。"""
         path = ws.request.path if hasattr(ws, 'request') else '/'
-        if path.startswith('/agent'):
+        if path.startswith('/agent/hb'):
+            await agent_hb_handler(ws)
+        elif path.startswith('/agent'):
             await agent_handler(ws)
         else:
             await handler(ws)
