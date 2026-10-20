@@ -285,9 +285,24 @@ def upsert_container(c):
     ts = now()
     conn = get_db()
     try:
-        old = conn.execute('SELECT id FROM containers WHERE id=?', (c['id'],)).fetchone()
-        if old:
-            existing = conn.execute('SELECT fp_id,proxy_id,created FROM containers WHERE id=?', (c['id'],)).fetchone()
+        cid = c['id']
+        # 优先按主键 id 命中
+        row = conn.execute('SELECT id FROM containers WHERE id=?', (cid,)).fetchone()
+        if not row:
+            # id 漂移但物理容器没变（改名 / 早期接口留下 docker-id 导致 id 对不上）：
+            # 按稳定槽位 (device_ip,index_num) 归并，再退一步按 (device_ip,name)。
+            # 命中则把旧行 id 归并到新 cid（保留 fp_id/proxy_id/created 绑定），避免 INSERT 撞 UNIQUE 约束崩溃。
+            idx = c.get('index_num', 0)
+            if idx:
+                row = conn.execute('SELECT id FROM containers WHERE device_ip=? AND index_num=?',
+                                   (c.get('device_ip', ''), idx)).fetchone()
+            if not row:
+                row = conn.execute('SELECT id FROM containers WHERE device_ip=? AND name=?',
+                                   (c.get('device_ip', ''), c.get('name', ''))).fetchone()
+        if row:
+            old_id = row['id']
+            if old_id != cid:
+                conn.execute('UPDATE containers SET id=? WHERE id=?', (cid, old_id))
             conn.execute('''UPDATE containers SET device_id=?,device_ip=?,name=?,index_num=?,short_id=?,
                 adb_port=?,adb_addr=?,image=?,state=?,status=?,and_state=?,api_port=?,ctr_port=?,webrtc=?,
                 s5_addr=?,s5_status=?,resolution=?,data_path=?,updated=? WHERE id=?''',
@@ -295,7 +310,7 @@ def upsert_container(c):
                  c.get('short_id', ''), c.get('adb_port', ''), c.get('adb_addr', ''), c.get('image', ''),
                  c.get('state', ''), c.get('status', ''), c.get('and_state', 0), c.get('api_port', ''),
                  c.get('ctr_port', ''), c.get('webrtc', ''), c.get('s5_addr', ''), c.get('s5_status', 0),
-                 c.get('resolution', ''), c.get('data_path', ''), ts, c['id']))
+                 c.get('resolution', ''), c.get('data_path', ''), ts, cid))
         else:
             conn.execute('''INSERT INTO containers (id,device_id,device_ip,name,index_num,short_id,
                 adb_port,adb_addr,image,state,status,and_state,api_port,ctr_port,webrtc,s5_addr,s5_status,

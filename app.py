@@ -548,7 +548,10 @@ def _sync_one_device(dev):
             if isinstance(v, str) and v.strip():
                 raw_name = v.strip()
                 break
-        cid = c.get('id') or f"{dev['ip']}:{raw_name or c.get('index')}"
+        # 主键用稳定槽位 ip:index（容器在设备上的序号，改名不变），避免用会变的 name 导致 id 漂移；
+        # 无 index 时才退化为 ip:name。
+        _idx = c.get('index', 0)
+        cid = c.get('id') or (f"{dev['ip']}:{_idx}" if _idx else f"{dev['ip']}:{raw_name}")
         seen.add(cid)
         adb_port = str(c.get('adb') or '')
         s5 = c.get('s5') or {}
