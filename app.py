@@ -850,31 +850,122 @@ def api_container_s5_query(cid):
 
 
 # ==================== 真机参数库 ====================
+# 机型/型号在真机参数文件里的常见键，按优先级取值。
+# 注意：不含 ro.product.vendor.model —— 那是芯片平台代号（如 "Pineapple for arm64"），不是机型。
+BRAND_KEYS = ['ro.product.brand', 'ro.product.odm.brand', 'ro.product.vendor.brand',
+              'ro.product.system.brand', 'ro.product.manufacturer', 'brand', 'manufacturer']
+MODEL_KEYS = ['ro.product.model', 'ro.product.name', 'ro.product.odm.model',
+              'ro.product.market.name', 'model', 'product_name', 'product']
+_BAD_VAL = ('unknown', 'null', 'none', '')
+
+
+def _flatten_props(obj):
+    """把真机参数文件摊平成 {key: value}。
+
+    实际文件（不管扩展名是 .json/.dat/.bin，内容都是 JSON）长这样：
+        {"env":[{"name":"PropRw","description":"ro.product.model","value":"DNP-AN00"}, ...],
+         "sysinfo":{...}, "deviceId":"...", ...}
+    机型/型号藏在 env 里的 Android 属性中，所以必须把 env 展开，
+    否则顶层直接取 brand/model 永远取不到（历史 bug：机型列一直为空）。
+    """
+    flat = {}
+    if not isinstance(obj, dict):
+        return flat
+    for k, v in obj.items():
+        if isinstance(v, (str, int, float)) and not isinstance(v, bool) and k != 'env':
+            flat[str(k)] = str(v)
+    env = obj.get('env')
+    if isinstance(env, list):
+        for item in env:
+            if not isinstance(item, dict):
+                continue
+            key = item.get('description') or item.get('name') or ''
+            val = item.get('value')
+            if key and isinstance(val, (str, int, float)) and not isinstance(val, bool):
+                flat[str(key)] = str(val)
+    return flat
+
+
 def _parse_param_content(raw, filename):
-    """从文件内容解析真机参数字典。"""
-    data = {}
-    name = filename.lower()
-    try:
-        if name.endswith('.json'):
-            obj = json.loads(raw.decode('utf-8', 'ignore'))
+    """解析真机参数文件，返回摊平后的 {key: value}。
+
+    按「内容」而不是扩展名判断格式：.dat/.bin 实际也是 JSON，
+    之前只认 .json/.txt，导致批量导入的 .dat 全部解析成空字典。
+    """
+    text = raw.decode('utf-8', 'ignore').strip() if isinstance(raw, (bytes, bytearray)) else (raw or '')
+    # 1) JSON（任何扩展名都先试）
+    if text[:1] in ('{', '['):
+        try:
+            obj = json.loads(text)
             if isinstance(obj, dict):
-                data = obj
-        elif name.endswith('.txt'):
-            for line in raw.decode('utf-8', 'ignore').splitlines():
-                if '=' in line:
-                    k, v = line.split('=', 1)
-                    data[k.strip()] = v.strip()
-    except Exception:
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
+                flat = _flatten_props(obj)
+                if flat:
+                    return flat
+        except Exception:
+            pass
+    # 2) key=value 文本（支持 ro.product.model=DNP-AN00 这类属性行）
+    data = {}
+    for line in text.splitlines():
+        line = line.strip().rstrip(',').strip()
+        if '=' in line:
+            k, v = line.split('=', 1)
+            k = k.strip().strip('"').strip()
+            v = v.strip().strip('"').rstrip(',').strip()
+            if k:
+                data[k] = v
     return data
 
 
 def _enrich_from_data(data):
-    brand = data.get('brand') or data.get('manufacturer') or ''
-    model = data.get('model') or data.get('product') or ''
-    return brand, model
+    """从摊平后的属性里取机型(brand)/型号(model)。"""
+    def pick(keys):
+        for k in keys:
+            v = str(data.get(k) or '').strip()
+            if v and v.lower() not in _BAD_VAL:
+                return v
+        return ''
+    return pick(BRAND_KEYS), pick(MODEL_KEYS)
+
+
+def _read_param_file(p):
+    """读取参数记录落盘的文件内容（用于重新识别机型）。"""
+    try:
+        files = json.loads(p.get('files') or '[]')
+    except Exception:
+        return b''
+    for f in files:
+        path = (f or {}).get('path') or ''
+        if path and os.path.exists(path):
+            try:
+                with open(path, 'rb') as r:
+                    return r.read()
+            except Exception:
+                continue
+    return b''
+
+
+def _reparse_real_params():
+    """重新识别已导入参数的机型/型号（修复前导入的历史数据机型为空）。"""
+    fixed = []
+    for p in db.list_real_params():
+        brand, model = (p.get('brand') or '').strip(), (p.get('model') or '').strip()
+        raw = _read_param_file(p)
+        if not raw:
+            continue
+        data = _parse_param_content(raw, '')
+        nb, nm = _enrich_from_data(data)
+        fields = {}
+        if not brand and nb:
+            fields['brand'] = nb
+        if not model and nm:
+            fields['model'] = nm
+        # 名称还是文件名（xxx.dat）时，换成「机型 型号」，列表里一眼能认
+        if (nb or nm) and re.search(r'\.(json|dat|bin|txt)$', (p.get('name') or ''), re.I):
+            fields['name'] = ' '.join(x for x in (nb, nm) if x).strip()
+        if fields:
+            db.update_real_param(p['id'], **fields)
+            fixed.append({'id': p['id'], 'brand': nb, 'model': nm})
+    return fixed
 
 
 @app.route('/api/real_params', methods=['GET'])
@@ -902,6 +993,8 @@ def api_real_param_upload():
     if 'file' not in request.files:
         return err('未选择文件')
     files = request.files.getlist('file')
+    # 批量导入时才允许统一命名；单文件用「机型 型号」更好认
+    common_name = (request.form.get('name') or '').strip() if len(files) > 1 else ''
     added, skipped = [], []
     for f in files:
         if not f.filename:
@@ -917,19 +1010,36 @@ def api_real_param_upload():
             w.write(raw)
         data = _parse_param_content(raw, f.filename)
         brand, model = _enrich_from_data(data)
+        # 名称优先级：统一命名 > 机型 型号 > 文件名
+        dev_name = ' '.join(x for x in (brand, model) if x).strip()
+        name = common_name or dev_name or f.filename
         rec = db.add_real_param({
-            'md5': md5, 'uuid': md5, 'name': request.form.get('name') or f.filename,
+            'md5': md5, 'uuid': md5, 'name': name,
             'brand': brand, 'model': model, 'status': 'idle', 'in_use': 0,
             'data': json.dumps(data, ensure_ascii=False),
             'files': json.dumps([{'original_name': f.filename, 'stored_name': safe,
                                   'path': path, 'size': len(raw)}], ensure_ascii=False),
         })
-        added.append({'id': rec['id'], 'name': rec['name'], 'md5': md5})
+        item = {'id': rec['id'], 'name': rec['name'], 'md5': md5,
+                'brand': brand, 'model': model, 'file': f.filename}
+        if not data:
+            item['warn'] = '未能解析出参数字段（文件可能不是真机参数）'
+        elif not (brand or model):
+            item['warn'] = '未识别到机型/型号'
+        added.append(item)
     db.add_operation_log({'op_type': 'realparam', 'target': '参数库',
                           'detail': f'导入 {len(added)} 条，跳过 {len(skipped)} 条', 'status': 'success'})
     return ok({'added': added, 'skipped': skipped, 'added_count': len(added),
                'skipped_count': len(skipped)},
               f'导入 {len(added)} 条，跳过 {len(skipped)} 条')
+
+
+@app.route('/api/real_params/reparse', methods=['POST'])
+def api_real_param_reparse():
+    """重新识别机型/型号（用于修复前已导入、机型为空的历史参数）。"""
+    fixed = _reparse_real_params()
+    return ok({'fixed': fixed, 'fixed_count': len(fixed)},
+              f'已重新识别 {len(fixed)} 条' if fixed else '没有需要重新识别的参数')
 
 
 @app.route('/api/real_params', methods=['POST'])
@@ -1908,6 +2018,11 @@ def _start_proxy_probe():
 if os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
     try:
         _start_proxy_probe()
+    except Exception:
+        pass
+    # 兼容历史数据：机型/型号为空时，按落盘文件重新识别一次
+    try:
+        _reparse_real_params()
     except Exception:
         pass
 

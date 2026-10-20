@@ -199,6 +199,7 @@ tr:hover td{background:#1e2e3e}
 <span class="hint">文件内容 MD5 唯一去重</span>
 <button class="btn btn-sm btn-outline" onclick="showRealParamModal()">手动新增</button>
 <button class="btn btn-sm btn-outline" onclick="showModal('uploadParamModal')">上传参数(可批量)</button>
+<button class="btn btn-sm btn-outline" onclick="reparseParams()" title="对机型/型号为空的历史参数重新识别">重新识别机型</button>
 <button class="btn btn-sm btn-warning" onclick="batchApplyParams()">批量应用</button>
 <button class="btn btn-sm btn-danger" onclick="batchDeleteParams()">批量删除</button>
 </div></div>
@@ -804,13 +805,24 @@ function renderDetailInfo(){
   const rows=[['容器ID',c.id],['容器名称',c.name],['短ID',c.short_id],['设备IP',c.device_ip],['索引',c.index_num],
     ['状态',c.state],['运行状态',c.status],['ADB地址',c.adb_addr],['ADB端口',c.adb_port],['API端口',c.api_port],
     ['CTR端口',c.ctr_port],['分辨率',c.resolution],['镜像',c.image],['容器IP',c.ip||''],
-    ['代理配置',c.s5_addr||(px?px.name:'')],['真机参数',fp?fp.name:''],['数据目录',c.data_path],['更新时间',c.updated]];
+    ['代理配置',c.s5_addr||(px?px.name:'')],
+    ['真机参数',fp?(fp.name+'　MD5:'+((fp.md5||fp.uuid||'').substring(0,12))):''],
+    ['数据目录',c.data_path],['更新时间',c.updated]];
   rows.forEach(([k,v])=>{h+=`<tr><td style="color:#8899aa;width:110px">${k}</td><td style="word-break:break-all">${esc(v==null?'-':v)}</td></tr>`});
   h+='</table>';document.getElementById('detailInfoContent').innerHTML=h;
 }
 function populateDetailSelects(){
+  // 真机参数下拉：与代理下拉保持一致的语义（MD5 + 已应用/未应用 + 被占用则禁用）
   document.getElementById('detailFpSelect').innerHTML='<option value="">-- 选择真机参数 --</option>'+
-    realParams.filter(f=>f.status==='idle'||f.id===currentContainer.fp_id).map(f=>`<option value="${f.id}">${esc(f.name)} (${esc(f.model||f.brand||'')})</option>`).join('');
+    realParams.map(f=>{
+      const isCur=f.id===currentContainer.fp_id;
+      const appliedOther=f.in_use && f.instance_id!==currentContainer.id;
+      const tag=isCur?'已应用·本容器':appliedOther?('已应用·'+(f.instance_name||f.instance_id)):'未应用';
+      const disabled=!isCur && appliedOther;
+      const md5=f.md5||f.uuid||'';
+      const dev=[f.brand,f.model].filter(Boolean).join(' ');
+      return `<option value="${f.id}" ${disabled?'disabled':''} title="MD5: ${esc(md5)}">${esc(f.name)}${dev?' ('+esc(dev)+')':''} [${esc(md5.substring(0,8))}] [${esc(tag)}]</option>`;
+    }).join('');
   document.getElementById('detailProxySelect').innerHTML='<option value="">-- 选择代理 --</option>'+
     proxies.map(p=>{
       const isCur=p.id===currentContainer.proxy_id;
@@ -896,8 +908,22 @@ async function uploadParams(){
   if(!files.length){toast('请选择文件','error');return}
   const fd=new FormData();for(const f of files)fd.append('file',f);
   const d=await api('/api/real_params/upload','POST',fd,true);
-  const res=document.getElementById('uploadParamResult');res.style.display='block';res.textContent=JSON.stringify(d.data||d,null,2);
+  const res=document.getElementById('uploadParamResult');res.style.display='block';
+  const data=d.data||{};
+  let h='';
+  (data.added||[]).forEach(a=>{
+    h+=`<div style="color:#3ad07f">✓ ${esc(a.file||a.name)} → ${esc(a.brand||'?')} / ${esc(a.model||'?')} · MD5 ${esc((a.md5||'').substring(0,8))}`
+      + (a.warn?`<span style="color:#ffb020">（${esc(a.warn)}）</span>`:'')+`</div>`;
+  });
+  (data.skipped||[]).forEach(s=>{
+    h+=`<div style="color:#ffb020">- ${esc(s.name)} 跳过：${esc(s.reason)}</div>`;
+  });
+  res.innerHTML = h || `<pre>${esc(JSON.stringify(d,null,2))}</pre>`;
   toast(d.msg,d.code===200?'success':'error');loadRealParams();
+}
+async function reparseParams(){
+  const d=await api('/api/real_params/reparse','POST',{});
+  toast(d.msg||'已重新识别',d.code===200?'success':'error');loadRealParams();
 }
 function showRealParamModal(){['rp_name','rp_brand','rp_model','rp_imei','rp_imsi','rp_androidId','rp_iccid','rp_serialNum','rp_wifiMac','rp_btaddr','rp_oaid','rp_aaid','rp_vaid'].forEach(id=>document.getElementById(id).value='');showModal('realParamModal')}
 async function saveRealParam(){
