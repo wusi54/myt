@@ -22,6 +22,7 @@ x-app: &app
 
 services:
   # 反向代理 + TLS 终止（对外唯一入口，HTTPS 9111）
+  # nginx.conf 由模板在容器启动时注入 MTX_WEBRTC_UP(.env) 生成，避免部署覆盖环境配置
   nginx:
     image: nginx:1.27-alpine
     container_name: myt-nginx
@@ -31,11 +32,19 @@ services:
       - relay
     ports:
       - "9111:9111"
+    environment:
+      # 本地联调默认 192.168.10.43:8889；生产在 .env 覆盖为 113.105.100.58:8889
+      - MTX_WEBRTC_UP=${MTX_WEBRTC_UP:-192.168.10.43:8889}
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx.conf.template:/etc/nginx/nginx.conf.template:ro
       - ./certs:/etc/nginx/certs:ro
     networks:
       - myt-net
+    # 用 .env 的 MTX_WEBRTC_UP 替换模板占位符生成 /etc/nginx/nginx.conf 后启动
+    command:
+      - /bin/sh
+      - -c
+      - "sed 's|__MTX_WEBRTC_UP__|$$MTX_WEBRTC_UP|g' /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf && exec nginx -g 'daemon off;'"
 
   # Web 服务（Flask + waitress）
   web:
