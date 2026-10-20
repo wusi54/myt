@@ -83,9 +83,13 @@ class MytClient:
 
     # ---------- 容器 ----------
     def list_containers(self, ip):
-        # 正确的容器列表接口是 /get/{ip}（不是 /dc_api/v1/list/{ip}）；
-        # 后者返回的不是设备真实容器数据，会导致平台实例名与设备真实名对不上。
-        # 该接口需带 accept: application/json 头，否则可能不返回 JSON。
+        # 主用 /dc_api/v1/list/{ip}：返回完整字段（adb 端口/id/image/各端口/s5/分辨率 + 正确实例名）。
+        # 投屏/群控/触控都依赖 adb 端口，必须从这里取（/get 只返回 Names/State/index，没有 adb，
+        # 用 /get 同步会把 adb_addr 覆盖成空，导致投屏按钮失效）。
+        # 个别固件若无 /dc_api/v1/list，再退化 /get/{ip}（仅名字/状态）。
+        r = self.get(f'/dc_api/v1/list/{ip}', headers={'accept': 'application/json'})
+        if r.get('code') == 200 and ('data' in r or 'msg' in r):
+            return r
         return self.get(f'/get/{ip}', headers={'accept': 'application/json'})
 
     def android_detail(self, ip, name):
