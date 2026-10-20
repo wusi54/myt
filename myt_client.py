@@ -116,16 +116,16 @@ class MytClient:
 
     # ---------- 设备信息 / 真机参数 ----------
     def set_custom_devinfo(self, ip, name, data):
-        """自定义设备参数信息。data 为字段字典。"""
-        params = {}
-        for k in DEVINFO_QUERY_FIELDS:
-            if data.get(k):
-                params[k] = data[k]
-        # 完整字段放进 devinfo body
-        body_fields = {k: v for k, v in data.items() if v not in (None, '')}
-        payload = {'devinfo': json.dumps(body_fields, ensure_ascii=False)}
-        return self.post(f'/and_api/v1/set_custom_devinfo/{ip}/{name}',
-                         params=params, data=payload)
+        """自定义设备参数信息：整包指纹 JSON 直接作为请求 body。
+
+        对应 myt 接口：
+            POST {base}/set_custom_devinfo/{设备IP}/{实例名}
+            content-type: application/json
+            body = 完整指纹 JSON（env/sensors/cpuinfo/cpuinfos/deviceId/sysinfo/telinfo/...）
+        早期实现错误地给路径加了 /and_api/v1/ 前缀、把指纹包进 {'devinfo': ...}、
+        并附加扁平字段 query params，导致 myt 返回 code 3「自定义设备信息设置失败」。
+        """
+        return self.post(f'/set_custom_devinfo/{ip}/{name}', data=data)
 
     def random_devinfo(self, ip, name, **opts):
         return self.get(f'/and_api/v1/random_devinfo/{ip}/{name}', params=opts)
