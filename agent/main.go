@@ -2,14 +2,12 @@ package main
 
 import (
 	"encoding/binary"
-	"errors"
 	"flag"
 	"log"
 	"net"
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 )
@@ -108,36 +106,29 @@ func runOnce(relayURL string, maxSize, bitrate int, jarPath, transport string, k
 
 	log.Printf("[agent] connected to MediaMTX: %s", relayURL)
 
-	// scrcpy 进程死亡看门狗：scrcpy-server 一旦退出，无论帧循环当前阻塞在读/推/重连哪一步，
-	// 都立即结束本次会话，由 main 循环重新拉起 scrcpy。
-	// 之前 scrcpy 在 RTSP 重连分支或推流阻塞时死亡，agent 无法及时感知，
-	// 表现为“scrcpy 退出后一直不重启”（relay 只管 myt-agent 二进制，不管其拉起的子进程）。
-	death := make(chan struct{})
-	var deathOnce sync.Once
-	closeDeath := func() { deathOnce.Do(func() { close(death) }) }
-	go func() {
-		select {
-		case e := <-server.exitCh:
-			if e != nil {
-				log.Printf("[agent] scrcpy-server 异常退出: %v（详见 scrcpy-agent.log 的 Java 崩溃栈）", e)
-			}
-			log.Printf("[agent] scrcpy-server 进程已退出，强制结束本次会话以便重启采集")
-			reader.Close() // 打断阻塞中的 Read
-			closeDeath()
-		case <-server.doneCh:
-			// 主动 Stop（正常结束会话），无需处理
-		}
-	}()
-	defer closeDeath()
-
+	// 帧循环：带读超时 + 每轮检查 scrcpy 进程存活（单 goroutine，无并发）。
+	// 旧实现用「每帧起一个 goroutine 读 + death 通道 + 看门狗/defer 多处并发 Close 同一个
+	// UnixConn」，并发下会内存损坏导致 Go fatal error 必崩。改为读超时回到循环体检查存活，
+	// 既保留“scrcpy 退出能及时感知并重启”的语义，又彻底消除并发。
 	pump := &framePump{}
-	buf := make([]byte, 0)
+	buf := make([]byte, 0, 256*1024)
 	tmp := make([]byte, 64*1024)
 	for {
-		n, err := readFrame(reader, tmp, death)
+		// scrcpy 死亡看门狗：每轮检查进程存活，退出则结束本次会话由 main 重启采集
+		if !server.alive() {
+			log.Printf("[agent] scrcpy-server 进程已退出，结束本次会话以便重启采集")
+			return
+		}
+		// 1s 读超时：静态画面无新帧时不会永久阻塞，能周期性回到上面检查存活
+		_ = reader.SetReadDeadline(time.Now().Add(1 * time.Second))
+		n, err := reader.Read(tmp)
 		if err != nil {
-			if err == errSessionEnded {
-				log.Printf("[agent] 会话因 scrcpy 退出而结束，重启采集")
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				continue // 只是暂无新帧，继续等
+			}
+			// 读错误时再确认一次：scrcpy 退出常表现为读错误
+			if !server.alive() {
+				log.Printf("[agent] scrcpy-server 进程已退出，结束本次会话以便重启采集")
 				return
 			}
 			log.Printf("[agent] read frame error: %v, restarting scrcpy-server...", err)
@@ -159,11 +150,9 @@ func runOnce(relayURL string, maxSize, bitrate int, jarPath, transport string, k
 		reconnected := false
 		for attempt := 1; attempt <= 12; attempt++ {
 			// scrcpy 已退出则放弃重连，直接重启会话（避免卡在 ~90s 重连窗口）
-			select {
-			case <-death:
+			if !server.alive() {
 				log.Printf("[agent] scrcpy 已退出，放弃 RTSP 重连，重启会话")
 				return
-			default:
 			}
 			wait := reconnectBackoff(attempt)
 			log.Printf("[agent] RTSP 连接断开，%v 后重连 (第 %d/12 次)...", wait, attempt)
@@ -188,27 +177,6 @@ func runOnce(relayURL string, maxSize, bitrate int, jarPath, transport string, k
 		}
 		pump.resetErrors()
 		buf = buf[:0] // 丢弃断连期间积攒的半帧数据，避免错位解析
-	}
-}
-
-// errSessionEnded 表示会话因 scrcpy 进程退出被看门狗主动结束。
-var errSessionEnded = errors.New("session ended by scrcpy death")
-
-// readFrame 在阻塞 Read 外包一层，使 scrcpy 死亡看门狗(death)能抢占，
-// 避免帧循环卡在 reader.Read 时无法感知 scrcpy 已退出。
-func readFrame(conn net.Conn, tmp []byte, death <-chan struct{}) (int, error) {
-	type res struct{ n int; err error }
-	ch := make(chan res, 1)
-	go func() {
-		n, err := conn.Read(tmp)
-		ch <- res{n, err}
-	}()
-	select {
-	case r := <-ch:
-		return r.n, r.err
-	case <-death:
-		conn.Close() // 确保后台 Read goroutine 退出
-		return 0, errSessionEnded
 	}
 }
 
