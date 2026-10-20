@@ -112,6 +112,13 @@ tr:hover td{background:#1e2e3e}
 #screenModal .screen-toolbar .wc-tb-btn.screen-close:hover{background:#3a1a1a;color:#ff8b8b}
 #screenModal .screen-toolbar input{background:#0f1923;border:1px solid #3a4a5a;border-radius:3px;color:#fff;font-size:12px;padding:8px 8px;width:110px;min-width:0}
 #screenModal .screen-toolbar input:focus{outline:none;border-color:#00d4ff}
+#screenModal .screen-toolbar .wc-tb-btn.screen-stop{color:#f0ad4e;border-color:#5a4a2a}
+#screenModal .screen-toolbar .wc-tb-btn.screen-stop:hover{background:#3a2e1a;color:#ffc966}
+/* 设备详情面板：代理/机型/ADB/API 等信息 */
+#screenModal .screen-info{flex:0 0 auto;background:#0f1923;border:1px solid #2a3a4a;border-radius:6px;padding:8px 10px;font-size:11px;color:#9fb3c8;max-height:32%;overflow-y:auto}
+#screenModal .screen-info .si-row{display:flex;gap:8px;line-height:1.7}
+#screenModal .screen-info .si-k{flex:0 0 52px;color:#5a6a7a;text-align:right}
+#screenModal .screen-info .si-v{flex:1;min-width:0;word-break:break-all;color:#cfe3f5}
 .wall-device{border-bottom:1px solid #22303e}
 .wall-device-head{display:flex;align-items:center;gap:6px;padding:6px 8px;background:#132030}
 .wall-device-arrow{color:#00d4ff;cursor:pointer;width:12px;display:inline-block;user-select:none;font-size:10px}
@@ -468,6 +475,7 @@ tr:hover td{background:#1e2e3e}
 <div id="screenModal" class="modal-overlay">
   <div class="screen-box">
     <div class="screen-title" id="screenModalTitle"></div>
+    <div class="screen-info" id="screenModalInfo" style="display:none"></div>
     <div class="screen-video-wrap">
       <video id="screenModalVideo" autoplay playsinline muted></video>
       <div class="wc-status" id="screenModalStatus">连接中…</div>
@@ -478,9 +486,11 @@ tr:hover td{background:#1e2e3e}
       <span class="wc-tb-btn" id="screenModalHome">主页</span>
       <span class="wc-tb-btn" id="screenModalRecent">最近</span>
   <input id="screenModalInput" type="text" placeholder="回车发送文本">
-      <span class="wc-tb-btn" id="screenModalRedeploy" title="重启投屏 Agent：推流异常或更新 Agent 后一键恢复">重推流</span>
-      <span class="wc-tb-btn screen-close" id="screenModalClose">关闭</span>
+      <span class="wc-tb-btn" id="screenModalInfoToggle">详情</span>
+      <span class="wc-tb-btn" id="screenModalRedeploy" title="重启投屏 Agent：推流异常或更新 Agent 后一键恢复">重启投屏</span>
+      <span class="wc-tb-btn screen-stop" id="screenModalStop" title="停止设备端 Agent 推流，释放设备资源">关闭投屏</span>
       <span class="wc-tb-btn" id="screenModalKbToggle">⌨ 键盘</span>
+      <span class="wc-tb-btn screen-close" id="screenModalClose" title="收起弹窗（不影响投屏）">收起</span>
     </div>
     <input id="screenModalKbInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="position:absolute;opacity:0;width:1px;height:1px;bottom:0;left:0;border:0;padding:0">
   </div>
@@ -1342,14 +1352,69 @@ async function redeployAgent(adb){
     const j=await r.json().catch(()=>({}));
     if(r.ok&&j.code===200){
       toast('Agent 已重启，画面稍候自动恢复','success');
-      // 主动加速重连（推流被重启会断开，播放器本身也有自动重连兜底）
+      // 主动加速重连；若播放器已被"关闭投屏"销毁，则重建后再连
       const c=wallCells.get(adb);
-      if(c&&c.player){c.player.reconnectDelay=1000;c.player.connect()}
-      if(screenModalState.adb===adb&&screenModalState.player){screenModalState.player.reconnectDelay=1000;screenModalState.player.connect()}
+      if(c){
+        if(!c.player||c.player.destroyed){c.player=new WallPlayer(c.video,adb)}
+        c.player.reconnectDelay=1000;c.player.connect();
+      }
+      if(screenModalState.adb===adb){
+        if(!screenModalState.player||screenModalState.player.destroyed){screenModalState.player=new WallPlayer(document.getElementById('screenModalVideo'),adb)}
+        screenModalState.player.reconnectDelay=1000;screenModalState.player.connect();
+      }
     }else{
       toast('Agent 重启失败: '+(j.msg||('HTTP '+r.status)),'error');
     }
   }catch(e){toast('Agent 重启失败: '+e,'error')}
+}
+// 关闭投屏：停止设备端 Agent 推流（容器保留，仅停流省资源；点重启投屏可恢复）
+async function stopAgentStream(adb){
+  if(!adb)return;
+  toast('正在关闭投屏…','info');
+  try{
+    const r=await fetch('/api/screen/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({adb_addr:adb})});
+    const j=await r.json().catch(()=>({}));
+    if(r.ok&&j.code===200){
+      toast('投屏已关闭（点重启投屏可恢复）','success');
+      // 销毁本地播放器，避免它的自动重连把 Agent 再次拉起
+      const c=wallCells.get(adb);
+      if(c&&c.player){c.player.destroy();c.player._status('投屏已关闭','#8899aa')}
+      if(screenModalState.adb===adb&&screenModalState.player){
+        screenModalState.player.destroy();screenModalState.player=null;
+        const st=document.getElementById('screenModalStatus');
+        if(st){st.textContent='投屏已关闭（点重启投屏恢复）';st.style.color='#8899aa';st.style.display='flex'}
+      }
+    }else{
+      toast('关闭投屏失败: '+(j.msg||('HTTP '+r.status)),'error');
+    }
+  }catch(e){toast('关闭投屏失败: '+e,'error')}
+}
+// 设备详情面板：代理/机型/ADB/API 等（打开弹窗时预取，点"详情"即显示）
+async function loadScreenModalInfo(adb){
+  const el=document.getElementById('screenModalInfo');
+  if(!el)return;
+  el.innerHTML='<div style="color:#5a6a7a">加载中…</div>';
+  try{
+    const r=await fetch('/api/screen/device_info?adb_addr='+encodeURIComponent(adb));
+    const j=await r.json();
+    if(j.code===200&&j.data){el.innerHTML=renderScreenInfo(j.data);return}
+    el.innerHTML='<div style="color:#5a6a7a">未查询到设备信息</div>';
+  }catch(e){el.innerHTML='<div style="color:#5a6a7a">查询失败</div>'}
+}
+function renderScreenInfo(d){
+  const rows=[];
+  const add=(k,v)=>{if(v)rows.push('<div class="si-row"><span class="si-k">'+esc(k)+'</span><span class="si-v">'+esc(v)+'</span></div>')};
+  add('名称',d.name);
+  add('机型',[d.brand,d.model].filter(Boolean).join(' '));
+  add('真机参数',d.fp_name);
+  add('代理',d.proxy_text);
+  add('ADB',d.adb_addr);
+  add('API',d.api_url);
+  add('分辨率',d.resolution);
+  add('镜像',d.image);
+  add('所属设备',d.device_ip);
+  add('Agent',d.agent_status);
+  return rows.join('')||'<div style="color:#5a6a7a">（无更多信息）</div>';
 }
 function showAddToWallModal(){wallPending.clear();document.getElementById('wallContainerList').innerHTML='<div style="padding:12px;color:#8899aa">加载中...</div>';loadContainers().then(renderWallContainerList);document.getElementById('wallSearch').value='';showModal('addToWallModal')}
 function wallHostOf(adb){return (adb||'').split(':')[0]}
@@ -1470,6 +1535,9 @@ function openScreenModal(adb,name){
   const video=document.getElementById('screenModalVideo');
   video.dataset.adb=adb;
   video.srcObject=null;
+  const info=document.getElementById('screenModalInfo');
+  if(info){info.style.display='none';info.innerHTML=''}
+  loadScreenModalInfo(adb);   // 预取设备详情，点"详情"即显示
   if(screenModalState.player)screenModalState.player.destroy();
   const p=new WallPlayer(video,adb);
   screenModalState.player=p;
@@ -1539,6 +1607,11 @@ document.getElementById('screenModalHome').addEventListener('click',function(){s
 document.getElementById('screenModalRecent').addEventListener('click',function(){screenSendTouch('key',{keycode:187})});
 document.getElementById('screenModalClose').addEventListener('click',closeScreenModal);
 document.getElementById('screenModalRedeploy').addEventListener('click',function(){redeployAgent(screenModalState.adb)});
+document.getElementById('screenModalStop').addEventListener('click',function(){stopAgentStream(screenModalState.adb)});
+document.getElementById('screenModalInfoToggle').addEventListener('click',function(){
+  const el=document.getElementById('screenModalInfo');
+  if(el)el.style.display=(el.style.display==='block')?'none':'block';
+});
 document.getElementById('screenModalInput').addEventListener('keydown',function(e){
   if(e.key!=='Enter')return;
   e.preventDefault();

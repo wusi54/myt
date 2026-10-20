@@ -1735,6 +1735,62 @@ def screen_redeploy():
     return jsonify(result), code
 
 
+@app.route('/api/screen/stop', methods=['POST'])
+def screen_stop():
+    """关闭投屏：停止设备端 Agent（停止推流，释放设备资源）。页面"关闭投屏"按钮调用。"""
+    d = request.json or {}
+    adb_addr = (d.get('adb_addr') or '').strip()
+    if not adb_addr:
+        return err('missing adb_addr')
+    result, code = _relay_agent('stop', adb_addr)
+    if code == 200:
+        c = db.row('SELECT * FROM containers WHERE adb_addr=?', (adb_addr,))
+        if c:
+            db.update_container(c['id'], agent_status='stopped')
+        return ok({'adb_addr': adb_addr})
+    return jsonify(result), code
+
+
+@app.route('/api/screen/device_info')
+def screen_device_info():
+    """投屏弹窗"详情"面板：按 adb_addr 聚合容器、所属设备、代理、真机参数信息。"""
+    adb_addr = (request.args.get('adb_addr') or '').strip()
+    if not adb_addr:
+        return err('missing adb_addr')
+    data = {'adb_addr': adb_addr}
+    c = db.row('SELECT * FROM containers WHERE adb_addr=?', (adb_addr,))
+    if c:
+        data.update({
+            'container_id': c.get('id') or '',
+            'name': c.get('name') or '',
+            'device_ip': c.get('device_ip') or '',
+            'image': c.get('image') or '',
+            'resolution': c.get('resolution') or '',
+            'state': c.get('state') or '',
+            'agent_status': c.get('agent_status') or '',
+            'agent_stream_name': c.get('agent_stream_name') or '',
+        })
+        devs = db.list_devices()
+        dev = next((d for d in devs if d.get('id') == c.get('device_id')), None) \
+            or next((d for d in devs if d.get('ip') == c.get('device_ip')), None)
+        data['api_url'] = (dev.get('url') or '') if dev else ''
+        # 代理：优先代理池记录，其次容器上的 s5_addr
+        px = db.get_proxy(c.get('proxy_id')) if c.get('proxy_id') else None
+        if px:
+            addr = f"{px.get('ip', '')}:{px.get('port', '')}"
+            extra = ' '.join(x for x in [px.get('region', ''), px.get('isp', '')] if x)
+            data['proxy_text'] = f"{px.get('name') or addr}（{addr}）" + (f' {extra}' if extra else '')
+        elif c.get('s5_addr'):
+            data['proxy_text'] = c['s5_addr']
+        # 机型：真机参数库
+        fp = db.get_real_param(c.get('fp_id')) if c.get('fp_id') else None
+        if fp:
+            data['brand'] = fp.get('brand') or ''
+            data['model'] = fp.get('model') or ''
+            data['fp_name'] = fp.get('name') or ''
+    return ok(data)
+
+
 # ==================== Agent 生命周期管理 ====================
 def _relay_agent(action, adb_addr, body=None):
     """转发 Agent 生命周期请求到 relay:9001。"""
