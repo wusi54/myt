@@ -23,6 +23,7 @@ type ScrcpyServer struct {
 	cmd              *exec.Cmd
 	stopCh           chan struct{} // 主动停止时关闭，通知 watcher 忽略此次退出
 	exitCh           chan error    // watcher 在进程意外退出时上报退出错误
+	doneCh           chan struct{} // 会话结束(Stop)时关闭，通知看门狗 goroutine 退出
 }
 
 // Start 启动 scrcpy-server 进程（app_process，tunnel_forward 模式），并启动进程监控。
@@ -99,6 +100,7 @@ func (s *ScrcpyServer) Start() error {
 	// 且拿不到退出原因（Java 异常/退出码），盲重启循环。
 	s.stopCh = make(chan struct{})
 	s.exitCh = make(chan error, 1)
+	s.doneCh = make(chan struct{})
 	go func() {
 		err := cmd.Wait()
 		select {
@@ -190,6 +192,13 @@ func (s *ScrcpyServer) Connect() (net.Conn, error) {
 
 // Stop 停止 scrcpy-server。
 func (s *ScrcpyServer) Stop() {
+	if s.doneCh != nil {
+		select {
+		case <-s.doneCh: // 已关闭，避免重复 close panic
+		default:
+			close(s.doneCh)
+		}
+	}
 	if s.stopCh != nil {
 		select {
 		case <-s.stopCh: // 已关闭，避免重复 close panic
