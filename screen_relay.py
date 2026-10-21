@@ -24,7 +24,24 @@ import shlex
 import http.server
 import auth
 
-__version__ = '2.2.1-scrcpy'
+def _relay_version():
+    ver = 'dev'
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'VERSION')) as f:
+            ver = f.read().strip() or ver
+    except Exception:
+        pass
+    commit = ''
+    try:
+        commit = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'],
+                                        cwd=os.path.dirname(os.path.abspath(__file__)),
+                                        stderr=subprocess.DEVNULL).decode().strip()
+    except Exception:
+        pass
+    return ver, commit
+
+_RELAY_VER, _RELAY_COMMIT = _relay_version()
+__version__ = _RELAY_VER
 
 WS_PORT = int(os.environ.get('RELAY_PORT', '9000'))
 ADB = os.environ.get('ADB_PATH') or (
@@ -1573,6 +1590,18 @@ class _ControlHTTPHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'{"code":500,"msg":"adb send failed"}')
 
+    def do_GET(self):
+        if self.path.rstrip('/') == '/version':
+            body = json.dumps({'code': 200, 'version': _RELAY_VER, 'commit': _RELAY_COMMIT,
+                               'service': 'relay'}, ensure_ascii=False).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.send_response(404)
+        self.end_headers()
+
     def log_message(self, *a):
         pass
 
@@ -1658,7 +1687,7 @@ def _start_control_http():
 
 async def main():
     from websockets.asyncio.server import serve
-    print(f'[relay][multithread {__version__}] Starting on ws://0.0.0.0:{WS_PORT}', flush=True)
+    print(f'[relay][multithread {__version__} ({_RELAY_COMMIT})] Starting on ws://0.0.0.0:{WS_PORT}', flush=True)
     # 启动独立 adb server（部署面），避免 deploy/push 阻塞控制面
     threading.Thread(target=_start_deploy_adb_server, daemon=True).start()
     threading.Thread(target=_start_control_http, daemon=True).start()

@@ -70,9 +70,34 @@ def _auth_guard():
     return None
 
 
+def _app_version():
+    """读取 VERSION 文件 + git commit，用于部署版本跟踪。"""
+    ver = 'dev'
+    try:
+        with open(os.path.join(BASE_DIR, 'VERSION')) as f:
+            ver = f.read().strip() or ver
+    except Exception:
+        pass
+    commit = ''
+    try:
+        import subprocess as _sp
+        commit = _sp.check_output(['git', 'rev-parse', '--short', 'HEAD'],
+                                  cwd=BASE_DIR, stderr=_sp.DEVNULL).decode().strip()
+    except Exception:
+        pass
+    return ver, commit
+
+
 @app.route('/healthz')
 def healthz():
-    return jsonify({'code': 200, 'msg': 'ok'})
+    ver, commit = _app_version()
+    return jsonify({'code': 200, 'msg': 'ok', 'version': ver, 'commit': commit})
+
+
+@app.route('/api/version')
+def api_version():
+    ver, commit = _app_version()
+    return ok({'version': ver, 'commit': commit, 'service': 'web'})
 
 
 @app.route('/login')

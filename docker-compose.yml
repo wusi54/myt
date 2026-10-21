@@ -58,7 +58,8 @@ services:
       - ./data:/app/data:z                 # 数据库持久化（含 WAL）；:z 兼容宿主机 SELinux(CentOS)
       - ./uploads:/app/uploads:z           # 真机参数文件
       - ./app_uploads:/app/app_uploads:z   # APK 文件
-      - ./app.py:/app/app.py:ro            # 后端逻辑热更新（改后 restart web 生效，避免重新构建镜像）
+      - ./app.py:/app/app.py:ro
+      - ./VERSION:/app/VERSION:ro            # 后端逻辑热更新（改后 restart web 生效，避免重新构建镜像）
       - ./myt_client.py:/app/myt_client.py:ro
       - ./auth.py:/app/auth.py:ro
       - ./db.py:/app/db.py:ro              # 数据访问层热更新（改表结构/迁移后 restart web 生效）
@@ -106,7 +107,8 @@ services:
       AGENT_BIN_PATH: /app/agent/myt-agent-arm64      # 推送 Agent 二进制的容器内路径
       AGENT_DEVICE_PATH: /data/local/tmp/myt-agent     # Agent 在设备上的落盘路径
     volumes:
-      - ./screen_relay.py:/app/screen_relay.py:ro   # 投屏中继逻辑热更新（改后 restart relay 生效）
+      - ./screen_relay.py:/app/screen_relay.py:ro
+      - ./VERSION:/app/VERSION:ro   # 投屏中继逻辑热更新（改后 restart relay 生效）
       - ./scrcpy:/app/scrcpy:ro                     # scrcpy-server.jar（v5.0.1，随镜像 COPY 亦可）
       - ./agent:/app/agent:ro                       # Agent 二进制（推送用）
     networks:
