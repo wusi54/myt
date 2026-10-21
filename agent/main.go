@@ -18,13 +18,15 @@ func main() {
 	jarPath := flag.String("jar", "/data/local/tmp/scrcpy-server.jar", "jar path")
 	transport := flag.String("transport", "tcp", "RTSP transport: tcp or udp")
 	keyFrameInterval := flag.Int("keyframe-interval", 0, "video keyframe interval seconds; 0 = every frame")
-	stripVUI := flag.Bool("strip-vui", true, "strip SPS color VUI to fix blue tint")
+	// 注意：Go 的 bool flag 不消费空格后的参数（-flag 0 会被解析为 -flag=true + 位置参数 0），
+	// 必须用 int flag 才能正确接收 -strip-vui 0。
+	stripVUI := flag.Int("strip-vui", 1, "strip SPS color VUI to fix blue tint (0=off, 1=on)")
 	hbURL := flag.String("hb", "", "relay heartbeat websocket URL (optional)")
 	flag.Parse()
 	if v := os.Getenv("AGENT_STRIP_VUI"); v == "0" || v == "false" {
-		*stripVUI = false
+		*stripVUI = 0
 	}
-	stripVUIEnabled = *stripVUI
+	stripVUIEnabled = (*stripVUI != 0)
 
 	if *relayURL == "" {
 		*relayURL = os.Getenv("RELAY_URL")
