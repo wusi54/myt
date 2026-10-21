@@ -895,7 +895,17 @@ function populateDetailSelects(){
       return `<option value="${f.id}" ${disabled?'disabled':''} title="MD5: ${esc(md5)}">${esc(f.name)}${dev?' ('+esc(dev)+')':''} [${esc(md5.substring(0,8))}] [${esc(tag)}]</option>`;
     }).join('');
   document.getElementById('detailProxySelect').innerHTML='<option value="">-- 选择代理 --</option>'+
-    proxies.map(p=>{
+    proxies.slice().sort((a,b)=>{
+      // 排序：未故障且未被其他容器占用的排前面；故障的排后面
+      const aFault=a.status==='fault', bFault=b.status==='fault';
+      if(aFault!==bFault) return aFault?1:-1;
+      const aOther=a.in_use && a.instance_id!==currentContainer.id;
+      const bOther=b.in_use && b.instance_id!==currentContainer.id;
+      if(aOther!==bOther) return aOther?1:-1;
+      const aCur=a.id===currentContainer.proxy_id, bCur=b.id===currentContainer.proxy_id;
+      if(aCur!==bCur) return aCur?-1:1;
+      return (a.name||'').localeCompare(b.name||'');
+    }).map(p=>{
       const isCur=p.id===currentContainer.proxy_id;
       const appliedOther=p.in_use && p.instance_id!==currentContainer.id;
       const tag=isCur?('已应用·本容器'):appliedOther?('已应用·'+(p.instance_name||p.instance_id)):(p.status==='fault'?'故障':'空闲');
