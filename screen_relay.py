@@ -1726,6 +1726,7 @@ class _ControlHTTPHandler(http.server.BaseHTTPRequestHandler):
 # adb_addr -> WebSocket 对象（Agent 心跳连接），用于下行控制指令
 agent_ws_senders = {}   # type: dict[str, object]
 agent_ws_senders_lock = threading.Lock()
+_relay_event_loop = None  # 全局事件循环引用
 
 
 def _agent_ws_send(adb_addr, msg):
@@ -1734,15 +1735,14 @@ def _agent_ws_send(adb_addr, msg):
         ws = agent_ws_senders.get(adb_addr)
     if ws is None:
         return False
+    loop = _relay_event_loop
+    if loop is None or not loop.is_running():
+        return False
     try:
         import asyncio as _aio
-        # websockets 的 send 是协程，需要在事件循环中执行
-        # 从同步上下文调用，用 run_coroutine_threadsafe
-        loop = getattr(ws, '_loop', None)
-        if loop is not None and loop.is_running():
-            fut = _aio.run_coroutine_threadsafe(ws.send(json.dumps(msg)), loop)
-            fut.result(timeout=2)
-            return True
+        fut = _aio.run_coroutine_threadsafe(ws.send(json.dumps(msg)), loop)
+        fut.result(timeout=2)
+        return True
     except Exception as e:
         print(f'[control-ws] send to {adb_addr} failed: {e}', flush=True)
     return False
@@ -1829,8 +1829,10 @@ def _start_control_http():
 
 async def main():
     from websockets.asyncio.server import serve
+    global _relay_event_loop
     # P1-2: 增大默认线程池，支持 20+ 设备并发控制（默认 min(32, cpu+4)）
     loop = asyncio.get_event_loop()
+    _relay_event_loop = loop
     loop.set_default_executor(ThreadPoolExecutor(max_workers=64))
     print(f'[relay][multithread {__version__} ({_RELAY_COMMIT})] Starting on ws://0.0.0.0:{WS_PORT}', flush=True)
     # 启动独立 adb server（部署面），避免 deploy/push 阻塞控制面
