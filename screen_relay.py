@@ -1576,6 +1576,9 @@ async def agent_hb_handler(ws):
     with hb_lock:
         hb_last[adb_addr] = time.time()
     agent_mgr.set_state(adb_addr, status='running', stream_name=_agent_stream_name(adb_addr))
+    # 注册 WS 发送器（用于下行控制指令）
+    with agent_ws_senders_lock:
+        agent_ws_senders[adb_addr] = ws
     print(f'[relay][agent-hb] heartbeat connected adb_addr={adb_addr}', flush=True)
     try:
         async for _ in ws:
@@ -1586,6 +1589,8 @@ async def agent_hb_handler(ws):
     finally:
         with hb_lock:
             hb_last.pop(adb_addr, None)
+        with agent_ws_senders_lock:
+            agent_ws_senders.pop(adb_addr, None)
         print(f'[relay][agent-hb] heartbeat disconnected adb_addr={adb_addr}', flush=True)
 
 
@@ -1677,12 +1682,19 @@ class _ControlHTTPHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'bad action/params')
             return
-        try:
-            _timeout = 1 if cmd.startswith(('input tap', 'input keyevent')) else 3
-            ok = _run_shell_cmd(adb_addr, cmd, _timeout)
-        except Exception as e:
-            ok = False
-            print(f'[control-http] {adb_addr} failed: {e}', flush=True)
+        # P1-A: 优先通过 Agent 心跳 WS 下发控制指令（无 adb，延迟更低）
+        # 降级：Agent 未连接时回退到 adb shell
+        sent_via_agent = _agent_ws_send(adb_addr, {'type': 'control', 'cmd': cmd})
+        if sent_via_agent:
+            ok = True
+            print(f'[control-http] {adb_addr} via agent WS: {cmd}', flush=True)
+        else:
+            try:
+                _timeout = 1 if cmd.startswith(('input tap', 'input keyevent')) else 3
+                ok = _run_shell_cmd(adb_addr, cmd, _timeout)
+            except Exception as e:
+                ok = False
+                print(f'[control-http] {adb_addr} failed: {e}', flush=True)
         if ok:
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
@@ -1708,6 +1720,32 @@ class _ControlHTTPHandler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *a):
         pass
+
+
+# ---- Agent 控制通道：通过心跳 WS 下行发送控制指令（P1-A）----
+# adb_addr -> WebSocket 对象（Agent 心跳连接），用于下行控制指令
+agent_ws_senders = {}   # type: dict[str, object]
+agent_ws_senders_lock = threading.Lock()
+
+
+def _agent_ws_send(adb_addr, msg):
+    """通过 Agent 心跳 WS 发送控制指令。返回 True 表示发送成功。"""
+    with agent_ws_senders_lock:
+        ws = agent_ws_senders.get(adb_addr)
+    if ws is None:
+        return False
+    try:
+        import asyncio as _aio
+        # websockets 的 send 是协程，需要在事件循环中执行
+        # 从同步上下文调用，用 run_coroutine_threadsafe
+        loop = getattr(ws, '_loop', None)
+        if loop is not None and loop.is_running():
+            fut = _aio.run_coroutine_threadsafe(ws.send(json.dumps(msg)), loop)
+            fut.result(timeout=2)
+            return True
+    except Exception as e:
+        print(f'[control-ws] send to {adb_addr} failed: {e}', flush=True)
+    return False
 
 
 # ---- Agent 生命周期 HTTP 端点（必须在 _ControlHTTPHandler 定义之后扩展）----
