@@ -103,6 +103,9 @@ func (r *RTPStreamer) UpdateSPSPPS(nals [][]byte) {
 			if stripVUIEnabled {
 				sps = stripSPSVUI(nal)
 			}
+			// 调试：打印 SPS 原始与剥离后的 hex
+			log.Printf("[rtsp][DBG] SPS orig=%d bytes: %x", len(nal), nal)
+			log.Printf("[rtsp][DBG] SPS strip=%d bytes: %x (stripVUI=%v)", len(sps), sps, stripVUIEnabled)
 			cp := make([]byte, len(sps))
 			copy(cp, sps)
 			r.forma.SPS = cp
