@@ -1510,7 +1510,8 @@ async def _control_queue_worker(adb_addr, queue):
                     break
             batched = '; '.join(cmds)
         try:
-            await asyncio.to_thread(_run_shell_cmd, adb_addr, batched, 3)
+            _timeout = 1 if batched.startswith(('input tap', 'input keyevent')) else 3
+            await asyncio.to_thread(_run_shell_cmd, adb_addr, batched, _timeout)
         except Exception as e:
             print(f'[control-ws] {adb_addr} batch failed: {e}', flush=True)
 
@@ -1638,8 +1639,10 @@ async def _handle_control(adb_addr, msg):
     if not cmd:
         return
     try:
+        # P0-D: tap/key 超时 1s（快速失败），text/swipe 保持 3s
+        _timeout = 1 if cmd.startswith(('input tap', 'input keyevent')) else 3
         # 通过持久 shell 会话下发，避免每次 spawn 新 adb client（省 20-40ms/命令）
-        ok = await asyncio.to_thread(_run_shell_cmd, adb_addr, cmd, 3)
+        ok = await asyncio.to_thread(_run_shell_cmd, adb_addr, cmd, _timeout)
         if not ok:
             print(f'[control] {adb_addr} cmd failed or timeout', flush=True)
     except Exception as e:
@@ -1675,7 +1678,8 @@ class _ControlHTTPHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b'bad action/params')
             return
         try:
-            ok = _run_shell_cmd(adb_addr, cmd, 3)
+            _timeout = 1 if cmd.startswith(('input tap', 'input keyevent')) else 3
+            ok = _run_shell_cmd(adb_addr, cmd, _timeout)
         except Exception as e:
             ok = False
             print(f'[control-http] {adb_addr} failed: {e}', flush=True)
