@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"flag"
 	"log"
-	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -33,12 +32,12 @@ func main() {
 	}
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	log.Printf("[agent] starting, push=%s max_size=%d bitrate=%d transport=%s keyframe_interval=%ds hb=%q", *relayURL, *maxSize, *bitrate, *transport, *keyFrameInterval, *hbURL)
+	log.Printf("[agent] starting, push=%s max_size=%d bitrate=%d transport=%s keyframe_interval=%ds", *relayURL, *maxSize, *bitrate, *transport, *keyFrameInterval)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
-	// 心跳通道：进程级保活，独立于 runOnce 的会话循环
+	// 心跳通道：进程级保活，独立于 runOnce 的会话循环（不影响推流主链路）。
 	stopHb := make(chan struct{})
 	defer close(stopHb)
 	startHeartbeat(*hbURL, stopHb)
@@ -59,6 +58,14 @@ func main() {
 }
 
 func runOnce(relayURL string, maxSize, bitrate int, jarPath, transport string, keyFrameInterval int) {
+	// 兜底：任何意外 panic（如个别坏帧触发的非法内存访问）都不要让整个进程挂掉，
+	// 否则 WHEP 会直接 404。记录后返回，由 main 的会话循环 1s 后自动重启会话。
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[agent] runOnce panic recovered: %v", r)
+		}
+	}()
+
 	server := &ScrcpyServer{
 		JarPath:          jarPath,
 		MaxSize:          maxSize,
@@ -106,31 +113,12 @@ func runOnce(relayURL string, maxSize, bitrate int, jarPath, transport string, k
 
 	log.Printf("[agent] connected to MediaMTX: %s", relayURL)
 
-	// 帧循环：带读超时 + 每轮检查 scrcpy 进程存活（单 goroutine，无并发）。
-	// 旧实现用「每帧起一个 goroutine 读 + death 通道 + 看门狗/defer 多处并发 Close 同一个
-	// UnixConn」，并发下会内存损坏导致 Go fatal error 必崩。改为读超时回到循环体检查存活，
-	// 既保留“scrcpy 退出能及时感知并重启”的语义，又彻底消除并发。
 	pump := &framePump{}
-	buf := make([]byte, 0, 256*1024)
+	buf := make([]byte, 0)
 	tmp := make([]byte, 64*1024)
 	for {
-		// scrcpy 死亡看门狗：每轮检查进程存活，退出则结束本次会话由 main 重启采集
-		if !server.alive() {
-			log.Printf("[agent] scrcpy-server 进程已退出，结束本次会话以便重启采集")
-			return
-		}
-		// 1s 读超时：静态画面无新帧时不会永久阻塞，能周期性回到上面检查存活
-		_ = reader.SetReadDeadline(time.Now().Add(1 * time.Second))
 		n, err := reader.Read(tmp)
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				continue // 只是暂无新帧，继续等
-			}
-			// 读错误时再确认一次：scrcpy 退出常表现为读错误
-			if !server.alive() {
-				log.Printf("[agent] scrcpy-server 进程已退出，结束本次会话以便重启采集")
-				return
-			}
 			log.Printf("[agent] read frame error: %v, restarting scrcpy-server...", err)
 			return
 		}
@@ -149,11 +137,6 @@ func runOnce(relayURL string, maxSize, bitrate int, jarPath, transport string, k
 		streamer.Close()
 		reconnected := false
 		for attempt := 1; attempt <= 12; attempt++ {
-			// scrcpy 已退出则放弃重连，直接重启会话（避免卡在 ~90s 重连窗口）
-			if !server.alive() {
-				log.Printf("[agent] scrcpy 已退出，放弃 RTSP 重连，重启会话")
-				return
-			}
 			wait := reconnectBackoff(attempt)
 			log.Printf("[agent] RTSP 连接断开，%v 后重连 (第 %d/12 次)...", wait, attempt)
 			time.Sleep(wait)
@@ -164,10 +147,21 @@ func runOnce(relayURL string, maxSize, bitrate int, jarPath, transport string, k
 				continue
 			}
 			// 重新喂入缓存的 SPS/PPS，保证重连后立刻可推流
-			if pump.lastConfig != nil {
-				streamer.UpdateSPSPPS(splitAnnexB(pump.lastConfig))
+			if len(pump.sps) > 0 {
+				streamer.forma.SPS = make([]byte, len(pump.sps))
+				copy(streamer.forma.SPS, pump.sps)
 			}
-			log.Printf("[agent] RTSP 重连成功，恢复推流")
+			if len(pump.pps) > 0 {
+				streamer.forma.PPS = make([]byte, len(pump.pps))
+				copy(streamer.forma.PPS, pump.pps)
+			}
+			if streamer.forma.SPS != nil && streamer.forma.PPS != nil {
+				streamer.forma.SafeSetParams(streamer.forma.SPS, streamer.forma.PPS)
+			}
+			log.Printf("[agent] RTSP 重连成功，恢复推流 (SPS=%d bytes, PPS=%d bytes)", len(streamer.forma.SPS), len(streamer.forma.PPS))
+			if len(pump.sps) == 0 {
+				log.Printf("[agent] 警告: 缓存的 SPS 为空，重连后可能无法推流，等待 config 帧")
+			}
 			reconnected = true
 			break
 		}
@@ -204,9 +198,11 @@ func isConnError(err error) bool {
 		strings.Contains(s, "i/o timeout")
 }
 
-// framePump 帧推送状态：缓存 config 帧用于重连恢复，并对重复错误限流。
+// framePump 帧推送状态：缓存 config 帧与 SPS/PPS 用于重连恢复，并对重复错误限流。
 type framePump struct {
 	lastConfig []byte
+	sps        []byte
+	pps        []byte
 	errCount   int
 }
 
@@ -241,6 +237,15 @@ func (p *framePump) pump(buf []byte, streamer *RTPStreamer) ([]byte, bool) {
 			p.lastConfig = cfg
 			nals := splitAnnexB(payload)
 			streamer.UpdateSPSPPS(nals)
+			// 缓存参数集字节，供 RTSP 重连后恢复（避免依赖 splitAnnexB 重解析）
+			if len(streamer.forma.SPS) > 0 {
+				p.sps = make([]byte, len(streamer.forma.SPS))
+				copy(p.sps, streamer.forma.SPS)
+			}
+			if len(streamer.forma.PPS) > 0 {
+				p.pps = make([]byte, len(streamer.forma.PPS))
+				copy(p.pps, streamer.forma.PPS)
+			}
 			if err := streamer.PushFrame(payload); err != nil {
 				if p.logErr(err) {
 					return buf, true

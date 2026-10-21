@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/bluenviron/gortsplib/v5"
@@ -10,6 +12,10 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
 )
+
+// ErrQueueFull 表示 gortsplib 写队列已满（消费端/MediaMTX 跟不上推流速率）。
+// 该错误不应触发 RTSP 重连，仅丢弃当前帧并限流日志；重连只针对连接断开类错误。
+var ErrQueueFull = errors.New("write queue is full")
 
 // RTPStreamer 负责把 scrcpy 采集到的 H.264 帧转成 RTP 推流到 MediaMTX。
 type RTPStreamer struct {
@@ -90,9 +96,15 @@ func (r *RTPStreamer) UpdateSPSPPS(nals [][]byte) {
 		}
 		nalType := nal[0] & 0x1F
 		if nalType == 7 { // SPS
-			r.forma.SPS = nal
+			// 必须深拷贝：调用方传入的 nal 可能来自被循环复用的读缓冲 buf，
+			// 而 format.H264 会长期持有 SPS/PPS 引用，buf 被覆盖后会读到脏数据。
+			cp := make([]byte, len(nal))
+			copy(cp, nal)
+			r.forma.SPS = cp
 		} else if nalType == 8 { // PPS
-			r.forma.PPS = nal
+			cp := make([]byte, len(nal))
+			copy(cp, nal)
+			r.forma.PPS = cp
 		}
 	}
 	// 重建 encoder（CreateEncoder 不依赖 SPS/PPS，但 SafeSetParams 用于 SDP）
@@ -121,7 +133,13 @@ func (r *RTPStreamer) EnsureEncoder() error {
 // PushFrame 推送一帧 annexb H.264 数据到 MediaMTX。
 // 返回 nil 表示成功，错误表示推流失败。
 func (r *RTPStreamer) PushFrame(annexb []byte) error {
-	nals := splitAnnexB(annexb)
+	// 拷贝一份独立缓冲：调用方的读缓冲 buf 会被循环复用（append / reset），
+	// 而下方 splitAnnexB 得到的 NAL 切片、gortsplib 的 format.H264 持有的 SPS/PPS
+	// 引用、以及 RTP encoder 持有的 NAL 引用都指向这份数据。若不拷贝，buf 被后续
+	// 帧覆盖后会读到脏数据，极端情况下触发非法内存访问使 agent 进程崩溃（WHEP 随之 404）。
+	data := make([]byte, len(annexb))
+	copy(data, annexb)
+	nals := splitAnnexB(data)
 	if len(nals) == 0 {
 		return nil
 	}
@@ -164,6 +182,12 @@ func (r *RTPStreamer) PushFrame(annexb []byte) error {
 		}
 	}
 
+	// 尚未拿到 SPS/PPS 时不能初始化 encoder（避免推出国 SPS=0 的坏流），
+	// 跳过该帧等待 config 帧；reconnect 后由缓存的 SPS 恢复。
+	if r.forma.SPS == nil || r.forma.PPS == nil {
+		return nil
+	}
+
 	if r.rtpEnc == nil {
 		if err := r.EnsureEncoder(); err != nil {
 			return err
@@ -198,6 +222,9 @@ func (r *RTPStreamer) PushFrame(annexb []byte) error {
 	for _, pkt := range pkts {
 		pkt.Timestamp = r.randomStart + pts
 		if err := r.client.WritePacketRTP(r.media, pkt); err != nil {
+			if strings.Contains(err.Error(), "write queue is full") {
+				return ErrQueueFull
+			}
 			return fmt.Errorf("写 RTP 包失败: %w", err)
 		}
 	}
