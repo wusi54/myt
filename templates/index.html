@@ -1012,7 +1012,7 @@ async function uploadParams(btn){
     (data.skipped||[]).forEach(s=>{
       h+=`<div style="color:#ffb020">- ${esc(s.name)} 跳过：${esc(s.reason)}</div>`;
     });
-    res.innerHTML = h || `<pre>${esc(JSON.stringify(d,null,2))}</pre>`;
+    res.innerHTML = h || '<div style="color:#8899aa">无导入结果</div>';
     toast(d.msg,d.code===200?'success':'error');loadRealParams();
   });
 }
@@ -1802,8 +1802,7 @@ async function screenModalApplyFp(){
   if(!fp_id){toast('请选择真机参数','error');return}
   await withBusy(document.getElementById('screenModalFpApply'),'指纹生效中…',async()=>{
     const d=await api('/api/containers/'+c.id+'/apply_fp','POST',{fp_id});
-    showScreenResult('screenModalFpResult',d);
-    toast(d.code===200?'指纹已导入':(d.msg||'失败'),d.code===200?'success':'error');
+    toast(d.code===200?'指纹已导入':(d.msg||'导入失败'),d.code===200?'success':'error');
     if(d.code===200){await Promise.all([loadRealParams(),loadContainers()]);populateScreenModalSelects(c);loadScreenModalInfo(screenModalState.adb);}
   });
 }
@@ -1812,7 +1811,7 @@ async function screenModalReleaseFp(){
   if(!c){toast('未找到对应容器','error');return}
   await withBusy(document.getElementById('screenModalFpRelease'),'释放中…',async()=>{
     const d=await api('/api/containers/'+c.id+'/release_fp','POST',{});
-    showScreenResult('screenModalFpResult',d);
+    
     toast(d.code===200?'已释放指纹':(d.msg||'失败'),d.code===200?'success':'error');
     if(d.code===200){await Promise.all([loadRealParams(),loadContainers()]);populateScreenModalSelects(c);loadScreenModalInfo(screenModalState.adb);}
   });
@@ -1824,7 +1823,7 @@ async function screenModalApplyProxy(){
   if(!proxy_id){toast('请选择代理','error');return}
   await withBusy(document.getElementById('screenModalProxyApply'),'代理配置中…',async()=>{
     const d=await api('/api/containers/'+c.id+'/apply_proxy','POST',{proxy_id});
-    showScreenResult('screenModalProxyResult',d);
+    
     toast(d.code===200?'代理已配置':(d.msg||'失败'),d.code===200?'success':'error');
     if(d.code===200){await Promise.all([loadProxies(),loadContainers()]);populateScreenModalSelects(c);loadScreenModalInfo(screenModalState.adb);}
   });
@@ -1834,7 +1833,7 @@ async function screenModalReleaseProxy(){
   if(!c){toast('未找到对应容器','error');return}
   await withBusy(document.getElementById('screenModalProxyRelease'),'关闭中…',async()=>{
     const d=await api('/api/containers/'+c.id+'/release_proxy','POST',{});
-    showScreenResult('screenModalProxyResult',d);
+    
     toast(d.code===200?'已关闭代理':(d.msg||'失败'),d.code===200?'success':'error');
     if(d.code===200){await Promise.all([loadProxies(),loadContainers()]);populateScreenModalSelects(c);loadScreenModalInfo(screenModalState.adb);}
   });
