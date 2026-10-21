@@ -98,9 +98,13 @@ func (r *RTPStreamer) UpdateSPSPPS(nals [][]byte) {
 		if nalType == 7 { // SPS
 			// 剥离 color VUI，避免浏览器按 BT.709/BT.601 混搭解释导致偏蓝
 			// （与 RELAY_STRIP_VUI=1 一致）；必须深拷贝，buf 会被复用。
-			stripped := stripSPSVUI(nal)
-			cp := make([]byte, len(stripped))
-			copy(cp, stripped)
+			// AGENT_STRIP_VUI=0 可关闭，用于排查 VUI 剥离是否导致解码失败。
+			sps := nal
+			if stripVUIEnabled {
+				sps = stripSPSVUI(nal)
+			}
+			cp := make([]byte, len(sps))
+			copy(cp, sps)
 			r.forma.SPS = cp
 		} else if nalType == 8 { // PPS
 			cp := make([]byte, len(nal))
@@ -392,6 +396,9 @@ func stripSPSVUI(sps []byte) (out []byte) {
 	out = outBytes
 	return
 }
+
+// stripVUIEnabled 控制是否剥离 SPS color VUI（可通过 -strip-vui 标志或 AGENT_STRIP_VUI 环境变量关闭）。
+var stripVUIEnabled = true
 
 // splitAnnexB 把 annexb 格式的 H.264 数据拆成 NAL 数组（不含 start code）。
 func splitAnnexB(data []byte) [][]byte {

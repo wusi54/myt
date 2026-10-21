@@ -18,8 +18,13 @@ func main() {
 	jarPath := flag.String("jar", "/data/local/tmp/scrcpy-server.jar", "jar path")
 	transport := flag.String("transport", "tcp", "RTSP transport: tcp or udp")
 	keyFrameInterval := flag.Int("keyframe-interval", 0, "video keyframe interval seconds; 0 = every frame")
+	stripVUI := flag.Bool("strip-vui", true, "strip SPS color VUI to fix blue tint")
 	hbURL := flag.String("hb", "", "relay heartbeat websocket URL (optional)")
 	flag.Parse()
+	if v := os.Getenv("AGENT_STRIP_VUI"); v == "0" || v == "false" {
+		*stripVUI = false
+	}
+	stripVUIEnabled = *stripVUI
 
 	if *relayURL == "" {
 		*relayURL = os.Getenv("RELAY_URL")

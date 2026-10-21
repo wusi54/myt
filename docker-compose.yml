@@ -97,7 +97,8 @@ services:
       AGENT_TRANSPORT: ${AGENT_TRANSPORT:-tcp}   # 默认 tcp：RTP 内嵌 RTSP 连接，穿透 NAT 稳定（已验证）；同网段低延迟排障可在 .env 切 udp
       AGENT_MAX_SIZE: ${AGENT_MAX_SIZE:-720}     # Agent 采集最长边
       AGENT_BITRATE: ${AGENT_BITRATE:-1000000}   # Agent 编码码率 bps
-      AGENT_KEYFRAME_INTERVAL: ${AGENT_KEYFRAME_INTERVAL:-2}  # GOP 实测默认改为 2s：0=每帧关键帧会糊且打爆上行(write queue full/重连)；该机型 1/2 可能被编码器钳到 ~10s，需在真机对比画质与首帧延迟后定值(0/2/5/10)
+      AGENT_KEYFRAME_INTERVAL: ${AGENT_KEYFRAME_INTERVAL:-2}
+      AGENT_STRIP_VUI: ${AGENT_STRIP_VUI:-1}  # 1=剥离 SPS color VUI 修正偏蓝；0=关闭（排查用）  # GOP 实测默认改为 2s：0=每帧关键帧会糊且打爆上行(write queue full/重连)；该机型 1/2 可能被编码器钳到 ~10s，需在真机对比画质与首帧延迟后定值(0/2/5/10)
       AGENT_IDLE_STOP_SEC: ${AGENT_IDLE_STOP_SEC:-0}  # 0=不自动停（WHEP 观众不经过 relay，relay 无法感知订阅者）
       AGENT_TOKEN: ${AGENT_TOKEN:-}           # Agent 上行流认证密钥（生产务必设置）
       RELAY_WS_URL: ${RELAY_WS_URL:-}         # 设备可达的 relay WS 基地址(供 Agent 回连心跳 /agent/hb)，如 ws://1.2.3.4:9000；空=不发心跳(用户看画面手动重启投屏)
