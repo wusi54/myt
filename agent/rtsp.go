@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bluenviron/gortsplib/v5"
+	"github.com/bluenviron/gortsplib/v5/pkg/base"
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
@@ -25,6 +26,8 @@ type RTPStreamer struct {
 	forma     *format.H264
 	rtpEnc    *rtph264.Encoder
 	media     *description.Media
+	baseURL   *base.URL
+	keepAlive chan struct{}
 	// PTS 基准
 	startTime   time.Time
 	randomStart uint32
@@ -69,6 +72,32 @@ func (r *RTPStreamer) Connect() error {
 	r.forma = forma
 	r.media = desc.Medias[0]
 
+	// 解析 base URL 用于 keep-alive
+	u, err := base.ParseURL(r.rtspURL)
+	if err == nil {
+		r.baseURL = u
+	}
+
+	// P2: RTSP keep-alive（gortsplib 对 TCP recording 默认禁用 keep-alive，
+	// 弱网/NAT 环境下会话老化导致断连，这里手动每 20s 发送 OPTIONS 保活）
+	r.keepAlive = make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(20 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.keepAlive:
+				return
+			case <-ticker.C:
+				if r.client != nil && r.baseURL != nil {
+					if _, err := r.client.Options(r.baseURL); err != nil {
+						log.Printf("[rtsp] keep-alive OPTIONS 失败: %v", err)
+					}
+				}
+			}
+		}
+	}()
+
 	// 生成随机 SSRC 起点（避免多流冲突）
 	bs := make([]byte, 4)
 	for i := range bs {
@@ -82,6 +111,10 @@ func (r *RTPStreamer) Connect() error {
 
 // Close 关闭连接。
 func (r *RTPStreamer) Close() {
+	if r.keepAlive != nil {
+		close(r.keepAlive)
+		r.keepAlive = nil
+	}
 	if r.client != nil {
 		r.client.Close()
 		r.client = nil

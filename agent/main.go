@@ -17,6 +17,7 @@ func main() {
 	relayURL := flag.String("relay", "", "MediaMTX RTSP push URL")
 	maxSize := flag.Int("max-size", 720, "max size")
 	bitrate := flag.Int("bitrate", 1000000, "bitrate")
+	maxFPS := flag.Int("max-fps", 0, "max fps (0=unlimited); recommend 12-15 for weak network")
 	jarPath := flag.String("jar", "/data/local/tmp/scrcpy-server.jar", "jar path")
 	transport := flag.String("transport", "tcp", "RTSP transport: tcp or udp")
 	keyFrameInterval := flag.Int("keyframe-interval", 0, "video keyframe interval seconds; 0 = every frame")
@@ -56,7 +57,7 @@ func main() {
 		default:
 		}
 
-		runOnce(*relayURL, *maxSize, *bitrate, *jarPath, *transport, *keyFrameInterval)
+		runOnce(*relayURL, *maxSize, *bitrate, *maxFPS, *jarPath, *transport, *keyFrameInterval)
 		log.Printf("[agent] session ended, restarting scrcpy-server in 1s...")
 		time.Sleep(1 * time.Second)
 	}
@@ -71,12 +72,13 @@ const frameQueueCapacity = 30
 //   - writer 从 frameCh 取帧、调用 PushFrame 推到 MediaMTX。
 //   - channel 满时 reader 执行 drop-oldest（丢弃最旧帧），避免 reader 阻塞 scrcpy socket。
 //   - writer 遇到连接断开时置 connDead，reader 检测后退出，runOnce 做 RTSP 重连（scrcpy 保持运行）。
-func runOnce(relayURL string, maxSize, bitrate int, jarPath, transport string, keyFrameInterval int) {
+func runOnce(relayURL string, maxSize, bitrate, maxFPS int, jarPath, transport string, keyFrameInterval int) {
 	server := &ScrcpyServer{
 		JarPath:          jarPath,
 		MaxSize:          maxSize,
 		Bitrate:          bitrate,
 		KeyFrameInterval: keyFrameInterval,
+		MaxFPS:           maxFPS,
 	}
 	if err := server.Start(); err != nil {
 		log.Printf("[agent] start scrcpy-server failed: %v, retrying in 3s", err)

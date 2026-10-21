@@ -20,6 +20,7 @@ type ScrcpyServer struct {
 	MaxSize          int
 	Bitrate          int
 	KeyFrameInterval int
+	MaxFPS           int   // 0 = 不限制；建议群控墙 12~15 fps，弱网下画质/流畅度更好
 	cmd              *exec.Cmd
 	stopCh           chan struct{} // 主动停止时关闭，通知 watcher 忽略此次退出
 	exitCh           chan error    // watcher 在进程意外退出时上报退出错误
@@ -42,6 +43,9 @@ func (s *ScrcpyServer) Start() error {
 	}
 	if s.KeyFrameInterval < 0 {
 		s.KeyFrameInterval = 0
+	}
+	if s.MaxFPS < 0 {
+		s.MaxFPS = 0
 	}
 
 	// 清理旧实例（幂等）；等待旧 server 释放 abstract socket "scrcpy"，
@@ -73,11 +77,18 @@ func (s *ScrcpyServer) Start() error {
 		"send_frame_meta=true",
 		"max_size=" + strconv.Itoa(s.MaxSize),
 		"video_bit_rate=" + strconv.Itoa(s.Bitrate),
+	}
+	// max_fps：限制采集帧率，弱网下同等码率单帧 bits 更多，画质/流畅度更好。
+	// 0 或负数 = 不限制（scrcpy 默认）。
+	if s.MaxFPS > 0 {
+		args = append(args, "max_fps="+strconv.Itoa(s.MaxFPS))
+	}
+	args = append(args,
 		// 关键帧间隔：MediaMTX/WHEP 新观众加入时必须尽快拿到 IDR，
 		// 否则只能等到设备画面变化触发关键帧，群控窗会出现长时间黑屏。
 		// 注意：该 Xiaomi 编码器会把 1/2 秒钳成 10 秒 GOP，只有 0（每帧 IDR）生效。
 		"video_codec_options=i-frame-interval:int=" + strconv.Itoa(s.KeyFrameInterval),
-	}
+	)
 
 	cmd := exec.Command(args[0], args[1:]...)
 	// 继承父进程环境变量，追加 CLASSPATH
