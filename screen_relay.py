@@ -30,6 +30,158 @@ WS_PORT = int(os.environ.get('RELAY_PORT', '9000'))
 ADB = os.environ.get('ADB_PATH') or (
     r"C:\Users\wusi0\AppData\Local\Android\Sdk\platform-tools\adb.exe"
     if os.name == 'nt' else 'adb')
+# 控制面 adb（默认 5037 端口）：touch/key/text 等高频控制指令
+ADB_CTRL = [ADB]
+# 部署面 adb（独立 5038 端口）：deploy/push/kill 等大操作，避免阻塞控制面
+ADB_DEPLOY_PORT = int(os.environ.get('ADB_DEPLOY_PORT', '5038'))
+ADB_DEPLOY = [ADB, '-P', str(ADB_DEPLOY_PORT)]
+
+def _start_deploy_adb_server():
+    """启动独立 adb server（部署面），避免 deploy/push 阻塞控制面的 adb server。"""
+    try:
+        subprocess.run(ADB_DEPLOY + ['start-server'], capture_output=True, timeout=10)
+        print(f'[relay] deploy adb server started on port {ADB_DEPLOY_PORT}', flush=True)
+    except Exception as e:
+        print(f'[relay] deploy adb server start failed: {e}', flush=True)
+
+
+# ---- Shell 会话复用（控制面优化）----
+# 维持每个设备的持久 adb shell 进程，避免每次 touch/key/text 都 spawn 新 adb client。
+# 命令通过 stdin 写入，用 sentinel marker 检测完成。
+import select as _select
+import uuid as _uuid
+
+_shell_sessions = {}          # adb_addr -> Popen
+_shell_locks = {}             # adb_addr -> Lock
+_shell_global_lock = threading.Lock()
+
+def _get_shell_lock(adb_addr):
+    with _shell_global_lock:
+        if adb_addr not in _shell_locks:
+            _shell_locks[adb_addr] = threading.Lock()
+        return _shell_locks[adb_addr]
+
+def _get_shell_session(adb_addr):
+    """获取或创建持久 adb shell 会话。返回 Popen 或 None。"""
+    lock = _get_shell_lock(adb_addr)
+    with lock:
+        proc = _shell_sessions.get(adb_addr)
+        if proc is not None and proc.poll() is None:
+            return proc
+        # 创建新会话
+        try:
+            subprocess.run(ADB_CTRL + ['connect', adb_addr], capture_output=True, timeout=10)
+        except Exception:
+            pass
+        try:
+            proc = subprocess.Popen(
+                ADB_CTRL + ['-s', adb_addr, 'shell'],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, bufsize=0,
+            )
+            _shell_sessions[adb_addr] = proc
+            return proc
+        except Exception as e:
+            print(f'[shell] {adb_addr} create session failed: {e}', flush=True)
+            return None
+
+def _kill_shell_session(adb_addr):
+    """关闭持久 shell 会话。"""
+    with _shell_global_lock:
+        lock = _shell_locks.get(adb_addr)
+        proc = _shell_sessions.pop(adb_addr, None)
+    if lock:
+        with lock:
+            if proc is not None:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+def _run_shell_cmd(adb_addr, cmd, timeout=3):
+    """通过持久 shell 会话执行命令，返回是否成功。失败时回退到 subprocess.run。"""
+    marker = f"__DONE_{_uuid.uuid4().hex[:8]}__"
+    lock = _get_shell_lock(adb_addr)
+    with lock:
+        proc = _shell_sessions.get(adb_addr)
+        if proc is None or proc.poll() is not None:
+            # 会话不存在或已死，创建新会话
+            try:
+                subprocess.run(ADB_CTRL + ['connect', adb_addr], capture_output=True, timeout=10)
+            except Exception:
+                pass
+            try:
+                proc = subprocess.Popen(
+                    ADB_CTRL + ['-s', adb_addr, 'shell'],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL, bufsize=0,
+                )
+                _shell_sessions[adb_addr] = proc
+            except Exception as e:
+                print(f'[shell] {adb_addr} create session failed: {e}', flush=True)
+                # 回退到 subprocess.run
+                try:
+                    r = subprocess.run(ADB_CTRL + ['-s', adb_addr, 'shell', cmd],
+                                       capture_output=True, timeout=timeout)
+                    return r.returncode == 0
+                except Exception:
+                    return False
+
+        # 发送命令 + sentinel marker
+        try:
+            proc.stdin.write(f"{cmd}; echo {marker}\n".encode())
+            proc.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            # 会话已死，重建
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            _shell_sessions.pop(adb_addr, None)
+            try:
+                subprocess.run(ADB_CTRL + ['connect', adb_addr], capture_output=True, timeout=10)
+            except Exception:
+                pass
+            try:
+                proc = subprocess.Popen(
+                    ADB_CTRL + ['-s', adb_addr, 'shell'],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL, bufsize=0,
+                )
+                _shell_sessions[adb_addr] = proc
+                proc.stdin.write(f"{cmd}; echo {marker}\n".encode())
+                proc.stdin.flush()
+            except Exception as e:
+                print(f'[shell] {adb_addr} recreate session failed: {e}', flush=True)
+                try:
+                    r = subprocess.run(ADB_CTRL + ['-s', adb_addr, 'shell', cmd],
+                                       capture_output=True, timeout=timeout)
+                    return r.returncode == 0
+                except Exception:
+                    return False
+
+        # 读取输出直到 marker 或超时
+        output = b""
+        deadline = time.time() + timeout
+        while marker.encode() not in output:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            try:
+                ready, _, _ = _select.select([proc.stdout], [], [], min(remaining, 0.1))
+                if ready:
+                    chunk = proc.stdout.read(4096)
+                    if chunk:
+                        output += chunk
+                    else:
+                        break
+            except Exception:
+                break
+        return marker.encode() in output
 SCREEN_MAX = int(os.environ.get('SCREEN_MAX', '480'))              # 输出最长边（等比缩放）
 SCREEN_BITRATE = int(os.environ.get('SCREEN_BITRATE', '150000'))  # 码率 bps
 
@@ -214,7 +366,7 @@ class AgentManager:
     def stop(self, adb_addr):
         """停止设备端 Agent 进程。"""
         try:
-            subprocess.run([ADB, 'connect', adb_addr], capture_output=True, timeout=10)
+            subprocess.run(ADB_DEPLOY + ['connect', adb_addr], capture_output=True, timeout=10)
             _kill_agent_process(adb_addr)
         except Exception:
             pass
@@ -280,11 +432,11 @@ def _stream_name(adb_addr):
 def _agent_process_count(adb_addr):
     """Count actual Agent processes (not their background `sh -c` launcher)."""
     try:
-        subprocess.run([ADB, 'connect', adb_addr], capture_output=True, timeout=15)
+        subprocess.run(ADB_DEPLOY + ['connect', adb_addr], capture_output=True, timeout=15)
         # ps -ef exists on the target cloud phones and common Android builds.
         # Exclude shell/grep/awk command lines, which contain the search string.
         r = subprocess.run(
-            [ADB, '-s', adb_addr, 'shell',
+            ADB_DEPLOY + ['-s', adb_addr, 'shell',
              "ps -ef | grep 'myt-agent' | grep -v grep | grep -v 'sh -c' | grep -v awk"],
             capture_output=True, timeout=8)
         if r.returncode == 0:
@@ -292,7 +444,7 @@ def _agent_process_count(adb_addr):
                        if line.strip())
         # Fallback to Android's ps format, excluding shell and helper processes.
         r = subprocess.run(
-            [ADB, '-s', adb_addr, 'shell',
+            ADB_DEPLOY + ['-s', adb_addr, 'shell',
              "ps -A -o PID,NAME,ARGS | awk '$2 != \"sh\" && $2 != \"grep\" && $2 != \"awk\" "
              "&& index($0, \"myt-agent\") {print $1}'"],
             capture_output=True, timeout=8)
@@ -313,7 +465,7 @@ def _device_agent_pids(adb_addr):
     )
     for command in commands:
         try:
-            r = subprocess.run([ADB, '-s', adb_addr, 'shell', command],
+            r = subprocess.run(ADB_DEPLOY + ['-s', adb_addr, 'shell', command],
                                capture_output=True, timeout=8)
             for value in (r.stdout or b'').decode('utf-8', 'replace').split():
                 if value.isdigit():
@@ -335,7 +487,7 @@ def _kill_agent_process(adb_addr):
     and on some cloud phones it leaves root-owned Agent processes behind.
     """
     try:
-        subprocess.run([ADB, 'connect', adb_addr], capture_output=True, timeout=15)
+        subprocess.run(ADB_DEPLOY + ['connect', adb_addr], capture_output=True, timeout=15)
     except Exception:
         pass
     for _ in range(3):
@@ -346,7 +498,7 @@ def _kill_agent_process(adb_addr):
         # Try root first, then direct shell privileges for non-root devices.
         for command in (f"su -c 'kill -9 {pid_args}'", f'kill -9 {pid_args}'):
             try:
-                subprocess.run([ADB, '-s', adb_addr, 'shell', command],
+                subprocess.run(ADB_DEPLOY + ['-s', adb_addr, 'shell', command],
                                capture_output=True, timeout=10)
             except Exception:
                 pass
@@ -377,7 +529,7 @@ def _deploy_agent(adb_addr, max_size=None):
         return False
     try:
         # 0. 先 adb connect（adb_addr 是网关映射地址，必须 connect 后才能 push）
-        rc = subprocess.run([ADB, 'connect', adb_addr], capture_output=True, timeout=15)
+        rc = subprocess.run(ADB_DEPLOY + ['connect', adb_addr], capture_output=True, timeout=15)
         cout = (rc.stdout or b'').decode('utf-8', 'replace').strip()
         if rc.returncode != 0 and 'connected' not in cout and 'already' not in cout:
             print(f'[agent] adb connect {adb_addr} 失败: {cout}', flush=True)
@@ -388,11 +540,11 @@ def _deploy_agent(adb_addr, max_size=None):
         local_size = os.path.getsize(AGENT_BIN_PATH)
         local_md5 = _md5_file(AGENT_BIN_PATH)
         remote_md5 = ''
-        r = subprocess.run([ADB, '-s', adb_addr, 'shell', 'md5sum', AGENT_DEVICE_PATH],
+        r = subprocess.run(ADB_DEPLOY + ['-s', adb_addr, 'shell', 'md5sum', AGENT_DEVICE_PATH],
                            capture_output=True, timeout=8)
         if r.returncode == 0 and (r.stdout or b'').strip():
             remote_md5 = r.stdout.decode('utf-8', 'replace').split()[0].lower()
-        r = subprocess.run([ADB, '-s', adb_addr, 'shell', 'ls', '-l', AGENT_DEVICE_PATH],
+        r = subprocess.run(ADB_DEPLOY + ['-s', adb_addr, 'shell', 'ls', '-l', AGENT_DEVICE_PATH],
                            capture_output=True, timeout=8)
         remote_exists = r.returncode == 0
         remote_size = 0
@@ -413,7 +565,7 @@ def _deploy_agent(adb_addr, max_size=None):
             print(f'[agent] {adb_addr} 设备端 Agent 已是最新 ({local_md5[:12]}...)，跳过 push', flush=True)
         else:
             # 1. push Agent 二进制（检查返回码，失败即暴露真实原因）
-            r = subprocess.run([ADB, '-s', adb_addr, 'push', AGENT_BIN_PATH, AGENT_DEVICE_PATH],
+            r = subprocess.run(ADB_DEPLOY + ['-s', adb_addr, 'push', AGENT_BIN_PATH, AGENT_DEVICE_PATH],
                                capture_output=True, timeout=60)
             if r.returncode != 0:
                 err = (r.stderr or r.stdout or b'').decode('utf-8', 'replace').strip()
@@ -426,11 +578,11 @@ def _deploy_agent(adb_addr, max_size=None):
         jar_device = DEVICE_SERVER_JAR
         if os.path.exists(jar_local):
             local_jar_size = os.path.getsize(jar_local)
-            r = subprocess.run([ADB, '-s', adb_addr, 'shell', 'test', '-f', jar_device],
+            r = subprocess.run(ADB_DEPLOY + ['-s', adb_addr, 'shell', 'test', '-f', jar_device],
                                capture_output=True, timeout=8)
             if r.returncode != 0:
                 # jar 不存在，需要 push
-                r2 = subprocess.run([ADB, '-s', adb_addr, 'push', jar_local, jar_device],
+                r2 = subprocess.run(ADB_DEPLOY + ['-s', adb_addr, 'push', jar_local, jar_device],
                                     capture_output=True, timeout=60)
                 if r2.returncode != 0:
                     err = (r2.stderr or r2.stdout or b'').decode('utf-8', 'replace').strip()
@@ -465,7 +617,7 @@ def _deploy_agent(adb_addr, max_size=None):
                   f">/data/local/tmp/myt-agent.log 2>&1 </dev/null &")
         # 超时放宽到 15s；即使 adb shell 返回超时，只要 Agent 进程已起来也算成功。
         try:
-            r3 = subprocess.run([ADB, '-s', adb_addr, 'shell', launch],
+            r3 = subprocess.run(ADB_DEPLOY + ['-s', adb_addr, 'shell', launch],
                                 capture_output=True, timeout=30)
             launch_ok = r3.returncode == 0
             err = (r3.stderr or r3.stdout or b'').decode('utf-8', 'replace').strip()
@@ -484,7 +636,7 @@ def _deploy_agent(adb_addr, max_size=None):
         # 导致 Agent 的 reader.Read() 永久阻塞，画面黑屏。
         time.sleep(5)
         try:
-            subprocess.run([ADB, '-s', adb_addr, 'shell', 'input tap 100 100'],
+            subprocess.run(ADB_DEPLOY + ['-s', adb_addr, 'shell', 'input tap 100 100'],
                            capture_output=True, timeout=5)
             print(f'[agent] 已发送 dummy 触摸触发首帧: {adb_addr}', flush=True)
         except Exception as e:
@@ -532,7 +684,7 @@ def get_device_size(adb_addr):
     if cached and cached[0] > now:
         return cached[1]
     try:
-        r = subprocess.run([ADB, '-s', adb_addr, 'shell', 'wm', 'size'],
+        r = subprocess.run(ADB_DEPLOY + ['-s', adb_addr, 'shell', 'wm', 'size'],
                            capture_output=True, timeout=10)
         out = (r.stdout or b'').decode(errors='replace')
     except Exception:
@@ -1369,9 +1521,10 @@ async def _handle_control(adb_addr, msg):
     if not cmd:
         return
     try:
-        # 复用生产者/心跳已建立并维持的连接，直接下发；不再每次 touch 前冗余 adb connect（省延迟、减 adb churn）
-        await asyncio.to_thread(subprocess.run, [ADB, '-s', adb_addr, 'shell', cmd],
-                               capture_output=True, timeout=10)
+        # 通过持久 shell 会话下发，避免每次 spawn 新 adb client（省 20-40ms/命令）
+        ok = await asyncio.to_thread(_run_shell_cmd, adb_addr, cmd, 3)
+        if not ok:
+            print(f'[control] {adb_addr} cmd failed or timeout', flush=True)
     except Exception as e:
         print(f'[control] {adb_addr} cmd failed: {e}', flush=True)
 
@@ -1405,9 +1558,7 @@ class _ControlHTTPHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b'bad action/params')
             return
         try:
-            r = subprocess.run([ADB, '-s', adb_addr, 'shell', cmd],
-                               capture_output=True, timeout=10)
-            ok = r.returncode == 0
+            ok = _run_shell_cmd(adb_addr, cmd, 3)
         except Exception as e:
             ok = False
             print(f'[control-http] {adb_addr} failed: {e}', flush=True)
@@ -1508,6 +1659,8 @@ def _start_control_http():
 async def main():
     from websockets.asyncio.server import serve
     print(f'[relay][multithread {__version__}] Starting on ws://0.0.0.0:{WS_PORT}', flush=True)
+    # 启动独立 adb server（部署面），避免 deploy/push 阻塞控制面
+    threading.Thread(target=_start_deploy_adb_server, daemon=True).start()
     threading.Thread(target=_start_control_http, daemon=True).start()
 
     async def router(ws):
