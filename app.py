@@ -562,6 +562,9 @@ def _sync_one_device(dev):
     db.update_device(dev['id'], status='online', container_count=len(data),
                      host_ver=str(host_ver or ''))
     # 实例名/状态在不同 myt 固件下字段名不一致，做多候选兜底
+    ID_KEYS = ('id', 'container_id', 'cid', 'vm_id', 'instance_id', 'InstanceId',
+               'containerId', 'short_id', 'ShortId', 'uuid')
+    INDEX_KEYS = ('index', 'index_num', 'idx', 'slot', 'num')
     NAME_KEYS = ('Names', 'name', 'container_name', 'vm_name', 'cname',
                  'container', 'containerId')
     STATE_KEYS = ('State', 'state', 'status')
@@ -575,8 +578,24 @@ def _sync_one_device(dev):
                 break
         # 主键用稳定槽位 ip:index（容器在设备上的序号，改名不变），避免用会变的 name 导致 id 漂移；
         # 无 index 时才退化为 ip:name。
-        _idx = c.get('index', 0)
-        cid = c.get('id') or (f"{dev['ip']}:{_idx}" if _idx else f"{dev['ip']}:{raw_name}")
+        cid = ''
+        for k in ('id', 'container_id', 'cid', 'vm_id', 'instance_id', 'InstanceId',
+                  'containerId', 'short_id', 'ShortId', 'uuid'):
+            v = c.get(k)
+            if v is not None and str(v).strip():
+                cid = str(v).strip()
+                break
+        if not cid:
+            _idx = 0
+            for k in ('index', 'index_num', 'idx', 'slot', 'num'):
+                v = c.get(k)
+                if v is not None:
+                    try:
+                        _idx = int(v)
+                        break
+                    except (ValueError, TypeError):
+                        continue
+            cid = f"{dev['ip']}:{_idx}" if _idx else f"{dev['ip']}:{raw_name}"
         seen.add(cid)
         adb_port = str(c.get('adb') or '')
         s5 = c.get('s5') or {}
