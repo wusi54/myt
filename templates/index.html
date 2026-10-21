@@ -1382,11 +1382,43 @@ document.addEventListener('visibilitychange',()=>{
     }
   }catch(e){}
 });
+// P0-2: 过期 touch 丢弃 — 每设备维护 in-flight 标记，move/swipe 在上一个请求未完成时丢弃
+const _touchInFlight=new Set();
+// P1-3: WebSocket 控制通道（消除 HTTP 往返开销）
+let _ctrlWs=null, _ctrlWsReady=false, _ctrlWsQueue=[];
+function _ctrlWsConnect(){
+  if(_ctrlWs && (_ctrlWs.readyState===WebSocket.OPEN || _ctrlWs.readyState===WebSocket.CONNECTING)) return;
+  const proto=location.protocol==='https:'?'wss:':'ws:';
+  const url=proto+'//'+location.host+'/ws/control';
+  try{
+    _ctrlWs=new WebSocket(url);
+    _ctrlWs.onopen=()=>{ _ctrlWsReady=true; // 发送队列中的消息
+      while(_ctrlWsQueue.length){ const m=_ctrlWsQueue.shift(); try{_ctrlWs.send(JSON.stringify(m))}catch(e){} }
+    };
+    _ctrlWs.onclose=()=>{ _ctrlWsReady=false; _ctrlWs=null; };
+    _ctrlWs.onerror=()=>{ _ctrlWsReady=false; };
+  }catch(e){ _ctrlWs=null; _ctrlWsReady=false; }
+}
+// 页面加载时建立 WS 控制连接
+_ctrlWsConnect();
+// 每 5s 检查重连
+setInterval(()=>{ if(!_ctrlWsReady) _ctrlWsConnect(); },5000);
+
 function wallSendTouch(adbAddr,action,params){
-  // 控制走 HTTP 层：/api/screen/touch -> app.py -> relay:9001，由 relay 单一 adb 执行，不走 WS 控制
+  if((action==='tap'||action==='swipe') && _touchInFlight.has(adbAddr)){
+    return; // 丢弃过期 touch，只保留最新
+  }
+  _touchInFlight.add(adbAddr);
+  const msg={adb_addr:adbAddr,action,...params};
+  if(_ctrlWsReady && _ctrlWs){
+    try{ _ctrlWs.send(JSON.stringify(msg)); _touchInFlight.delete(adbAddr); return; }catch(e){}
+  }
+  // WS 不可用，回退 HTTP
+  _ctrlWsQueue.push(msg);
   api('/api/screen/touch','POST',{adb_addr:adbAddr,action,...params})
     .then(d=>{ if(!d||d.code!==200) toast('控制失败: '+(d&&d.msg||d&&d.code||'未知'),'error'); })
-    .catch(e=>{ toast('控制请求未送达: '+e,'error'); });
+    .catch(e=>{ toast('控制请求未送达: '+e,'error'); })
+    .finally(()=>{ _touchInFlight.delete(adbAddr); });
 }
 // 自适应列：按每格最小宽度（220px）推算列数，再以设备数封顶，避免出现大量空占位
 function wallAutoCols(){

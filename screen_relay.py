@@ -1445,9 +1445,7 @@ async def agent_handler(ws):
     path = ws.request.path if hasattr(ws, 'request') else '/'
     qs = parse_qs(urlparse(path).query)
     adb_addr = (qs.get('adb_addr') or [''])[0]
-    if not adb_addr:
-        await ws.close(4000, 'missing_adb_addr')
-        return
+    # adb_addr 可以从消息体中获取（支持单连接多设备）
     # Agent 认证：独立共享密钥（AGENT_TOKEN）
     token = (qs.get('token') or [''])[0]
     if AGENT_TOKEN and token != AGENT_TOKEN:
@@ -1485,6 +1483,46 @@ async def agent_handler(ws):
         # 自愈：Agent 断开后，后台重新部署 Agent（Agent 会自动重连 /agent）
         # 避免「Agent 断了就永远黑屏，直到浏览器重连才恢复」
         threading.Thread(target=lambda: agent_mgr.deploy(adb_addr), daemon=True).start()
+
+
+async def control_ws_handler(ws):
+    """WebSocket 控制通道：接收 JSON 控制指令，执行 adb shell，fire-and-forget（无响应）。
+
+    路径: /control-ws?adb_addr=xxx
+    优势：消除 HTTP 往返开销（~5-20ms/命令），控制指令直接通过 WS 发送。
+    降级：WS 不可用时前端自动回退到 HTTP POST /control。
+    """
+    from urllib.parse import urlparse, parse_qs
+    path = ws.request.path if hasattr(ws, 'request') else '/'
+    qs = parse_qs(urlparse(path).query)
+    adb_addr = (qs.get('adb_addr') or [''])[0]
+    # adb_addr 可以从消息体中获取（支持单连接多设备）
+    print(f'[relay][control-ws] connected adb_addr={adb_addr}', flush=True)
+    try:
+        async for msg in ws:
+            try:
+                d = json.loads(msg) if isinstance(msg, str) else json.loads(msg.decode('utf-8', 'replace'))
+            except Exception:
+                continue
+            if not isinstance(d, dict):
+                continue
+            # 支持两种消息格式：
+            # 1. {type:'control', action:'tap', nx:0.5, ny:0.5, adb_addr:'...'}
+            # 2. {adb_addr:'...', action:'tap', nx:0.5, ny:0.5}  (简化格式)
+            msg_adb = d.get('adb_addr') or adb_addr
+            if not msg_adb:
+                continue
+            cmd = build_input_cmd(msg_adb, d)
+            if not cmd:
+                continue
+            try:
+                await asyncio.to_thread(_run_shell_cmd, msg_adb, cmd, 3)
+            except Exception as e:
+                print(f'[control-ws] {msg_adb} failed: {e}', flush=True)
+    except Exception:
+        pass
+    finally:
+        print(f'[relay][control-ws] disconnected adb_addr={adb_addr}', flush=True)
 
 
 async def agent_hb_handler(ws):
@@ -1726,12 +1764,14 @@ async def main():
     threading.Thread(target=_start_control_http, daemon=True).start()
 
     async def router(ws):
-        """按路径分发：/agent/hb 心跳、/agent 上行流、其余浏览器投屏。"""
+        """按路径分发：/agent/hb 心跳、/agent 上行流、/control-ws 控制通道、其余浏览器投屏。"""
         path = ws.request.path if hasattr(ws, 'request') else '/'
         if path.startswith('/agent/hb'):
             await agent_hb_handler(ws)
         elif path.startswith('/agent'):
             await agent_handler(ws)
+        elif path.startswith('/control-ws'):
+            await control_ws_handler(ws)
         else:
             await handler(ws)
 
