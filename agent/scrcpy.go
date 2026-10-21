@@ -205,26 +205,6 @@ func (s *ScrcpyServer) Stop() {
 	exec.Command("pkill", "-f", "com.genymobile.scrcpy.Server").Run()
 }
 
-// ReadFrame 从 conn 读取一个 scrcpy 帧（12字节头 + payload）。
-// 返回 (annexb payload, 是否 config 帧, error)。
-func (s *ScrcpyServer) ReadFrame(conn net.Conn) ([]byte, bool, error) {
-	// 读 12 字节头
-	header := make([]byte, 12)
-	if _, err := io.ReadFull(conn, header); err != nil {
-		return nil, false, err
-	}
-	val := binary.BigEndian.Uint64(header[0:8])
-	size := binary.BigEndian.Uint32(header[8:12])
-	config := (val >> 63) & 1
-	if size == 0 {
-		return nil, config == 1, nil
-	}
-	if size > 8*1024*1024 {
-		return nil, false, fmt.Errorf("帧 size 异常: %d", size)
-	}
-	payload := make([]byte, size)
-	if _, err := io.ReadFull(conn, payload); err != nil {
-		return nil, false, err
-	}
-	return payload, config == 1, nil
-}
+// ReadFrame 已从主循环移除：帧解析已收敛到 framePump.pump（按流复用读缓冲，
+// 支持半帧跨多次读取重组），此处不再保留重复实现。
+
