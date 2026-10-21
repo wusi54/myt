@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"reflect"
 	"strings"
 	"time"
 
@@ -13,39 +12,53 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
+	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph265"
 
 	"github.com/pion/rtcp"
 )
 
-// ErrQueueFull 表示 gortsplib 写队列已满（消费端/MediaMTX 跟不上推流速率）。
-// 该错误不应触发 RTSP 重连，仅丢弃当前帧并限流日志；重连只针对连接断开类错误。
+// ErrQueueFull 表示 gortsplib 写队列已满。
 var ErrQueueFull = errors.New("write queue is full")
 
-// RTPStreamer 负责把 scrcpy 采集到的 H.264 帧转成 RTP 推流到 MediaMTX。
+// stripVUIEnabled 控制是否剥离 SPS color VUI。
+var stripVUIEnabled = true
+
+// RTPStreamer 负责把 scrcpy 采集到的视频帧转成 RTP 推流到 MediaMTX。
 type RTPStreamer struct {
-	rtspURL   string // rtsp://mediamtx:8554/device_xxx
-	protocol  *gortsplib.Protocol
-	client    *gortsplib.Client
-	forma     *format.H264
-	rtpEnc    *rtph264.Encoder
-	media     *description.Media
-	baseURL   *base.URL
-	keepAlive chan struct{}
-	// PTS 基准
+	rtspURL  string
+	codec    string // h264 或 h265
+	protocol *gortsplib.Protocol
+	client   *gortsplib.Client
+	// H.264
+	formaH264 *format.H264
+	rtpEncH264 *rtph264.Encoder
+	// H.265
+	formaH265  *format.H265
+	rtpEncH265 *rtph265.Encoder
+	media      *description.Media
+	baseURL    *base.URL
+	keepAlive  chan struct{}
 	startTime   time.Time
 	randomStart uint32
 	frameCount  uint64
+	// 缓存的参数集（用于重连恢复）
+	sps []byte
+	pps []byte
+	vps []byte
 }
 
 // NewRTPStreamer 创建推流器。
-// transport: "tcp"（推荐，穿透 NAT/防火墙稳定）或 "udp"（低延迟，需网络可达）。
-func NewRTPStreamer(rtspURL, transport string) *RTPStreamer {
-	proto := gortsplib.ProtocolTCP // 默认 TCP：RTP 内嵌 RTSP 连接，不受 NAT/端口映射影响
+func NewRTPStreamer(rtspURL, transport, codec string) *RTPStreamer {
+	proto := gortsplib.ProtocolTCP
 	if transport == "udp" {
 		proto = gortsplib.ProtocolUDP
 	}
+	if codec == "" {
+		codec = "h264"
+	}
 	return &RTPStreamer{
 		rtspURL:   rtspURL,
+		codec:     codec,
 		protocol:  &proto,
 		startTime: time.Now(),
 	}
@@ -53,6 +66,13 @@ func NewRTPStreamer(rtspURL, transport string) *RTPStreamer {
 
 // Connect 连接 MediaMTX 并开始 RECORD 推流。
 func (r *RTPStreamer) Connect() error {
+	if r.codec == "h265" {
+		return r.connectH265()
+	}
+	return r.connectH264()
+}
+
+func (r *RTPStreamer) connectH264() error {
 	forma := &format.H264{
 		PayloadTyp:        96,
 		PacketizationMode: 1,
@@ -66,65 +86,84 @@ func (r *RTPStreamer) Connect() error {
 
 	c := &gortsplib.Client{
 		Protocol:       r.protocol,
-		WriteQueueSize: 2048, // 增大队列，避免高帧率/大帧时 "write queue is full"
+		WriteQueueSize: 2048,
 	}
 	if err := c.StartRecording(r.rtspURL, desc); err != nil {
 		return fmt.Errorf("RTSP RECORD 开始失败: %w", err)
 	}
 	r.client = c
-	r.forma = forma
+	r.formaH264 = forma
 	r.media = desc.Medias[0]
 
-	// 解析 base URL 用于 keep-alive
-	u, err := base.ParseURL(r.rtspURL)
-	if err == nil {
-		r.baseURL = u
-	}
-
-	// P2: RTSP keep-alive（gortsplib 对 TCP recording 默认禁用 keep-alive，
-	// 弱网/NAT 环境下会话老化导致断连）。每 20s 发送 RTCP Sender Report 保活 TCP 连接。
-	r.keepAlive = make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(20 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-r.keepAlive:
-				return
-			case <-ticker.C:
-				if r.client != nil && r.media != nil {
-					// 通过反射获取 forma 的 localSSRC（未导出字段）
-					ssrc := uint32(0)
-					if r.forma != nil {
-						v := reflect.ValueOf(r.forma).Elem()
-						if f := v.FieldByName("localSSRC"); f.IsValid() {
-							ssrc = uint32(f.Uint())
-						}
-					}
-					sr := &rtcp.SenderReport{
-						SSRC:        ssrc,
-						NTPTime:     uint64(time.Now().Unix()) << 32,
-						RTPTime:     uint32(time.Now().UnixNano() / 1e6 * 90),
-						PacketCount: uint32(r.frameCount),
-						OctetCount:  0,
-					}
-					if err := r.client.WritePacketRTCP(r.media, sr); err != nil {
-						log.Printf("[rtsp] keep-alive RTCP 失败: %v", err)
-					}
-				}
-			}
-		}
-	}()
-
-	// 生成随机 SSRC 起点（避免多流冲突）
 	bs := make([]byte, 4)
 	for i := range bs {
 		bs[i] = byte(time.Now().UnixNano() >> (8 * i))
 	}
 	r.randomStart = uint32(bs[0])<<24 | uint32(bs[1])<<16 | uint32(bs[2])<<8 | uint32(bs[3])
 
-	log.Printf("[rtsp] 已连接 MediaMTX: %s", r.rtspURL)
+	u, err := base.ParseURL(r.rtspURL)
+	if err == nil {
+		r.baseURL = u
+	}
+
+	r.keepAlive = make(chan struct{})
+	go r.keepAliveLoop()
+
+	log.Printf("[rtsp] 已连接 MediaMTX: %s (H.264)", r.rtspURL)
 	return nil
+}
+
+func (r *RTPStreamer) connectH265() error {
+	forma := &format.H265{
+		PayloadTyp: 97,
+	}
+	desc := &description.Session{
+		Medias: []*description.Media{{
+			Type:    description.MediaTypeVideo,
+			Formats: []format.Format{forma},
+		}},
+	}
+
+	c := &gortsplib.Client{
+		Protocol:       r.protocol,
+		WriteQueueSize: 2048,
+	}
+	if err := c.StartRecording(r.rtspURL, desc); err != nil {
+		return fmt.Errorf("RTSP RECORD 开始失败: %w", err)
+	}
+	r.client = c
+	r.formaH265 = forma
+	r.media = desc.Medias[0]
+
+	u, err := base.ParseURL(r.rtspURL)
+	if err == nil {
+		r.baseURL = u
+	}
+
+	r.keepAlive = make(chan struct{})
+	go r.keepAliveLoop()
+
+	log.Printf("[rtsp] 已连接 MediaMTX: %s (H.265)", r.rtspURL)
+	return nil
+}
+
+// keepAliveLoop 每 20s 发送 RTCP Sender Report 保活 TCP 连接。
+func (r *RTPStreamer) keepAliveLoop() {
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.keepAlive:
+			return
+		case <-ticker.C:
+			if r.client != nil && r.media != nil {
+				sr := &rtcp.SenderReport{SSRC: 0}
+				if err := r.client.WritePacketRTCP(r.media, sr); err != nil {
+					log.Printf("[rtsp] keep-alive RTCP 失败: %v", err)
+				}
+			}
+		}
+	}
 }
 
 // Close 关闭连接。
@@ -139,68 +178,109 @@ func (r *RTPStreamer) Close() {
 	}
 }
 
-// UpdateSPSPPS 从 config 帧中提取 SPS/PPS，更新 forma 并重建 encoder。
-func (r *RTPStreamer) UpdateSPSPPS(nals [][]byte) {
-	for _, nal := range nals {
-		if len(nal) == 0 {
-			continue
-		}
-		nalType := nal[0] & 0x1F
-		if nalType == 7 { // SPS
-			// 剥离 color VUI，避免浏览器按 BT.709/BT.601 混搭解释导致偏蓝
-			// （与 RELAY_STRIP_VUI=1 一致）；必须深拷贝，buf 会被复用。
-			// AGENT_STRIP_VUI=0 可关闭，用于排查 VUI 剥离是否导致解码失败。
-			sps := nal
-			if stripVUIEnabled {
-				sps = stripSPSVUI(nal)
+// UpdateParams 从 config 帧中提取 VPS/SPS/PPS。
+func (r *RTPStreamer) UpdateParams(nals [][]byte) {
+	if r.codec == "h265" {
+		for _, nal := range nals {
+			if len(nal) == 0 {
+				continue
 			}
-			cp := make([]byte, len(sps))
-			copy(cp, sps)
-			r.forma.SPS = cp
-		} else if nalType == 8 { // PPS
-			cp := make([]byte, len(nal))
-			copy(cp, nal)
-			r.forma.PPS = cp
+			nalType := (nal[0] >> 1) & 0x3F
+			switch nalType {
+			case 32: // VPS
+				cp := make([]byte, len(nal))
+				copy(cp, nal)
+				r.formaH265.VPS = cp
+				r.vps = cp
+			case 33: // SPS
+				cp := make([]byte, len(nal))
+				copy(cp, nal)
+				r.formaH265.SPS = cp
+				r.sps = cp
+			case 34: // PPS
+				cp := make([]byte, len(nal))
+				copy(cp, nal)
+				r.formaH265.PPS = cp
+				r.pps = cp
+			}
 		}
-	}
-	// 重建 encoder（CreateEncoder 不依赖 SPS/PPS，但 SafeSetParams 用于 SDP）
-	if r.forma.SPS != nil && r.forma.PPS != nil {
-		r.forma.SafeSetParams(r.forma.SPS, r.forma.PPS)
-	}
-	if r.rtpEnc != nil {
-		r.rtpEnc = nil
+		if r.formaH265.VPS != nil && r.formaH265.SPS != nil && r.formaH265.PPS != nil {
+			r.formaH265.SafeSetParams(r.formaH265.VPS, r.formaH265.SPS, r.formaH265.PPS)
+		}
+	} else {
+		for _, nal := range nals {
+			if len(nal) == 0 {
+				continue
+			}
+			nalType := nal[0] & 0x1F
+			if nalType == 7 { // SPS
+				sps := nal
+				if stripVUIEnabled {
+					sps = stripSPSVUI(nal)
+				}
+				cp := make([]byte, len(sps))
+				copy(cp, sps)
+				r.formaH264.SPS = cp
+				r.sps = cp
+			} else if nalType == 8 { // PPS
+				cp := make([]byte, len(nal))
+				copy(cp, nal)
+				r.formaH264.PPS = cp
+				r.pps = cp
+			}
+		}
+		if r.formaH264.SPS != nil && r.formaH264.PPS != nil {
+			r.formaH264.SafeSetParams(r.formaH264.SPS, r.formaH264.PPS)
+		}
 	}
 }
 
 // EnsureEncoder 确保 RTP encoder 已初始化。
 func (r *RTPStreamer) EnsureEncoder() error {
-	if r.rtpEnc != nil {
+	if r.codec == "h265" {
+		if r.rtpEncH265 != nil {
+			return nil
+		}
+		if r.formaH265.VPS == nil || r.formaH265.SPS == nil || r.formaH265.PPS == nil {
+			return fmt.Errorf("VPS/SPS/PPS 未就绪")
+		}
+		enc, err := r.formaH265.CreateEncoder()
+		if err != nil {
+			return fmt.Errorf("创建 RTP encoder 失败: %w", err)
+		}
+		r.rtpEncH265 = enc
+		log.Printf("[rtsp] RTP encoder 已初始化 (H.265, VPS=%d SPS=%d PPS=%d bytes)", len(r.formaH265.VPS), len(r.formaH265.SPS), len(r.formaH265.PPS))
 		return nil
 	}
-	enc, err := r.forma.CreateEncoder()
+	if r.rtpEncH264 != nil {
+		return nil
+	}
+	if r.formaH264.SPS == nil || r.formaH264.PPS == nil {
+		return fmt.Errorf("SPS/PPS 未就绪")
+	}
+	enc, err := r.formaH264.CreateEncoder()
 	if err != nil {
 		return fmt.Errorf("创建 RTP encoder 失败: %w", err)
 	}
-	r.rtpEnc = enc
-	log.Printf("[rtsp] RTP encoder 已初始化 (SPS=%d bytes, PPS=%d bytes)", len(r.forma.SPS), len(r.forma.PPS))
+	r.rtpEncH264 = enc
+	log.Printf("[rtsp] RTP encoder 已初始化 (H.264, SPS=%d bytes, PPS=%d bytes)", len(r.formaH264.SPS), len(r.formaH264.PPS))
 	return nil
 }
 
-// PushFrame 推送一帧 annexb H.264 数据到 MediaMTX。
-// 返回 nil 表示成功，错误表示推流失败。
+// PushFrame 推送一帧。
 func (r *RTPStreamer) PushFrame(annexb []byte) error {
-	// 拷贝一份独立缓冲：调用方的读缓冲 buf 会被循环复用（append / reset），
-	// 而下方 splitAnnexB 得到的 NAL 切片、gortsplib 的 format.H264 持有的 SPS/PPS
-	// 引用、以及 RTP encoder 持有的 NAL 引用都指向这份数据。若不拷贝，buf 被后续
-	// 帧覆盖后会读到脏数据，极端情况下触发非法内存访问使 agent 进程崩溃（WHEP 随之 404）。
-	data := make([]byte, len(annexb))
-	copy(data, annexb)
-	nals := splitAnnexB(data)
+	nals := splitAnnexB(annexb)
 	if len(nals) == 0 {
 		return nil
 	}
 
-	// 检查是否包含参数集和 IDR 帧。
+	if r.codec == "h265" {
+		return r.pushH265(nals, annexb)
+	}
+	return r.pushH264(nals, annexb)
+}
+
+func (r *RTPStreamer) pushH264(nals [][]byte, annexb []byte) error {
 	hasSPS := false
 	hasPPS := false
 	hasIDR := false
@@ -218,63 +298,36 @@ func (r *RTPStreamer) PushFrame(annexb []byte) error {
 		}
 	}
 	if hasSPS {
-		r.UpdateSPSPPS(nals)
-		if err := r.EnsureEncoder(); err != nil {
-			return err
-		}
-		// 检查是否有 slice（type 1 或 5），没有则跳过推流
-		hasSlice := false
-		for _, nal := range nals {
-			if len(nal) > 0 {
-				t := nal[0] & 0x1F
-				if t == 1 || t == 5 {
-					hasSlice = true
-					break
-				}
-			}
-		}
-		if !hasSlice {
-			return nil // 纯 config 帧，跳过
-		}
+		r.UpdateParams(nals)
 	}
-
-	// 尚未拿到 SPS/PPS 时不能初始化 encoder（避免推出国 SPS=0 的坏流），
-	// 跳过该帧等待 config 帧；reconnect 后由缓存的 SPS 恢复。
-	if r.forma.SPS == nil || r.forma.PPS == nil {
-		return nil
+	if r.formaH264.SPS == nil {
+		return nil // 等待 SPS
 	}
-
-	if r.rtpEnc == nil {
+	if r.rtpEncH264 == nil {
 		if err := r.EnsureEncoder(); err != nil {
 			return err
 		}
 	}
 
-	// RTSP RECORD 已在采集到 SPS/PPS 前建立，因而 SDP 中没有参数集。
-	// 将参数集带在首个 IDR 前，确保解码器能初始化（如 iOS/FFmpeg）。
+	// 带参数集到 IDR 前
 	if hasIDR {
-		var parameterSets [][]byte
-		if !hasSPS && len(r.forma.SPS) > 0 {
-			parameterSets = append(parameterSets, r.forma.SPS)
+		var ps [][]byte
+		if !hasSPS && len(r.formaH264.SPS) > 0 {
+			ps = append(ps, r.formaH264.SPS)
 		}
-		if !hasPPS && len(r.forma.PPS) > 0 {
-			parameterSets = append(parameterSets, r.forma.PPS)
+		if !hasPPS && len(r.formaH264.PPS) > 0 {
+			ps = append(ps, r.formaH264.PPS)
 		}
-		if len(parameterSets) > 0 {
-			nals = append(parameterSets, nals...)
+		if len(ps) > 0 {
+			nals = append(ps, nals...)
 		}
 	}
 
-	// 计算 PTS（90000 时钟基）
-	pts := uint32(time.Since(r.startTime).Milliseconds()) * 90 // 90000/1000 = 90
-
-	// 生成 RTP packets
-	pkts, err := r.rtpEnc.Encode(nals)
+	pts := uint32(time.Since(r.startTime).Milliseconds()) * 90
+	pkts, err := r.rtpEncH264.Encode(nals)
 	if err != nil {
 		return fmt.Errorf("RTP 编码失败: %w", err)
 	}
-
-	// 写 RTP packets
 	for _, pkt := range pkts {
 		pkt.Timestamp = r.randomStart + pts
 		if err := r.client.WritePacketRTP(r.media, pkt); err != nil {
@@ -288,170 +341,75 @@ func (r *RTPStreamer) PushFrame(annexb []byte) error {
 	return nil
 }
 
-// stripSPSVUI 剥离 SPS NAL 的 color VUI（vui_parameters_present=0），与 screen_relay.py
-// _sps_strip_vui 完全一致的算法，避免浏览器按 BT.709/BT.601 混搭解释导致偏蓝。
-// 任何解析异常都原样返回（安全）。
-func stripSPSVUI(sps []byte) (out []byte) {
-	out = sps
-	defer func() {
-		if r := recover(); r != nil {
-			out = sps
-		}
-	}()
-	if len(sps) < 2 || sps[0]&0x1F != 7 {
-		return
-	}
-	// 1. RBSP：移除 emulation prevention (00 00 03 -> 00 00)
-	rbsp := []byte{}
-	i := 1
-	n := len(sps)
-	zeros := 0
-	for i < n {
-		b := sps[i]
-		if zeros == 2 && b == 0x03 {
-			zeros = 0
-			i++
+func (r *RTPStreamer) pushH265(nals [][]byte, annexb []byte) error {
+	hasVPS := false
+	hasSPS := false
+	hasPPS := false
+	hasIDR := false
+	for _, nal := range nals {
+		if len(nal) == 0 {
 			continue
 		}
-		rbsp = append(rbsp, b)
-		if b == 0 {
-			zeros++
-		} else {
-			zeros = 0
-		}
-		i++
-	}
-	// 2. bitstream
-	bits := []int{}
-	for _, by := range rbsp {
-		for k := 7; k >= 0; k-- {
-			bits = append(bits, int((by>>k)&1))
+		nalType := (nal[0] >> 1) & 0x3F
+		switch nalType {
+		case 32:
+			hasVPS = true
+		case 33:
+			hasSPS = true
+		case 34:
+			hasPPS = true
+		case 19, 20, 21:
+			hasIDR = true
 		}
 	}
-	pos := 0
-	u := func(nb int) int {
-		v := 0
-		for j := 0; j < nb; j++ {
-			if pos >= len(bits) {
-				panic("oob")
+	if hasVPS || hasSPS || hasPPS {
+		r.UpdateParams(nals)
+	}
+	if r.formaH265.VPS == nil {
+		return nil // 等待 VPS
+	}
+	if r.rtpEncH265 == nil {
+		if err := r.EnsureEncoder(); err != nil {
+			return err
+		}
+	}
+
+	// 带参数集到 IDR 前
+	if hasIDR {
+		var ps [][]byte
+		if !hasVPS && r.formaH265.VPS != nil {
+			ps = append(ps, r.formaH265.VPS)
+		}
+		if !hasSPS && r.formaH265.SPS != nil {
+			ps = append(ps, r.formaH265.SPS)
+		}
+		if !hasPPS && r.formaH265.PPS != nil {
+			ps = append(ps, r.formaH265.PPS)
+		}
+		if len(ps) > 0 {
+			nals = append(ps, nals...)
+		}
+	}
+
+	pts := uint32(time.Since(r.startTime).Milliseconds()) * 90
+	pkts, err := r.rtpEncH265.Encode(nals)
+	if err != nil {
+		return fmt.Errorf("RTP 编码失败: %w", err)
+	}
+	for _, pkt := range pkts {
+		pkt.Timestamp = r.randomStart + pts
+		if err := r.client.WritePacketRTP(r.media, pkt); err != nil {
+			if strings.Contains(err.Error(), "write queue is full") {
+				return ErrQueueFull
 			}
-			v = (v << 1) | bits[pos]
-			pos++
-		}
-		return v
-	}
-	ue := func() int {
-		lz := 0
-		for bits[pos] == 0 {
-			lz++
-			pos++
-			if lz > 32 {
-				panic("ue")
-			}
-		}
-		pos++ // the trailing 1
-		suffix := 0
-		for j := 0; j < lz; j++ {
-			suffix = (suffix << 1) | bits[pos]
-			pos++
-		}
-		return (1 << lz) - 1 + suffix
-	}
-	// 3. 解析 SPS（与 Python _sps_strip_vui 完全一致的字段顺序）
-	profile := u(8)
-	u(8) // constraint set flags
-	u(8) // level
-	ue()  // seq_parameter_set_id
-	if profile == 100 || profile == 110 || profile == 122 || profile == 244 || profile == 44 || profile == 83 || profile == 86 || profile == 118 || profile == 128 || profile == 138 || profile == 139 || profile == 134 || profile == 135 {
-		c := ue()
-		if c == 3 {
-			u(1)
-		}
-		ue()
-		ue()
-		u(1)
-		if u(1) != 0 {
-			panic("scaling")
+			return fmt.Errorf("写 RTP 包失败: %w", err)
 		}
 	}
-	ue() // log2_max_frame_num_minus4
-	pocType := ue()
-	if pocType == 0 {
-		ue() // log2_max_pic_order_cnt_lsb_minus4
-	} else if pocType == 1 {
-		u(1) // delta_pic_order_always_zero_flag
-		ue() // offset_for_non_ref_pic
-		ue() // offset_for_top_to_bottom_field
-		for i := 0; i < ue(); i++ { // num_ref_frames_in_pic_order_cnt_cycle
-			ue()
-		}
-	}
-	ue() // max_num_ref_frames
-	u(1) // gaps_in_frame_num_value_allowed_flag
-	ue() // pic_width_in_mbs_minus1
-	ue() // pic_height_in_map_units_minus1
-	frameMbsOnly := u(1)
-	if frameMbsOnly == 0 {
-		u(1) // mb_adaptive_frame_field_flag
-	}
-	u(1) // direct_8x8_inference_flag
-	cropFlag := u(1)
-	if cropFlag != 0 {
-		ue()
-		ue()
-		ue()
-		ue()
-	}
-	ue()
-	u(1)
-	ue()
-	ue()
-	u(1)
-	u(1)
-	// 捕获 vui flag 位置（在消费之前），以便正确剥离 VUI 数据
-	vuiFlagPos := pos
-	vuiFlag := u(1) // vui_parameters_present_flag
-	if vuiFlag != 0 {
-		// 消费 VUI 数据（4 个 ue，与 Python 一致）
-		ue()
-		ue()
-		ue()
-		ue()
-	}
-	if bits[vuiFlagPos] == 0 {
-		return // 已经是 0，无需修改
-	}
-	// 剥离：保留到 vui flag 之前，flag 置 0，截断所有 VUI 数据，追加 RBSP trailing
-	newBits := make([]int, vuiFlagPos)
-	copy(newBits, bits[:vuiFlagPos])
-	newBits = append(newBits, 0) // vui flag = 0
-	newBits = append(newBits, 1) // rbsp trailing
-	for len(newBits)%8 != 0 {
-		newBits = append(newBits, 0)
-	}
-	newRbsp := []byte{}
-	for j := 0; j < len(newBits); j += 8 {
-		by := byte(0)
-		for k := 0; k < 8; k++ {
-			by = (by << 1) | byte(newBits[j+k])
-		}
-		newRbsp = append(newRbsp, by)
-	}
-	outBytes := []byte{sps[0]}
-	for _, by := range newRbsp {
-		if len(outBytes) >= 2 && outBytes[len(outBytes)-1] == 0 && outBytes[len(outBytes)-2] == 0 && by <= 3 {
-			outBytes = append(outBytes, 0x03)
-		}
-		outBytes = append(outBytes, by)
-	}
-	out = outBytes
-	return
+	r.frameCount++
+	return nil
 }
 
-// stripVUIEnabled 控制是否剥离 SPS color VUI（可通过 -strip-vui 标志或 AGENT_STRIP_VUI 环境变量关闭）。
-var stripVUIEnabled = true
-
-// splitAnnexB 把 annexb 格式的 H.264 数据拆成 NAL 数组（不含 start code）。
+// splitAnnexB 把 annexb 格式的 H.264/H.265 数据拆成 NAL 数组。
 func splitAnnexB(data []byte) [][]byte {
 	var nals [][]byte
 	n := len(data)
@@ -481,3 +439,140 @@ func splitAnnexB(data []byte) [][]byte {
 	}
 	return nals
 }
+
+// stripSPSVUI 剥离 SPS color VUI（H.264 only）。
+func stripSPSVUI(sps []byte) (out []byte) {
+	out = sps
+	defer func() {
+		if r := recover(); r != nil {
+			out = sps
+		}
+	}()
+	if len(sps) < 2 || sps[0]&0x1F != 7 {
+		return sps
+	}
+	rbsp := []byte{}
+	i := 1
+	n := len(sps)
+	zeros := 0
+	for i < n {
+		b := sps[i]
+		if zeros == 2 && b == 0x03 {
+			zeros = 0
+			i++
+			continue
+		}
+		rbsp = append(rbsp, b)
+		if b == 0 {
+			zeros++
+		} else {
+			zeros = 0
+		}
+		i++
+	}
+	bits := []int{}
+	for _, by := range rbsp {
+		for k := 7; k >= 0; k-- {
+			bits = append(bits, int((by>>k)&1))
+		}
+	}
+	pos := 0
+	u := func(nb int) int {
+		v := 0
+		for j := 0; j < nb; j++ {
+			if pos >= len(bits) {
+				panic("oob")
+			}
+			v = (v << 1) | bits[pos]
+			pos++
+		}
+		return v
+	}
+	ue := func() int {
+		lz := 0
+		for bits[pos] == 0 {
+			lz++
+			pos++
+			if lz > 32 {
+				panic("ue")
+			}
+		}
+		pos++
+		suffix := 0
+		for j := 0; j < lz; j++ {
+			suffix = (suffix << 1) | bits[pos]
+			pos++
+		}
+		return (1 << lz) - 1 + suffix
+	}
+	profile := u(8)
+	u(8)
+	u(8)
+	ue()
+	if profile == 100 || profile == 110 || profile == 122 || profile == 244 || profile == 44 || profile == 83 || profile == 86 || profile == 118 || profile == 128 || profile == 138 || profile == 139 || profile == 134 || profile == 135 {
+		c := ue()
+		if c == 3 {
+			u(1)
+		}
+		ue()
+		ue()
+		u(1)
+		if u(1) != 0 {
+			panic("scaling")
+		}
+	}
+	ue()
+	pocType := ue()
+	if pocType == 0 {
+		ue()
+	} else if pocType == 1 {
+		u(1)
+		ue()
+		ue()
+		for i := 0; i < ue(); i++ {
+			ue()
+		}
+	}
+	ue()
+	u(1)
+	ue()
+	ue()
+	u(1)
+	u(1)
+	vuiFlagPos := pos
+	vuiFlag := u(1)
+	if vuiFlag != 0 {
+		ue()
+		ue()
+		ue()
+		ue()
+	}
+	if bits[vuiFlagPos] == 0 {
+		return sps
+	}
+	newBits := make([]int, vuiFlagPos)
+	copy(newBits, bits[:vuiFlagPos])
+	newBits = append(newBits, 0)
+	newBits = append(newBits, 1)
+	for len(newBits)%8 != 0 {
+		newBits = append(newBits, 0)
+	}
+	newRbsp := []byte{}
+	for j := 0; j < len(newBits); j += 8 {
+		by := byte(0)
+		for k := 0; k < 8; k++ {
+			by = (by << 1) | byte(newBits[j+k])
+		}
+		newRbsp = append(newRbsp, by)
+	}
+	outBytes := []byte{sps[0]}
+	for _, by := range newRbsp {
+		if len(outBytes) >= 2 && outBytes[len(outBytes)-1] == 0 && outBytes[len(outBytes)-2] == 0 && by <= 3 {
+			outBytes = append(outBytes, 0x03)
+		}
+		outBytes = append(outBytes, by)
+	}
+	out = outBytes
+	return
+}
+
