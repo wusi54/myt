@@ -261,7 +261,9 @@ MEDIAMTX_WEBRTC_URL = os.environ.get('MEDIAMTX_WEBRTC_URL', 'http://113.105.100.
 AGENT_TOKEN = os.environ.get('AGENT_TOKEN', '')
 # 设备可达的 relay WS 基地址（供设备端 Agent 回连心跳 /agent/hb），如 ws://1.2.3.4:9000。
 # 为空则 agent 不发心跳：relay 不做自动探活/重部署，由用户看画面手动「重启投屏」。
-RELAY_WS_URL = os.environ.get('RELAY_WS_URL', '').rstrip('/')
+RELAY_WS_URL = os.environ.get('RELAY_WS_URL', 'ws://113.105.100.58:9000').rstrip('/')
+if not RELAY_WS_URL:
+    print('[relay][WARN] RELAY_WS_URL 未设置，Agent 心跳将无法上报，P0-1 心跳判定离线不可用。', flush=True)
 # Agent 推流传输协议：tcp 为默认（RTP 内嵌 RTSP 连接，NAT/防火墙穿透稳定，已验证）。
 # udp 仅在同网段/无 NAT 的链路排障或低延迟场景下使用（外网 UDP 媒体端口映射不可靠）。
 AGENT_TRANSPORT = os.environ.get('AGENT_TRANSPORT', 'tcp')
