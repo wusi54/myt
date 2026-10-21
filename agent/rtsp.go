@@ -353,8 +353,11 @@ func stripSPSVUI(sps []byte) (out []byte) {
 	ue()
 	u(1)
 	u(1)
+	// 捕获 vui flag 位置（在消费之前），以便正确剥离 VUI 数据
 	vuiFlagPos := pos
-	if u(1) != 0 { // vui_parameters_present_flag == 1
+	vuiFlag := u(1) // vui_parameters_present_flag
+	if vuiFlag != 0 {
+		// 消费 VUI 数据（4 个 ue，与 Python 一致）
 		ue()
 		ue()
 		ue()
@@ -363,7 +366,7 @@ func stripSPSVUI(sps []byte) (out []byte) {
 	if bits[vuiFlagPos] == 0 {
 		return // 已经是 0，无需修改
 	}
-	// 4. 剥离：vui flag 置 0，并截断 VUI 数据，追加 RBSP trailing
+	// 剥离：保留到 vui flag 之前，flag 置 0，截断所有 VUI 数据，追加 RBSP trailing
 	newBits := make([]int, vuiFlagPos)
 	copy(newBits, bits[:vuiFlagPos])
 	newBits = append(newBits, 0) // vui flag = 0
