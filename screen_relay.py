@@ -363,6 +363,12 @@ class AgentManager:
         with lock:
             # 保持幂等：健康的 Agent 正在运行时绝不能先 kill。
             # 普通 ensure/WHEP 重连会频繁调用此方法，重启会中断媒体流。
+            # 心跳判定：Agent 心跳正常时，跳过 adb connect 探活（省 5-15s）
+            with hb_lock:
+                last_hb = hb_last.get(adb_addr, 0)
+            hb_fresh = (time.time() - last_hb) < 30
+            if hb_fresh:
+                print(f'[agent] {adb_addr} 心跳正常（{time.time()-last_hb:.0f}s 前），跳过 adb connect 探活', flush=True)
             process_count = _agent_process_count(adb_addr)
             if max_size is None and process_count == 1:
                 self.set_state(adb_addr, status='running',
@@ -384,7 +390,11 @@ class AgentManager:
     def stop(self, adb_addr):
         """停止设备端 Agent 进程。"""
         try:
-            subprocess.run(ADB_DEPLOY + ['connect', adb_addr], capture_output=True, timeout=10)
+            with hb_lock:
+                last_hb = hb_last.get(adb_addr, 0)
+            hb_fresh = (time.time() - last_hb) < 30
+            conn_timeout = 5 if hb_fresh else 10
+            subprocess.run(ADB_DEPLOY + ['connect', adb_addr], capture_output=True, timeout=conn_timeout)
             _kill_agent_process(adb_addr)
         except Exception:
             pass
@@ -494,7 +504,12 @@ def _device_agent_pids(adb_addr):
 
 
 def _agent_running(adb_addr):
-    """设备端是否有 Agent 进程（兼容云手机的 ps -ef/Android ps）。"""
+    """设备端是否有 Agent 进程（兼容云手机的 ps -ef/Android ps）。
+    心跳正常时直接返回 True，跳过 adb connect 探活。"""
+    with hb_lock:
+        last_hb = hb_last.get(adb_addr, 0)
+    if (time.time() - last_hb) < 30:
+        return True
     return _agent_process_count(adb_addr) > 0
 
 
@@ -504,8 +519,13 @@ def _kill_agent_process(adb_addr):
     Avoid pkill -f: its pattern can match the pkill/adb shell command itself,
     and on some cloud phones it leaves root-owned Agent processes behind.
     """
+    # 心跳正常时跳过 adb connect 探活，用短超时建立连接
+    with hb_lock:
+        last_hb = hb_last.get(adb_addr, 0)
+    hb_fresh = (time.time() - last_hb) < 30
+    conn_timeout = 5 if hb_fresh else 15
     try:
-        subprocess.run(ADB_DEPLOY + ['connect', adb_addr], capture_output=True, timeout=15)
+        subprocess.run(ADB_DEPLOY + ['connect', adb_addr], capture_output=True, timeout=conn_timeout)
     except Exception:
         pass
     for _ in range(3):
@@ -546,12 +566,22 @@ def _deploy_agent(adb_addr, max_size=None):
         print(f'[agent] 本机无 Agent 二进制 {AGENT_BIN_PATH}，跳过部署', flush=True)
         return False
     try:
-        # 0. 先 adb connect（adb_addr 是网关映射地址，必须 connect 后才能 push）
-        rc = subprocess.run(ADB_DEPLOY + ['connect', adb_addr], capture_output=True, timeout=15)
-        cout = (rc.stdout or b'').decode('utf-8', 'replace').strip()
-        if rc.returncode != 0 and 'connected' not in cout and 'already' not in cout:
-            print(f'[agent] adb connect {adb_addr} 失败: {cout}', flush=True)
-            return False
+        # 0. 先检查 Agent 心跳：心跳正常说明设备在线，跳过 adb connect 探活（省 5-15s）
+        with hb_lock:
+            last_hb = hb_last.get(adb_addr, 0)
+        hb_fresh = (time.time() - last_hb) < 30
+        if hb_fresh:
+            print(f'[agent] {adb_addr} 心跳正常（{time.time()-last_hb:.0f}s 前），跳过 adb connect 探活', flush=True)
+        else:
+            # 无心跳或心跳超时，用 adb connect 探活
+            rc = subprocess.run(ADB_DEPLOY + ['connect', adb_addr], capture_output=True, timeout=15)
+            cout = (rc.stdout or b'').decode('utf-8', 'replace').strip()
+            if rc.returncode != 0 and 'connected' not in cout and 'already' not in cout:
+                print(f'[agent] adb connect {adb_addr} 失败: {cout}', flush=True)
+                return False
+        # 确保 adb 连接建立（push/launch 需要），心跳正常时用短超时
+        conn_timeout = 5 if hb_fresh else 15
+        subprocess.run(ADB_DEPLOY + ['connect', adb_addr], capture_output=True, timeout=conn_timeout)
 
         # 1. 检查设备端 Agent 是否与本地二进制一致（MD5）。
         # 只比大小不够：Go 加一串常量后二进制大小可能完全不变，会漏推新版本。
