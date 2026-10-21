@@ -140,6 +140,10 @@ func runOnce(relayURL string, maxSize, bitrate, maxFPS int, jarPath, transport s
 				for len(buf) >= 12 && !connDead.Load() {
 					val := binary.BigEndian.Uint64(buf[0:8])
 					size := binary.BigEndian.Uint32(buf[8:12])
+					if pump.frameIdx < 5 {
+						log.Printf("[agent][DBG] frame#%d val=%#x size=%d config=%d", pump.frameIdx, val, size, (val>>62)&1)
+						pump.frameIdx++
+					}
 					if size == 0 {
 						buf = buf[12:]
 						continue
@@ -291,6 +295,7 @@ func isConnError(err error) bool {
 
 // framePump 帧推送状态
 type framePump struct {
+	frameIdx  int
 	sps       []byte
 	pps       []byte
 	errCount  int
