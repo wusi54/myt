@@ -230,7 +230,9 @@ func (p *framePump) pump(buf []byte, streamer *RTPStreamer) ([]byte, bool) {
 		payload := buf[12 : 12+int(size)]
 		buf = buf[12+int(size):]
 
-		config := (val >> 63) & 1
+		// scrcpy 5.0.1 帧头：bit63=关键帧, bit62=配置帧(SPS/PPS)。
+		// 之前误用 bit63（关键帧位）导致配置帧无法识别、SPS/PPS 提取失败。
+		config := (val >> 62) & 1
 		if config == 1 {
 			cfg := make([]byte, len(payload))
 			copy(cfg, payload)
