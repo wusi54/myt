@@ -735,7 +735,7 @@ def get_device_size(adb_addr):
         return cached[1]
     try:
         r = subprocess.run(ADB_DEPLOY + ['-s', adb_addr, 'shell', 'wm', 'size'],
-                           capture_output=True, timeout=10)
+                           capture_output=True, timeout=3)
         out = (r.stdout or b'').decode(errors='replace')
     except Exception:
         return None
@@ -1485,11 +1485,37 @@ async def agent_handler(ws):
         threading.Thread(target=lambda: agent_mgr.deploy(adb_addr), daemon=True).start()
 
 
+# P1-1: per-device command queue for batching (control plane optimization)
+_control_queues = {}   # adb_addr -> asyncio.Queue
+_control_workers = {}  # adb_addr -> Task
+
+
+async def _control_queue_worker(adb_addr, queue):
+    """Per-device command worker: accumulates commands within 20ms window, then batches execution."""
+    while True:
+        # Wait for first command
+        cmd = await queue.get()
+        cmds = [cmd]
+        # Collect additional commands within 20ms window
+        while True:
+            try:
+                cmd = await asyncio.wait_for(queue.get(), timeout=0.02)
+                cmds.append(cmd)
+            except asyncio.TimeoutError:
+                break
+        # Execute batched
+        batched = '; '.join(cmds)
+        try:
+            await asyncio.to_thread(_run_shell_cmd, adb_addr, batched, 3)
+        except Exception as e:
+            print(f'[control-ws] {adb_addr} batch failed: {e}', flush=True)
+
+
 async def control_ws_handler(ws):
     """WebSocket 控制通道：接收 JSON 控制指令，执行 adb shell，fire-and-forget（无响应）。
 
     路径: /control-ws?adb_addr=xxx
-    优势：消除 HTTP 往返开销（~5-20ms/命令），控制指令直接通过 WS 发送。
+    P1-1: per-device 命令队列 + 20ms 批量窗口，合并多条命令减少 adb 调用次数。
     降级：WS 不可用时前端自动回退到 HTTP POST /control。
     """
     from urllib.parse import urlparse, parse_qs
@@ -1506,19 +1532,18 @@ async def control_ws_handler(ws):
                 continue
             if not isinstance(d, dict):
                 continue
-            # 支持两种消息格式：
-            # 1. {type:'control', action:'tap', nx:0.5, ny:0.5, adb_addr:'...'}
-            # 2. {adb_addr:'...', action:'tap', nx:0.5, ny:0.5}  (简化格式)
             msg_adb = d.get('adb_addr') or adb_addr
             if not msg_adb:
                 continue
             cmd = build_input_cmd(msg_adb, d)
             if not cmd:
                 continue
-            try:
-                await asyncio.to_thread(_run_shell_cmd, msg_adb, cmd, 3)
-            except Exception as e:
-                print(f'[control-ws] {msg_adb} failed: {e}', flush=True)
+            # Route to per-device queue
+            if msg_adb not in _control_queues:
+                _control_queues[msg_adb] = asyncio.Queue()
+                _control_workers[msg_adb] = asyncio.ensure_future(
+                    _control_queue_worker(msg_adb, _control_queues[msg_adb]))
+            await _control_queues[msg_adb].put(cmd)
     except Exception:
         pass
     finally:
@@ -1585,7 +1610,7 @@ def build_input_cmd(adb_addr, d):
         y = int(round(float(d.get('ny', 0)) * h))
         x2 = int(round(float(d.get('nx2', d.get('nx', 0))) * w))
         y2 = int(round(float(d.get('ny2', d.get('ny', 0))) * h))
-        dur = int(d.get('duration', 300))
+        dur = int(d.get('duration', 100))  # P1-2: 降低 swipe 默认时长 300->100ms，减少设备端执行时间
         return f'input swipe {x} {y} {x2} {y2} {dur}'
     if action == 'key':
         return f"input keyevent {int(d.get('keycode', 0))}"
