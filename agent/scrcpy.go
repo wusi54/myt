@@ -195,7 +195,7 @@ func (s *ScrcpyServer) Connect() (net.Conn, error) {
 		return nil, fmt.Errorf("无效的视频尺寸元数据: value=%#x width=%d height=%d", metaValue, width, height)
 	}
 	conn.SetReadDeadline(time.Time{})
-	log.Printf("[agent] 已连接 scrcpy-server 本地 socket (codec=%s, size=%dx%d, videoMeta=%x)", streamMeta, width, height, videoMeta)
+	log.Printf("[agent] 已连接 scrcpy-server 本地 socket (codec=%s, size=%dx%d)", streamMeta, width, height)
 	return conn, nil
 }
 

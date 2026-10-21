@@ -72,6 +72,23 @@ const frameQueueCapacity = 30
 //   - writer 从 frameCh 取帧、调用 PushFrame 推到 MediaMTX。
 //   - channel 满时 reader 执行 drop-oldest（丢弃最旧帧），避免 reader 阻塞 scrcpy socket。
 //   - writer 遇到连接断开时置 connDead，reader 检测后退出，runOnce 做 RTSP 重连（scrcpy 保持运行）。
+// isVideoMeta 判断 12 字节是否为 scrcpy 旋转时内联的 video meta（而非帧头）。
+// video meta 格式：8 字节 (flag bit + width) + 4 字节 height，两者都是屏幕尺寸。
+func isVideoMeta(buf []byte) bool {
+	if len(buf) < 12 {
+		return false
+	}
+	val := binary.BigEndian.Uint64(buf[0:8])
+	width := uint32(val & 0x7fffffff)
+	height := binary.BigEndian.Uint32(buf[8:12])
+	screenDims := map[uint32]bool{
+		240: true, 320: true, 480: true, 640: true, 720: true, 768: true,
+		800: true, 960: true, 1024: true, 1080: true, 1280: true, 1440: true,
+		1920: true, 2160: true, 404: true, 540: true,
+	}
+	return (val&(1<<63)) != 0 && screenDims[width] && screenDims[height] && width != height
+}
+
 func runOnce(relayURL string, maxSize, bitrate, maxFPS int, jarPath, transport string, keyFrameInterval int) {
 	server := &ScrcpyServer{
 		JarPath:          jarPath,
@@ -138,6 +155,12 @@ func runOnce(relayURL string, maxSize, bitrate, maxFPS int, jarPath, transport s
 				}
 				buf = append(buf, tmp[:n]...)
 				for len(buf) >= 12 && !connDead.Load() {
+					// scrcpy 旋转屏幕时会内联 12 字节 video meta，需跳过
+					if isVideoMeta(buf) {
+						log.Printf("[agent] detected inline video meta: %x, skipping 12 bytes", buf[:12])
+						buf = buf[12:]
+						continue
+					}
 					val := binary.BigEndian.Uint64(buf[0:8])
 					size := binary.BigEndian.Uint32(buf[8:12])
 					if pump.frameIdx < 5 {
@@ -149,14 +172,28 @@ func runOnce(relayURL string, maxSize, bitrate, maxFPS int, jarPath, transport s
 						continue
 					}
 					if size > 8*1024*1024 {
-						log.Printf("[agent] abnormal frame size=%d, resyncing...", size)
+						log.Printf("[agent] abnormal frame size=%d, trying skip-12...", size)
+						if len(buf) >= 24 {
+							nextSize := binary.BigEndian.Uint32(buf[20:24])
+							if nextSize > 0 && nextSize <= 8*1024*1024 && 24+int(nextSize) <= len(buf) {
+								log.Printf("[agent] resync: skipping 12 bytes (video meta?), next size=%d", nextSize)
+								buf = buf[12:]
+								break
+							}
+						}
 						found := false
 						for i := 1; i < len(buf)-12; i++ {
 							s := binary.BigEndian.Uint32(buf[i+8 : i+12])
 							if s > 0 && s <= 8*1024*1024 && i+12+int(s) <= len(buf) {
-								buf = buf[i:]
-								found = true
-								break
+								nextI := i + 12 + int(s)
+								if nextI+12 <= len(buf) {
+									ns := binary.BigEndian.Uint32(buf[nextI+8 : nextI+12])
+									if ns > 0 && ns <= 8*1024*1024 {
+										buf = buf[i:]
+										found = true
+										break
+									}
+								}
 							}
 						}
 						if !found {
