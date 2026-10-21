@@ -545,7 +545,8 @@ tr:hover td{background:#1e2e3e}
       <div class="ss-section">
         <div class="ss-title">操作</div>
         <div class="ss-row">
-          <span class="wc-tb-btn screen-warn" id="screenModalRedeploy" title="重启投屏 Agent：推流异常或更新 Agent 后一键恢复">重启投屏</span>
+          <span class="wc-tb-btn screen-primary" id="screenModalRestart" title="重启投屏 Agent">重启</span>
+          <span class="wc-tb-btn screen-stop" id="screenModalDelete" title="停止投屏并从墙格移除">删除</span>
           <span class="wc-tb-btn screen-stop" id="screenModalStop" title="停止设备端 Agent 推流，释放设备资源">关闭投屏</span>
         </div>
       </div>
@@ -772,7 +773,7 @@ function renderContainers(){
   });
   h+='</tbody></table>';el.innerHTML=h;
 }
-async function syncContainers(){toast('正在同步容器...','info');const d=await api('/api/containers/sync','POST',{});toast(d.msg||'同步完成',d.code===200?'success':'error');loadContainers();loadDevices()}
+async function syncContainers(){await withBusy(null,'同步容器中…',async()=>{const d=await api('/api/containers/sync','POST',{});toast(d.code===200?'同步完成':(d.msg||'同步失败'),d.code===200?'success':'error');loadContainers();loadDevices();})}
 function screenBadge(s){
   if(s==='ok')return '<span class="badge badge-green">正常</span>';
   if(s==='fail')return '<span class="badge badge-red">异常</span>';
@@ -786,11 +787,12 @@ function agentBadge(c){
   return '<span class="badge badge-'+cls+'" title="'+esc(title)+'">'+esc(txt)+'</span>';
 }
 async function probeScreen(){
-  toast('正在检测投屏能力(adb 连通)...','info');
-  const d=await api('/api/containers/probe_screen','POST',{});
-  if(d.code===200)toast('检测完成，共 '+Object.keys(d.data||{}).length+' 个运行容器','success');
-  else toast(d.msg||'检测失败','error');
-  loadContainers();
+  await withBusy(null,'检测投屏中…',async()=>{
+    const d=await api('/api/containers/probe_screen','POST',{});
+    if(d.code===200)toast('检测完成，共 '+Object.keys(d.data||{}).length+' 个运行容器','success');
+    else toast(d.msg||'检测失败','error');
+    loadContainers();
+  });
 }
 // ---- 自动同步（每 3 分钟）----
 let autoSyncTimer=null,autoSyncCountdown=0;const AUTO_SYNC_INTERVAL=180;
@@ -906,45 +908,52 @@ async function detailApplyFp(btn){
   const fp_id=document.getElementById('detailFpSelect').value;if(!fp_id){toast('请选择真机参数','error');return}
   await withBusy(btn,'参数生效中…',async()=>{
     const d=await api('/api/containers/'+currentContainer.id+'/apply_fp','POST',{fp_id});
-    showDetailResult('detailFpResult',d);toast(d.code===200?'参数已导入':(d.msg||'失败'),d.code===200?'success':'error');
+    toast(d.code===200?'真机参数已导入':(d.msg||'导入失败'),d.code===200?'success':'error');
     if(d.code===200){await reloadCurrent();await loadRealParams();renderContainers();}
   });
 }
-async function detailReleaseFp(){const d=await api('/api/containers/'+currentContainer.id+'/release_fp','POST',{});showDetailResult('detailFpResult',d);toast(d.msg||'已释放','success');await reloadCurrent();await loadRealParams();renderContainers()}
-async function detailRandomDevInfo(btn){await withBusy(btn,'处理中…',async()=>{const d=await api('/api/containers/'+currentContainer.id+'/random_devinfo','POST',{});showDetailResult('detailFpResult',d);toast(d.message||d.msg||'已提交',d.code===200?'success':'error')})}
+async function detailReleaseFp(){await withBusy(null,'释放中…',async()=>{const d=await api('/api/containers/'+currentContainer.id+'/release_fp','POST',{});toast(d.code===200?'真机参数已释放':(d.msg||'释放失败'),d.code===200?'success':'error');if(d.code===200){await reloadCurrent();await loadRealParams();renderContainers();}})}
+async function detailRandomDevInfo(btn){await withBusy(btn,'处理中…',async()=>{const d=await api('/api/containers/'+currentContainer.id+'/random_devinfo','POST',{});toast(d.code===200?'已提交':(d.msg||'提交失败'),d.code===200?'success':'error')})}
 async function detailApplyProxy(btn){
   const proxy_id=document.getElementById('detailProxySelect').value;if(!proxy_id){toast('请选择代理','error');return}
   await withBusy(btn,'代理配置中…',async()=>{
     const d=await api('/api/containers/'+currentContainer.id+'/apply_proxy','POST',{proxy_id});
-    showDetailResult('detailProxyResult',d);toast(d.code===200?'代理已配置':(d.msg||'失败'),d.code===200?'success':'error');
+    toast(d.code===200?'代理已配置':(d.msg||'配置失败'),d.code===200?'success':'error');
     if(d.code===200){await reloadCurrent();await loadProxies();renderContainers();}
   });
 }
-async function detailReleaseProxy(){const d=await api('/api/containers/'+currentContainer.id+'/release_proxy','POST',{});showDetailResult('detailProxyResult',d);toast(d.msg||'已关闭','success');await reloadCurrent();await loadProxies();renderContainers()}
-async function detailQueryProxy(){const d=await api('/api/containers/'+currentContainer.id+'/s5_query');showDetailResult('detailProxyResult',d)}
+async function detailReleaseProxy(){await withBusy(null,'关闭代理中…',async()=>{const d=await api('/api/containers/'+currentContainer.id+'/release_proxy','POST',{});toast(d.code===200?'代理已关闭':(d.msg||'关闭失败'),d.code===200?'success':'error');if(d.code===200){await reloadCurrent();await loadProxies();renderContainers();}})}
+async function detailQueryProxy(){const d=await api('/api/containers/'+currentContainer.id+'/s5_query');toast(d.code===200?'查询完成':(d.msg||'查询失败'),d.code===200?'success':'error')}
 async function detailInstallApp(){
   const app_id=document.getElementById('detailAppSelect').value;if(!app_id){toast('请选择应用','error');return}
   await withBusy(null,'安装中，请稍候…',async()=>{
     const d=await api('/api/containers/'+currentContainer.id+'/install_apk','POST',{app_id});
-    showDetailResult('detailAppResult',d);toast(d.msg||'完成',d.code===200?'success':'error');
+    toast(d.code===200?'安装完成':(d.msg||'安装失败'),d.code===200?'success':'error');
   });
 }
 async function detailAction(action){
   const names={start:'启动',stop:'停止',reboot:'重启',reset:'重置',remove:'删除'};
   if((action==='remove'||action==='reset')&&!confirm('确定'+names[action]+'该容器?'))return;
-  const d=await api('/api/containers/'+currentContainer.id+'/'+action,'POST',{});
-  showDetailResult('detailOpsResult',d);toast(names[action]+': '+(d.message||d.msg||'ok'),d.code===200?'success':'error');
-  if(d.code===200){if(action==='remove'){closeModal('containerDetailModal')}else{await reloadCurrent()}await loadContainers();}
+  await withBusy(null,names[action]+'中…',async()=>{
+    const d=await api('/api/containers/'+currentContainer.id+'/'+action,'POST',{});
+    toast(names[action]+': '+(d.code===200?'成功':(d.msg||'失败')),d.code===200?'success':'error');
+    if(d.code===200){if(action==='remove'){closeModal('containerDetailModal')}else{await reloadCurrent()}await loadContainers();}
+  });
 }
 async function detailRename(){
   const name=document.getElementById('detailNewName').value.trim();if(!name){toast('请输入新名称','error');return}
-  const d=await api('/api/containers/'+currentContainer.id+'/rename','POST',{name});
-  showDetailResult('detailOpsResult',d);toast(d.code===200?'已重命名':(d.msg||'失败'),d.code===200?'success':'error');
-  if(d.code===200){await loadContainers();closeModal('containerDetailModal')}
+  await withBusy(null,'重命名中…',async()=>{
+    const d=await api('/api/containers/'+currentContainer.id+'/rename','POST',{name});
+    toast(d.code===200?'已重命名':(d.msg||'重命名失败'),d.code===200?'success':'error');
+    if(d.code===200){await loadContainers();closeModal('containerDetailModal')}
+  });
 }
 async function detailShell(){
   const cmd=document.getElementById('detailShellCmd').value.trim();if(!cmd){toast('请输入命令','error');return}
-  const d=await api('/api/containers/'+currentContainer.id+'/shell','POST',{cmd});showDetailResult('detailOpsResult',d);
+  await withBusy(null,'执行中…',async()=>{
+    const d=await api('/api/containers/'+currentContainer.id+'/shell','POST',{cmd});
+    toast(d.code===200?'执行完成':(d.msg||'执行失败'),d.code===200?'success':'error');
+  });
 }
 async function reloadCurrent(){const d=await api('/api/containers/'+currentContainer.id);if(d.code===200){currentContainer=d.data;renderDetailInfo();populateDetailSelects()}}
 
@@ -1524,6 +1533,25 @@ async function stopAgentStream(adb){
     }
   }catch(e){toast('关闭投屏失败: '+e,'error')}
 }
+// 删除：停止投屏 + 从墙格移除 + 关闭弹窗
+async function deleteScreenModalDevice(adb){
+  if(!adb)return;
+  if(!confirm('确认删除该设备投屏？将停止推流并从群控墙移除。'))return;
+  await withBusy(null,'删除中…',async()=>{
+    try{
+      const r=await fetch('/api/screen/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({adb_addr:adb})});
+      const j=await r.json().catch(()=>({}));
+      if(r.ok&&j.code===200){
+        const idx=wallItems.findIndex(w=>w.adbAddr===adb);
+        if(idx>=0){wallItems.splice(idx,1);renderWall();}
+        toast('已删除','success');
+        closeScreenModal();
+      }else{
+        toast('删除失败: '+(j.msg||('HTTP '+r.status)),'error');
+      }
+    }catch(e){toast('删除失败: '+e,'error')}
+  });
+}
 // 设备详情面板：代理/机型/ADB/API 等（打开弹窗时预取，点"详情"即显示）
 async function loadScreenModalInfo(adb){
   const el=document.getElementById('screenModalInfo');
@@ -1837,7 +1865,8 @@ document.getElementById('screenModalBack').addEventListener('click',function(){s
 document.getElementById('screenModalHome').addEventListener('click',function(){screenSendTouch('key',{keycode:3})});
 document.getElementById('screenModalRecent').addEventListener('click',function(){screenSendTouch('key',{keycode:187})});
 document.getElementById('screenModalClose').addEventListener('click',closeScreenModal);
-document.getElementById('screenModalRedeploy').addEventListener('click',function(){redeployAgent(screenModalState.adb)});
+document.getElementById('screenModalRestart').addEventListener('click',function(){redeployAgent(screenModalState.adb)});
+document.getElementById('screenModalDelete').addEventListener('click',function(){deleteScreenModalDevice(screenModalState.adb)});
 document.getElementById('screenModalStop').addEventListener('click',function(){stopAgentStream(screenModalState.adb)});
 document.getElementById('screenModalFpApply').addEventListener('click',screenModalApplyFp);
 document.getElementById('screenModalFpRelease').addEventListener('click',screenModalReleaseFp);
