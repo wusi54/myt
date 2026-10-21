@@ -111,7 +111,7 @@ tr:hover td{background:#1e2e3e}
 .wall-cell .wc-info .wc-api{color:#ff4d4f;font-weight:700}
 .wall-cell .wc-info .wc-adb{color:#9fb3c8}
 /* 独立投屏浮层：页内浮动弹框（不跳转新页面），兼容手机竖屏 */
-#screenModal .screen-box{background:#0d1520;border:1px solid #2a3a4a;border-radius:10px;padding:10px;display:flex;flex-direction:row;gap:10px;width:min(960px,96vw);height:min(94dvh,900px);max-height:96dvh}
+#screenModal .screen-box{background:#0d1520;border:1px solid #2a3a4a;border-radius:10px;padding:10px;display:flex;flex-direction:row;gap:10px;width:min(960px,96vw);height:min(94dvh,900px);max-height:96dvh;position:relative}
 #screenModal .screen-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:8px}
 #screenModal .screen-side{flex:0 0 360px;display:flex;flex-direction:column;gap:10px;overflow-y:auto;background:#0f1923;border:1px solid #2a3a4a;border-radius:8px;padding:10px}
 #screenModal .screen-side .ss-section{background:#0d1520;border:1px solid #2a3a4a;border-radius:6px;padding:8px 10px;display:flex;flex-direction:column;gap:6px}
@@ -550,7 +550,7 @@ tr:hover td{background:#1e2e3e}
         </div>
       </div>
     </div>
-    <input id="screenModalKbInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="position:absolute;opacity:0;width:1px;height:1px;bottom:0;left:0;border:0;padding:0">
+    <input id="screenModalKbInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="0" style="position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;border:0;padding:0">
   </div>
 </div>
 
