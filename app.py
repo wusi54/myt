@@ -586,6 +586,7 @@ def _sync_one_device(dev):
                 cid = str(v).strip()
                 break
         if not cid:
+            print(f'[sync] 无 ID 字段, device={dev["ip"]}, name={raw_name}, keys={list(c.keys())}', flush=True)
             _idx = 0
             for k in ('index', 'index_num', 'idx', 'slot', 'num'):
                 v = c.get(k)
