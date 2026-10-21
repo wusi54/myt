@@ -149,8 +149,19 @@ func runOnce(relayURL string, maxSize, bitrate, maxFPS int, jarPath, transport s
 						continue
 					}
 					if size > 8*1024*1024 {
-						log.Printf("[agent] abnormal frame size=%d, dropping buffer", size)
-						buf = nil
+						log.Printf("[agent] abnormal frame size=%d, resyncing...", size)
+						found := false
+						for i := 1; i < len(buf)-12; i++ {
+							s := binary.BigEndian.Uint32(buf[i+8 : i+12])
+							if s > 0 && s <= 8*1024*1024 && i+12+int(s) <= len(buf) {
+								buf = buf[i:]
+								found = true
+								break
+							}
+						}
+						if !found {
+							buf = nil
+						}
 						break
 					}
 					if len(buf) < 12+int(size) {
