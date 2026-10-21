@@ -14,6 +14,7 @@ import re
 import time
 import json
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import threading
 import queue
@@ -1491,20 +1492,23 @@ _control_workers = {}  # adb_addr -> Task
 
 
 async def _control_queue_worker(adb_addr, queue):
-    """Per-device command worker: accumulates commands within 20ms window, then batches execution."""
+    """Per-device command worker: tap/key 立即执行，move/swipe/text 批量 20ms。"""
     while True:
         # Wait for first command
         cmd = await queue.get()
-        cmds = [cmd]
-        # Collect additional commands within 20ms window
-        while True:
-            try:
-                cmd = await asyncio.wait_for(queue.get(), timeout=0.02)
-                cmds.append(cmd)
-            except asyncio.TimeoutError:
-                break
-        # Execute batched
-        batched = '; '.join(cmds)
+        # tap/key 立即执行（不等待批量窗口，减少延迟）
+        if cmd.startswith('input tap') or cmd.startswith('input keyevent'):
+            batched = cmd
+        else:
+            # move/swipe/text 批量 20ms
+            cmds = [cmd]
+            while True:
+                try:
+                    cmd = await asyncio.wait_for(queue.get(), timeout=0.02)
+                    cmds.append(cmd)
+                except asyncio.TimeoutError:
+                    break
+            batched = '; '.join(cmds)
         try:
             await asyncio.to_thread(_run_shell_cmd, adb_addr, batched, 3)
         except Exception as e:
@@ -1783,6 +1787,9 @@ def _start_control_http():
 
 async def main():
     from websockets.asyncio.server import serve
+    # P1-2: 增大默认线程池，支持 20+ 设备并发控制（默认 min(32, cpu+4)）
+    loop = asyncio.get_event_loop()
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=64))
     print(f'[relay][multithread {__version__} ({_RELAY_COMMIT})] Starting on ws://0.0.0.0:{WS_PORT}', flush=True)
     # 启动独立 adb server（部署面），避免 deploy/push 阻塞控制面
     threading.Thread(target=_start_deploy_adb_server, daemon=True).start()
