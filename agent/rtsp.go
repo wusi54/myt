@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"reflect"
 	"strings"
 	"time"
 
@@ -12,6 +13,8 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
+
+	"github.com/pion/rtcp"
 )
 
 // ErrQueueFull 表示 gortsplib 写队列已满（消费端/MediaMTX 跟不上推流速率）。
@@ -79,7 +82,7 @@ func (r *RTPStreamer) Connect() error {
 	}
 
 	// P2: RTSP keep-alive（gortsplib 对 TCP recording 默认禁用 keep-alive，
-	// 弱网/NAT 环境下会话老化导致断连，这里手动每 20s 发送 OPTIONS 保活）
+	// 弱网/NAT 环境下会话老化导致断连）。每 20s 发送 RTCP Sender Report 保活 TCP 连接。
 	r.keepAlive = make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(20 * time.Second)
@@ -89,9 +92,24 @@ func (r *RTPStreamer) Connect() error {
 			case <-r.keepAlive:
 				return
 			case <-ticker.C:
-				if r.client != nil && r.baseURL != nil {
-					if _, err := r.client.Options(r.baseURL); err != nil {
-						log.Printf("[rtsp] keep-alive OPTIONS 失败: %v", err)
+				if r.client != nil && r.media != nil {
+					// 通过反射获取 forma 的 localSSRC（未导出字段）
+					ssrc := uint32(0)
+					if r.forma != nil {
+						v := reflect.ValueOf(r.forma).Elem()
+						if f := v.FieldByName("localSSRC"); f.IsValid() {
+							ssrc = uint32(f.Uint())
+						}
+					}
+					sr := &rtcp.SenderReport{
+						SSRC:        ssrc,
+						NTPTime:     uint64(time.Now().Unix()) << 32,
+						RTPTime:     uint32(time.Now().UnixNano() / 1e6 * 90),
+						PacketCount: uint32(r.frameCount),
+						OctetCount:  0,
+					}
+					if err := r.client.WritePacketRTCP(r.media, sr); err != nil {
+						log.Printf("[rtsp] keep-alive RTCP 失败: %v", err)
 					}
 				}
 			}
