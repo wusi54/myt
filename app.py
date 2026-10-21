@@ -578,25 +578,11 @@ def _sync_one_device(dev):
                 break
         # 主键用稳定槽位 ip:index（容器在设备上的序号，改名不变），避免用会变的 name 导致 id 漂移；
         # 无 index 时才退化为 ip:name。
-        cid = ''
-        for k in ('id', 'container_id', 'cid', 'vm_id', 'instance_id', 'InstanceId',
-                  'containerId', 'short_id', 'ShortId', 'uuid'):
-            v = c.get(k)
-            if v is not None and str(v).strip():
-                cid = str(v).strip()
-                break
+        # 容器 ID：直接使用 API 返回的 id 字段，不自行生成 fallback ID
+        cid = str(c.get('id') or '').strip()
         if not cid:
-            print(f'[sync] 无 ID 字段, device={dev["ip"]}, name={raw_name}, keys={list(c.keys())}', flush=True)
-            _idx = 0
-            for k in ('index', 'index_num', 'idx', 'slot', 'num'):
-                v = c.get(k)
-                if v is not None:
-                    try:
-                        _idx = int(v)
-                        break
-                    except (ValueError, TypeError):
-                        continue
-            cid = f"{dev['ip']}:{_idx}" if _idx else f"{dev['ip']}:{raw_name}"
+            print(f'[sync] API 未返回 id 字段, device={dev["ip"]}, name={raw_name}, keys={list(c.keys())}', flush=True)
+            continue  # 跳过无 ID 的容器，不创建记录
         seen.add(cid)
         adb_port = str(c.get('adb') or '')
         s5 = c.get('s5') or {}
