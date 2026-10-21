@@ -20,7 +20,8 @@ type ScrcpyServer struct {
 	MaxSize          int
 	Bitrate          int
 	KeyFrameInterval int
-	MaxFPS           int   // 0 = 不限制；建议群控墙 12~15 fps，弱网下画质/流畅度更好
+	MaxFPS           int    // 0 = 不限制；建议群控墙 12~15 fps，弱网下画质/流畅度更好
+	VideoCodec       string // h264 (默认) 或 h265
 	cmd              *exec.Cmd
 	stopCh           chan struct{} // 主动停止时关闭，通知 watcher 忽略此次退出
 	exitCh           chan error    // watcher 在进程意外退出时上报退出错误
@@ -47,6 +48,9 @@ func (s *ScrcpyServer) Start() error {
 	if s.MaxFPS < 0 {
 		s.MaxFPS = 0
 	}
+	if s.VideoCodec == "" {
+		s.VideoCodec = "h264"
+	}
 
 	// 清理旧实例（幂等）；等待旧 server 释放 abstract socket "scrcpy"，
 	// 否则新实例会因 Address already in use 退出，表现为群控窗黑屏/重连。
@@ -69,6 +73,7 @@ func (s *ScrcpyServer) Start() error {
 		"tunnel_forward=true",
 		"log_level=info",
 		"video=true",
+		"video_codec=" + s.VideoCodec,
 		"audio=false",
 		"control=false",
 		"send_dummy_byte=true",
@@ -138,7 +143,7 @@ func (s *ScrcpyServer) alive() bool {
 // Connect 连接 scrcpy-server 监听的本地 abstract socket "scrcpy"。
 // 握手会读取 dummy、codec、首个视频尺寸元数据；返回连接从第一条 12 字节帧头开始。
 // 连接等待期间若 scrcpy-server 进程意外退出，立即报错返回（不再干等 20s）。
-func (s *ScrcpyServer) Connect() (net.Conn, error) {
+func (s *ScrcpyServer) Connect() (net.Conn, string, error) {
 	// abstract namespace socket: 名字前面加 \x00
 	addr := &net.UnixAddr{Name: "\x00scrcpy", Net: "unix"}
 	var conn net.Conn
@@ -152,13 +157,13 @@ func (s *ScrcpyServer) Connect() (net.Conn, error) {
 		// 连接等待期间若 scrcpy-server 进程已退出，立即返回，避免盲等满 20s
 		select {
 		case e := <-s.exitCh:
-			return nil, fmt.Errorf("scrcpy-server 进程在连接前退出: %v（详见 scrcpy-agent.log）", e)
+			return nil, "", fmt.Errorf("scrcpy-server 进程在连接前退出: %v（详见 scrcpy-agent.log）", e)
 		default:
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("连接 abstract socket 失败: %w", err)
+		return nil, "", fmt.Errorf("连接 abstract socket 失败: %w", err)
 	}
 
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
@@ -166,18 +171,20 @@ func (s *ScrcpyServer) Connect() (net.Conn, error) {
 	dummy := make([]byte, 1)
 	if _, err := io.ReadFull(conn, dummy); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("读 dummy byte 失败: %w", err)
+		return nil, "", fmt.Errorf("读 dummy byte 失败: %w", err)
 	}
 	// 读 stream meta（send_stream_meta=true 时，server 会发 4 字节 codec id）
 	streamMeta := make([]byte, 4)
 	if _, err := io.ReadFull(conn, streamMeta); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("读 stream meta 失败: %w", err)
+		return nil, "", fmt.Errorf("读 stream meta 失败: %w", err)
 	}
-	if string(streamMeta) != "h264" {
+	codec := string(streamMeta)
+	if codec != "h264" && codec != "h265" {
 		conn.Close()
-		return nil, fmt.Errorf("不支持的 scrcpy codec: %q", streamMeta)
+		return nil, "", fmt.Errorf("不支持的 scrcpy codec: %q", streamMeta)
 	}
+	log.Printf("[agent] scrcpy codec: %s", codec)
 
 	// 该 scrcpy 5.0.1 fork 在 codec id 后发送 12 字节视频尺寸记录：
 	// 8 字节字段的最高位为标记、低位是宽度，随后 4 字节是高度。
@@ -185,18 +192,18 @@ func (s *ScrcpyServer) Connect() (net.Conn, error) {
 	videoMeta := make([]byte, 12)
 	if _, err := io.ReadFull(conn, videoMeta); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("读视频尺寸元数据失败: %w", err)
+		return nil, "", fmt.Errorf("读视频尺寸元数据失败: %w", err)
 	}
 	metaValue := binary.BigEndian.Uint64(videoMeta[:8])
 	width := uint32(metaValue & 0x7fffffff)
 	height := binary.BigEndian.Uint32(videoMeta[8:12])
 	if metaValue&(uint64(1)<<63) == 0 || width == 0 || width > 16384 || height == 0 || height > 16384 {
 		conn.Close()
-		return nil, fmt.Errorf("无效的视频尺寸元数据: value=%#x width=%d height=%d", metaValue, width, height)
+		return nil, "", fmt.Errorf("无效的视频尺寸元数据: value=%#x width=%d height=%d", metaValue, width, height)
 	}
 	conn.SetReadDeadline(time.Time{})
 	log.Printf("[agent] 已连接 scrcpy-server 本地 socket (codec=%s, size=%dx%d)", streamMeta, width, height)
-	return conn, nil
+	return conn, codec, nil
 }
 
 // Stop 停止 scrcpy-server。

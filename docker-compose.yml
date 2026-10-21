@@ -100,7 +100,8 @@ services:
       AGENT_BITRATE: ${AGENT_BITRATE:-1000000}   # Agent 编码码率 bps
       AGENT_KEYFRAME_INTERVAL: ${AGENT_KEYFRAME_INTERVAL:-2}
       AGENT_STRIP_VUI: ${AGENT_STRIP_VUI:-1}  # 1=剥离 SPS color VUI 修正偏蓝；0=关闭（排查用）
-      AGENT_MAX_FPS: ${AGENT_MAX_FPS:-0}  # 0=不限制；群控墙建议 12~15 fps  # GOP 实测默认改为 2s：0=每帧关键帧会糊且打爆上行(write queue full/重连)；该机型 1/2 可能被编码器钳到 ~10s，需在真机对比画质与首帧延迟后定值(0/2/5/10)
+      AGENT_MAX_FPS: ${AGENT_MAX_FPS:-0}  # 0=不限制；群控墙建议 12~15 fps
+      AGENT_VIDEO_CODEC: ${AGENT_VIDEO_CODEC:-h264}  # h264 或 h265（需设备支持 HEVC 编码）  # GOP 实测默认改为 2s：0=每帧关键帧会糊且打爆上行(write queue full/重连)；该机型 1/2 可能被编码器钳到 ~10s，需在真机对比画质与首帧延迟后定值(0/2/5/10)
       AGENT_IDLE_STOP_SEC: ${AGENT_IDLE_STOP_SEC:-0}  # 0=不自动停（WHEP 观众不经过 relay，relay 无法感知订阅者）
       AGENT_TOKEN: ${AGENT_TOKEN:-}           # Agent 上行流认证密钥（生产务必设置）
       RELAY_WS_URL: ${RELAY_WS_URL:-}         # 设备可达的 relay WS 基地址(供 Agent 回连心跳 /agent/hb)，如 ws://1.2.3.4:9000；空=不发心跳(用户看画面手动重启投屏)

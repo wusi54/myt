@@ -269,6 +269,7 @@ AGENT_MAX_SIZE = int(os.environ.get('AGENT_MAX_SIZE', '720'))
 AGENT_BITRATE = int(os.environ.get('AGENT_BITRATE', '1000000'))
 AGENT_KEYFRAME_INTERVAL = int(os.environ.get('AGENT_KEYFRAME_INTERVAL', '1'))
 AGENT_MAX_FPS = int(os.environ.get('AGENT_MAX_FPS', '0'))  # 0=不限制；群控墙建议 12~15
+AGENT_VIDEO_CODEC = os.environ.get('AGENT_VIDEO_CODEC', 'h264')  # h264 或 h265（需设备支持 HEVC 编码）
 AGENT_STRIP_VUI = os.environ.get('AGENT_STRIP_VUI', '1') == '1'  # 剥离 SPS color VUI 修正偏蓝；0=关闭（排查用）
 
 # ---- Agent 生命周期管理 ----
@@ -630,7 +631,7 @@ def _deploy_agent(adb_addr, max_size=None):
                   f"setsid nohup {AGENT_DEVICE_PATH} -relay '{push_url}' "
                   f"{hb_arg}"
                   f"-transport {AGENT_TRANSPORT} -max-size {_max_size} -bitrate {AGENT_BITRATE} "
-                  f"-keyframe-interval {AGENT_KEYFRAME_INTERVAL} -max-fps {AGENT_MAX_FPS} -strip-vui {1 if AGENT_STRIP_VUI else 0}; }} "
+                  f"-keyframe-interval {AGENT_KEYFRAME_INTERVAL} -max-fps {AGENT_MAX_FPS} -video-codec {AGENT_VIDEO_CODEC} -strip-vui {1 if AGENT_STRIP_VUI else 0}; }} "
                   f">/data/local/tmp/myt-agent.log 2>&1 </dev/null &")
         # 超时放宽到 15s；即使 adb shell 返回超时，只要 Agent 进程已起来也算成功。
         try:

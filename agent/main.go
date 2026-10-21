@@ -20,6 +20,7 @@ func main() {
 	maxFPS := flag.Int("max-fps", 0, "max fps (0=unlimited); recommend 12-15 for weak network")
 	jarPath := flag.String("jar", "/data/local/tmp/scrcpy-server.jar", "jar path")
 	transport := flag.String("transport", "tcp", "RTSP transport: tcp or udp")
+	videoCodec := flag.String("video-codec", "h264", "video codec: h264 or h265")
 	keyFrameInterval := flag.Int("keyframe-interval", 0, "video keyframe interval seconds; 0 = every frame")
 	stripVUI := flag.Int("strip-vui", 1, "strip SPS color VUI to fix blue tint (0=off, 1=on)")
 	hbURL := flag.String("hb", "", "relay heartbeat websocket URL (optional)")
@@ -40,7 +41,7 @@ func main() {
 	stripVUIEnabled = (*stripVUI != 0)
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	log.Printf("[agent] starting, push=%s max_size=%d bitrate=%d transport=%s keyframe_interval=%ds strip_vui=%v", *relayURL, *maxSize, *bitrate, *transport, *keyFrameInterval, stripVUIEnabled)
+	log.Printf("[agent] starting, push=%s max_size=%d bitrate=%d transport=%s codec=%s keyframe_interval=%ds strip_vui=%v", *relayURL, *maxSize, *bitrate, *transport, *videoCodec, *keyFrameInterval, stripVUIEnabled)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -57,7 +58,7 @@ func main() {
 		default:
 		}
 
-		runOnce(*relayURL, *maxSize, *bitrate, *maxFPS, *jarPath, *transport, *keyFrameInterval)
+		runOnce(*relayURL, *maxSize, *bitrate, *maxFPS, *jarPath, *transport, *videoCodec, *keyFrameInterval)
 		log.Printf("[agent] session ended, restarting scrcpy-server in 1s...")
 		time.Sleep(1 * time.Second)
 	}
@@ -89,13 +90,14 @@ func isVideoMeta(buf []byte) bool {
 	return (val&(1<<63)) != 0 && screenDims[width] && screenDims[height] && width != height
 }
 
-func runOnce(relayURL string, maxSize, bitrate, maxFPS int, jarPath, transport string, keyFrameInterval int) {
+func runOnce(relayURL string, maxSize, bitrate, maxFPS int, jarPath, transport, videoCodec string, keyFrameInterval int) {
 	server := &ScrcpyServer{
 		JarPath:          jarPath,
 		MaxSize:          maxSize,
 		Bitrate:          bitrate,
 		KeyFrameInterval: keyFrameInterval,
 		MaxFPS:           maxFPS,
+		VideoCodec:       videoCodec,
 	}
 	if err := server.Start(); err != nil {
 		log.Printf("[agent] start scrcpy-server failed: %v, retrying in 3s", err)
@@ -104,7 +106,7 @@ func runOnce(relayURL string, maxSize, bitrate, maxFPS int, jarPath, transport s
 	}
 	defer server.Stop()
 
-	reader, err := server.Connect()
+	reader, codec, err := server.Connect()
 	if err != nil {
 		log.Printf("[agent] connect socket failed: %v, retrying in 3s", err)
 		server.Stop()
@@ -113,7 +115,7 @@ func runOnce(relayURL string, maxSize, bitrate, maxFPS int, jarPath, transport s
 	}
 	defer reader.Close()
 
-	streamer := NewRTPStreamer(relayURL, transport)
+	streamer := NewRTPStreamer(relayURL, transport, codec)
 	if err := streamer.Connect(); err != nil {
 		log.Printf("[agent] RTSP push connect failed: %v, retrying in 3s", err)
 		reader.Close()
@@ -163,10 +165,6 @@ func runOnce(relayURL string, maxSize, bitrate, maxFPS int, jarPath, transport s
 					}
 					val := binary.BigEndian.Uint64(buf[0:8])
 					size := binary.BigEndian.Uint32(buf[8:12])
-					if pump.frameIdx < 5 {
-						log.Printf("[agent][DBG] frame#%d val=%#x size=%d config=%d", pump.frameIdx, val, size, (val>>62)&1)
-						pump.frameIdx++
-					}
 					if size == 0 {
 						buf = buf[12:]
 						continue
@@ -211,14 +209,29 @@ func runOnce(relayURL string, maxSize, bitrate, maxFPS int, jarPath, transport s
 					config := (val >> 62) & 1
 					if config == 1 {
 						nals := splitAnnexB(payload)
-						streamer.UpdateSPSPPS(nals)
-						if len(streamer.forma.SPS) > 0 {
-							pump.sps = make([]byte, len(streamer.forma.SPS))
-							copy(pump.sps, streamer.forma.SPS)
-						}
-						if len(streamer.forma.PPS) > 0 {
-							pump.pps = make([]byte, len(streamer.forma.PPS))
-							copy(pump.pps, streamer.forma.PPS)
+						streamer.UpdateParams(nals)
+						if streamer.codec == "h265" {
+							if len(streamer.formaH265.VPS) > 0 {
+								pump.vps = make([]byte, len(streamer.formaH265.VPS))
+								copy(pump.vps, streamer.formaH265.VPS)
+							}
+							if len(streamer.formaH265.SPS) > 0 {
+								pump.sps = make([]byte, len(streamer.formaH265.SPS))
+								copy(pump.sps, streamer.formaH265.SPS)
+							}
+							if len(streamer.formaH265.PPS) > 0 {
+								pump.pps = make([]byte, len(streamer.formaH265.PPS))
+								copy(pump.pps, streamer.formaH265.PPS)
+							}
+						} else {
+							if len(streamer.formaH264.SPS) > 0 {
+								pump.sps = make([]byte, len(streamer.formaH264.SPS))
+								copy(pump.sps, streamer.formaH264.SPS)
+							}
+							if len(streamer.formaH264.PPS) > 0 {
+								pump.pps = make([]byte, len(streamer.formaH264.PPS))
+								copy(pump.pps, streamer.formaH264.PPS)
+							}
 						}
 					}
 
@@ -289,24 +302,43 @@ func runOnce(relayURL string, maxSize, bitrate, maxFPS int, jarPath, transport s
 			wait := reconnectBackoff(attempt)
 			log.Printf("[agent] RTSP 连接断开，%v 后重连 (第 %d/12 次)...", wait, attempt)
 			time.Sleep(wait)
-			streamer = NewRTPStreamer(relayURL, transport)
+			streamer = NewRTPStreamer(relayURL, transport, codec)
 			if err := streamer.Connect(); err != nil {
 				log.Printf("[agent] RTSP 重连失败: %v", err)
 				streamer.Close()
 				continue
 			}
-			if len(pump.sps) > 0 {
-				streamer.forma.SPS = make([]byte, len(pump.sps))
-				copy(streamer.forma.SPS, pump.sps)
+			if streamer.codec == "h265" {
+				if len(pump.vps) > 0 {
+					streamer.formaH265.VPS = make([]byte, len(pump.vps))
+					copy(streamer.formaH265.VPS, pump.vps)
+				}
+				if len(pump.sps) > 0 {
+					streamer.formaH265.SPS = make([]byte, len(pump.sps))
+					copy(streamer.formaH265.SPS, pump.sps)
+				}
+				if len(pump.pps) > 0 {
+					streamer.formaH265.PPS = make([]byte, len(pump.pps))
+					copy(streamer.formaH265.PPS, pump.pps)
+				}
+				if streamer.formaH265.VPS != nil && streamer.formaH265.SPS != nil && streamer.formaH265.PPS != nil {
+					streamer.formaH265.SafeSetParams(streamer.formaH265.VPS, streamer.formaH265.SPS, streamer.formaH265.PPS)
+				}
+				log.Printf("[agent] RTSP 重连成功，恢复推流 (H.265)")
+			} else {
+				if len(pump.sps) > 0 {
+					streamer.formaH264.SPS = make([]byte, len(pump.sps))
+					copy(streamer.formaH264.SPS, pump.sps)
+				}
+				if len(pump.pps) > 0 {
+					streamer.formaH264.PPS = make([]byte, len(pump.pps))
+					copy(streamer.formaH264.PPS, pump.pps)
+				}
+				if streamer.formaH264.SPS != nil && streamer.formaH264.PPS != nil {
+					streamer.formaH264.SafeSetParams(streamer.formaH264.SPS, streamer.formaH264.PPS)
+				}
+				log.Printf("[agent] RTSP 重连成功，恢复推流 (H.264)")
 			}
-			if len(pump.pps) > 0 {
-				streamer.forma.PPS = make([]byte, len(pump.pps))
-				copy(streamer.forma.PPS, pump.pps)
-			}
-			if streamer.forma.SPS != nil && streamer.forma.PPS != nil {
-				streamer.forma.SafeSetParams(streamer.forma.SPS, streamer.forma.PPS)
-			}
-			log.Printf("[agent] RTSP 重连成功，恢复推流 (SPS=%d bytes, PPS=%d bytes)", len(streamer.forma.SPS), len(streamer.forma.PPS))
 			reconnected = true
 			break
 		}
@@ -343,7 +375,7 @@ func isConnError(err error) bool {
 
 // framePump 帧推送状态
 type framePump struct {
-	frameIdx  int
+	vps       []byte
 	sps       []byte
 	pps       []byte
 	errCount  int
