@@ -703,6 +703,8 @@ def api_container_create():
     res = cli.create(dev['ip'], index, name, **opts)
     if res.get('code') == 200:
         _sync_one_device(dev)
+        db.add_operation_log({'op_type': 'container', 'target': name,
+                              'detail': '创建容器 (index=' + str(index) + ', device=' + dev['ip'] + ')', 'status': 'success'})
     return jsonify(res)
 
 
@@ -738,6 +740,12 @@ def _container_action(cid, action):
     res = fn(dev['ip'], c['name'])
     if res.get('code') == 200:
         _sync_one_device(dev)
+        if action == 'start':
+            db.add_operation_log({'op_type': 'container', 'target': c['name'],
+                                  'detail': '容器开机 (' + c['device_ip'] + ')', 'status': 'success'})
+        elif action == 'stop':
+            db.add_operation_log({'op_type': 'container', 'target': c['name'],
+                                  'detail': '容器关机 (' + c['device_ip'] + ')', 'status': 'success'})
     return jsonify(res)
 
 

@@ -849,7 +849,8 @@ async function loadLogs(){
   });
   h+='</tbody></table>';el.innerHTML=h;
 }
-function showCreateContainerModal(){
+async function showCreateContainerModal(){
+  await loadContainers();
   const sel=document.getElementById('cc_device');sel.innerHTML=devices.map(d=>`<option value="${d.id}">${esc(d.name||d.ip)} (${esc(d.ip)})</option>`).join('');
   document.getElementById('cc_name').value='';
   document.getElementById('cc_resolution').value='';
@@ -871,31 +872,51 @@ async function createContainer(){
   if(!name){toast('请输入容器名称','error');return}
   if(!dev_id){toast('请选择所属设备','error');return}
   const btn=document.querySelector('#createContainerModal .btn-primary');
+  // 在关闭弹窗前捕获真机参数和代理的选择
+  const fp_id=document.getElementById('cc_fp').value;
+  const proxy_id=document.getElementById('cc_proxy').value;
+  const resolution=document.getElementById('cc_resolution').value.trim();
+  const image_addr=document.getElementById('cc_image_addr').value.trim();
   await withBusy(btn,'创建中…',async()=>{
-    // 自动计算下一个可用 index：取当前最大 index + 1
+    // 1. 创建容器
     const idxs=allContainers.filter(c=>c.device_id===dev_id).map(c=>c.index_num||0);
-    const nextIndex=(idxs.length?Math.max(...idxs)+1:0);
-    const body={device_id:dev_id,name:name,index:nextIndex,
-      resolution:document.getElementById('cc_resolution').value.trim(),image_addr:document.getElementById('cc_image_addr').value.trim()};
+    const nextIndex=(idxs.length?Math.max(...idxs)+1:1);
+    const body={device_id:dev_id,name:name,index:nextIndex,resolution:resolution,image_addr:image_addr};
     const d=await api('/api/containers/create','POST',body);
     if(d.code!==200){toast(d.message||d.msg||'创建失败','error');return}
-    // 在关闭弹窗前捕获真机参数和代理的选择
-    const fp_id=document.getElementById('cc_fp').value;
-    const proxy_id=document.getElementById('cc_proxy').value;
-    // 先关闭弹窗、显示成功提示，再同步容器列表（避免用户等待）
+    const newCid=d.data&&d.data.id;
+    if(!newCid){toast('创建成功但未获取到容器ID','error');return}
     closeModal('createContainerModal');
-    toast('创建完成','success');
-    // 后台同步容器列表
-    loadContainers().then(()=>{
-      // 找到新创建的容器，应用真机参数和代理
-      const newC=allContainers.find(c=>c.name===name&&c.device_id===dev_id);
-      if(newC){
-        if(fp_id){withBusy(null,'应用真机参数中…',async()=>{const r=await api('/api/containers/'+newC.id+'/apply_fp','POST',{fp_id});toast(r.code===200?'真机参数已应用':(r.msg||'真机参数应用失败'),r.code===200?'success':'error');await loadContainers()})}
-        if(proxy_id){withBusy(null,'应用代理中…',async()=>{const r=await api('/api/containers/'+newC.id+'/apply_proxy','POST',{proxy_id});toast(r.code===200?'代理已应用':(r.msg||'代理应用失败'),r.code===200?'success':'error');await loadContainers()})}
-      }
+    toast('容器创建成功','success');
+    // 2. 开机
+    await withBusy(null,'开机中，请稍候…',async()=>{
+      const r=await api('/api/containers/'+newCid+'/start','POST',{});
+      if(r.code!==200){toast('开机失败: '+(r.msg||''), 'error');return}
+      toast('容器已开机','success');
     });
+    // 等待容器上线
+    await new Promise(resolve=>setTimeout(resolve,3000));
+    await loadContainers();
+    // 3. 应用真机参数（开机后）
+    if(fp_id){
+      await withBusy(null,'真机参数导入中…',async()=>{
+        const r=await api('/api/containers/'+newCid+'/apply_fp','POST',{fp_id});
+        toast(r.code===200?'真机参数已应用':(r.msg||'真机参数应用失败'),r.code===200?'success':'error');
+      });
+    }
+    // 4. 应用代理（开机后）
+    if(proxy_id){
+      await withBusy(null,'代理配置中…',async()=>{
+        const r=await api('/api/containers/'+newCid+'/apply_proxy','POST',{proxy_id});
+        toast(r.code===200?'代理已配置':(r.msg||'代理配置失败'),r.code===200?'success':'error');
+      });
+    }
+    // 5. 同步容器列表
+    await loadContainers();
+    toast('全部完成','success');
   });
 }
+
 async function openDetail(cid){
   const d=await api('/api/containers/'+cid);
   if(d.code!==200){toast('容器不存在','error');return}
