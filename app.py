@@ -305,7 +305,8 @@ def api_device_add():
         return err('设备已存在')
     dev_id = db.add_device(ip, port, (d.get('url') or '').strip(),
                            (d.get('name') or '').strip(), (d.get('remark') or '').strip(),
-                           (d.get('screen_net') or 'wan').strip().lower())
+                           (d.get('screen_net') or 'wan').strip().lower(),
+                           int(d.get('max_containers') or 0))
     return ok(db.get_device(dev_id), '已添加')
 
 
@@ -315,7 +316,7 @@ def api_device_update(dev_id):
         return err('设备不存在', 404)
     d = request.json or {}
     fields = {}
-    for k in ('ip', 'port', 'url', 'name', 'remark', 'status', 'screen_net', 'enabled'):
+    for k in ('ip', 'port', 'url', 'name', 'remark', 'status', 'screen_net', 'enabled', 'max_containers'):
         if k in d:
             fields[k] = (d[k] or '').strip() if isinstance(d[k], str) else d[k]
     if ('ip' in fields) or ('port' in fields):

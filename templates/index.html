@@ -345,6 +345,7 @@ tr:hover td{background:#1e2e3e}
 <div class="form-row"><label>API 地址 (url，留空则用 http://IP:端口)</label><input id="dev_url" placeholder="http://113.105.100.58:83"></div>
 <div class="form-row"><label>名称</label><input id="dev_name" placeholder="可选"></div>
 <div class="form-row"><label>备注</label><input id="dev_remark" placeholder="可选"></div>
+<div class="form-row"><label>最大容器数（0=不限制）</label><input id="dev_max_containers" type="number" value="0" min="0">
   <div class="form-row"><label>投屏网络</label><select id="dev_screen_net"><option value="wan">外网（API url 主机）</option><option value="lan">内网（设备IP）</option></select></div>
 <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal('deviceModal')">取消</button><button class="btn btn-primary" onclick="saveDevice()">保存</button></div>
 </div></div>
@@ -373,10 +374,10 @@ tr:hover td{background:#1e2e3e}
 <h2>创建容器</h2>
 <div class="form-row"><label>所属设备 *</label><select id="cc_device"></select></div>
 <div class="form-row"><label>容器名称 *</label><input id="cc_name" placeholder="my_container"></div>
-<div class="form-row"><label>位置索引</label><input id="cc_index" value="0"></div>
+<div class="form-row"><label>位置索引</label><select id="cc_index"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option></select></div>
 <div class="grid-2">
-<div class="form-row"><label>分辨率</label><input id="cc_resolution" placeholder="如 1080x1920"></div>
-<div class="form-row"><label>镜像地址</label><input id="cc_image_addr" placeholder="可选"></div>
+<div class="form-row"><label>分辨率</label><select id="cc_resolution"><option value="">默认</option><option value="720x1280">720x1280</option><option value="1080x1920">1080x1920</option><option value="1080x2340">1080x2340</option><option value="1440x3200">1440x3200</option></select></div>
+<div class="form-row"><label>镜像地址</label><select id="cc_image_addr"><option value="">-- 选择镜像 --</option></select></div>
 </div>
 <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal('createContainerModal')">取消</button><button class="btn btn-primary" onclick="createContainer()">创建</button></div>
 </div></div>
@@ -684,13 +685,14 @@ function editDevice(id){
   document.getElementById('dev_port').value=d.port;document.getElementById('dev_url').value=d.url||'';
   document.getElementById('dev_name').value=d.name||'';document.getElementById('dev_remark').value=d.remark||'';
   document.getElementById('dev_screen_net').value=d.screen_net||'wan';
+  document.getElementById('dev_max_containers').value=d.max_containers||0;
   showModal('deviceModal');
 }
 async function saveDevice(){
   const id=document.getElementById('dev_id').value;
   const body={ip:document.getElementById('dev_ip').value.trim(),port:document.getElementById('dev_port').value.trim(),
     url:document.getElementById('dev_url').value.trim(),name:document.getElementById('dev_name').value.trim(),screen_net:document.getElementById('dev_screen_net').value,
-    remark:document.getElementById('dev_remark').value.trim()};
+    remark:document.getElementById('dev_remark').value.trim(),max_containers:parseInt(document.getElementById('dev_max_containers').value)||0};
   if(!body.ip){toast('请输入IP','error');return}
   const d=id?await api('/api/devices/'+id,'PUT',body):await api('/api/devices','POST',body);
   toast(d.msg,d.code===200?'success':'error');if(d.code===200){closeModal('deviceModal');loadDevices()}
@@ -759,14 +761,14 @@ function renderContainers(){
   const list=filteredContainers(),el=document.getElementById('containerList');
   if(!allContainers.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无容器，请先同步容器</div>';return}
   if(!list.length){el.innerHTML='<div style="text-align:center;padding:30px;color:#8899aa">无匹配容器</div>';return}
-  let h='<table><thead><tr><th>设备IP</th><th>容器名称</th><th>容器ID</th><th>状态</th><th>投屏</th><th>Agent</th><th>ADB地址</th><th>代理</th><th>真机参数</th><th>镜像</th><th>操作</th></tr></thead><tbody>';
+  let h='<table><thead><tr><th>设备IP</th><th>容器名称</th><th>容器ID</th><th>状态</th><th>Agent</th><th>ADB地址</th><th>代理</th><th>真机参数</th><th>镜像</th><th>操作</th></tr></thead><tbody>';
   list.forEach(c=>{
     const fp=realParams.find(f=>f.id===c.fp_id), px=proxies.find(p=>p.id===c.proxy_id);
     const img=c.image||'',shortimg=img.length>34?img.substring(0,34)+'...':img;
     h+=`<tr><td>${esc(c.device_ip)}</td>
     <td><span class="link" onclick="openDetail('${c.id}')" title="${esc(c.name)}">${esc(c.name.length>34?c.name.substring(0,34)+'...':c.name)}</span></td>
     <td style="font-size:11px;color:#8899aa">${esc(c.short_id||c.id.substring(0,12))}</td>
-    <td>${badge(c.state)}</td><td>${screenBadge(c.screen_status)}</td><td>${agentBadge(c)}</td><td style="font-size:12px">${esc(c.adb_addr||'-')}</td>
+    <td>${badge(c.state)}</td><td>${agentBadge(c)}</td><td style="font-size:12px">${esc(c.adb_addr||'-')}</td>
     <td style="font-size:11px" title="${esc(c.s5_addr)}">${px?(px.status==='fault'?'<span class="badge badge-red" title="线路故障">'+esc(px.name)+'·故障</span>':'<span class="badge badge-green">'+esc(px.name)+'</span>'):(c.s5_addr?'<span class="badge badge-gray" title="'+esc(c.s5_addr)+'">已配置</span>':'-')}</td>
     <td style="font-size:11px">${fp?('<span class="badge badge-blue">'+esc(fp.name)+'</span>'):'-'}</td>
     <td class="text-truncate" title="${esc(img)}" style="font-size:11px;color:#8899aa">${esc(shortimg)}</td>
@@ -842,8 +844,13 @@ async function loadLogs(){
 }
 function showCreateContainerModal(){
   const sel=document.getElementById('cc_device');sel.innerHTML=devices.map(d=>`<option value="${d.id}">${esc(d.name||d.ip)} (${esc(d.ip)})</option>`).join('');
-  document.getElementById('cc_name').value='';document.getElementById('cc_index').value='0';
-  document.getElementById('cc_resolution').value='';document.getElementById('cc_image_addr').value='';
+  document.getElementById('cc_name').value='';
+  document.getElementById('cc_index').value='0';
+  document.getElementById('cc_resolution').value='';
+  // 镜像地址下拉：优先显示本地已下载/已使用的镜像（去重）
+  const imgs=[...new Set(allContainers.map(c=>c.image).filter(Boolean))];
+  const imgSel=document.getElementById('cc_image_addr');
+  imgSel.innerHTML='<option value="">-- 选择镜像 --</option>'+imgs.map(i=>`<option value="${esc(i)}">${esc(i.length>60?i.substring(0,60)+'...':i)}</option>`).join('');
   showModal('createContainerModal');
 }
 async function createContainer(){

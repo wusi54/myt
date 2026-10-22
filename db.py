@@ -54,6 +54,7 @@ SCHEMA = [
         remark TEXT DEFAULT '',
         screen_net TEXT DEFAULT 'wan',
         enabled INTEGER DEFAULT 1,
+        max_containers INTEGER DEFAULT 0,
         created TEXT DEFAULT '',
         updated TEXT DEFAULT '',
         UNIQUE(ip, port)
@@ -181,6 +182,8 @@ def _ensure_columns(conn):
         conn.execute("ALTER TABLE devices ADD COLUMN screen_net TEXT DEFAULT 'wan'")
     if 'enabled' not in cols('devices'):
         conn.execute("ALTER TABLE devices ADD COLUMN enabled INTEGER DEFAULT 1")
+    if 'max_containers' not in cols('devices'):
+        conn.execute("ALTER TABLE devices ADD COLUMN max_containers INTEGER DEFAULT 0")
     if 'screen_status' not in cols('containers'):
         conn.execute("ALTER TABLE containers ADD COLUMN screen_status TEXT DEFAULT ''")
     if 'agent_status' not in cols('containers'):
@@ -247,13 +250,13 @@ def get_device(dev_id):
     return row('SELECT * FROM devices WHERE id=?', (dev_id,))
 
 
-def add_device(ip, port='83', url='', name='', remark='', screen_net='wan'):
+def add_device(ip, port='83', url='', name='', remark='', screen_net='wan', max_containers=0):
     ts = now()
     conn = get_db()
     try:
         cur = conn.execute(
-            'INSERT INTO devices (ip,port,url,name,remark,screen_net,created,updated) VALUES (?,?,?,?,?,?,?,?)',
-            (ip, port, url, name or f'{ip}:{port}', remark, screen_net, ts, ts))
+            'INSERT INTO devices (ip,port,url,name,remark,screen_net,max_containers,created,updated) VALUES (?,?,?,?,?,?,?,?,?)',
+            (ip, port, url, name or f'{ip}:{port}', remark, screen_net, max_containers, ts, ts))
         conn.commit()
         return cur.lastrowid
     finally:
