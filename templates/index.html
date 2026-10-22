@@ -871,18 +871,21 @@ async function createContainer(){
       resolution:document.getElementById('cc_resolution').value.trim(),image_addr:document.getElementById('cc_image_addr').value.trim()};
     const d=await api('/api/containers/create','POST',body);
     if(d.code!==200){toast(d.message||d.msg||'创建失败','error');return}
-    toast('创建完成','success');
-    closeModal('createContainerModal');
-    await loadContainers();
-  // 找到新创建的容器，应用真机参数和代理
-  const newC=allContainers.find(c=>c.name===name&&c.device_id===dev_id);
-  if(newC){
+    // 在关闭弹窗前捕获真机参数和代理的选择
     const fp_id=document.getElementById('cc_fp').value;
     const proxy_id=document.getElementById('cc_proxy').value;
-    if(fp_id){await withBusy(null,'应用真机参数中…',async()=>{const r=await api('/api/containers/'+newC.id+'/apply_fp','POST',{fp_id});toast(r.code===200?'真机参数已应用':(r.msg||'真机参数应用失败'),r.code===200?'success':'error')})}
-    if(proxy_id){await withBusy(null,'应用代理中…',async()=>{const r=await api('/api/containers/'+newC.id+'/apply_proxy','POST',{proxy_id});toast(r.code===200?'代理已应用':(r.msg||'代理应用失败'),r.code===200?'success':'error')})}
-      await loadContainers();
-    }
+    // 先关闭弹窗、显示成功提示，再同步容器列表（避免用户等待）
+    closeModal('createContainerModal');
+    toast('创建完成','success');
+    // 后台同步容器列表
+    loadContainers().then(()=>{
+      // 找到新创建的容器，应用真机参数和代理
+      const newC=allContainers.find(c=>c.name===name&&c.device_id===dev_id);
+      if(newC){
+        if(fp_id){withBusy(null,'应用真机参数中…',async()=>{const r=await api('/api/containers/'+newC.id+'/apply_fp','POST',{fp_id});toast(r.code===200?'真机参数已应用':(r.msg||'真机参数应用失败'),r.code===200?'success':'error');await loadContainers()})}
+        if(proxy_id){withBusy(null,'应用代理中…',async()=>{const r=await api('/api/containers/'+newC.id+'/apply_proxy','POST',{proxy_id});toast(r.code===200?'代理已应用':(r.msg||'代理应用失败'),r.code===200?'success':'error');await loadContainers()})}
+      }
+    });
   });
 }
 async function openDetail(cid){
