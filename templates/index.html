@@ -861,16 +861,19 @@ async function createContainer(){
   const dev_id=parseInt(document.getElementById('cc_device').value);
   const name=document.getElementById('cc_name').value.trim();
   if(!name){toast('请输入容器名称','error');return}
-  // 自动计算下一个可用 index：取当前最大 index + 1
-  const idxs=allContainers.filter(c=>c.device_id===dev_id).map(c=>c.index_num||0);
-  const nextIndex=(idxs.length?Math.max(...idxs)+1:0);
-  const body={device_id:dev_id,name:name,index:nextIndex,
-    resolution:document.getElementById('cc_resolution').value.trim(),image_addr:document.getElementById('cc_image_addr').value.trim()};
-  const d=await api('/api/containers/create','POST',body);
-  if(d.code!==200){toast(d.message||d.msg||'创建失败','error');return}
-  toast('创建完成','success');
-  closeModal('createContainerModal');
-  await loadContainers();
+  if(!dev_id){toast('请选择所属设备','error');return}
+  const btn=document.querySelector('#createContainerModal .btn-primary');
+  await withBusy(btn,'创建中…',async()=>{
+    // 自动计算下一个可用 index：取当前最大 index + 1
+    const idxs=allContainers.filter(c=>c.device_id===dev_id).map(c=>c.index_num||0);
+    const nextIndex=(idxs.length?Math.max(...idxs)+1:0);
+    const body={device_id:dev_id,name:name,index:nextIndex,
+      resolution:document.getElementById('cc_resolution').value.trim(),image_addr:document.getElementById('cc_image_addr').value.trim()};
+    const d=await api('/api/containers/create','POST',body);
+    if(d.code!==200){toast(d.message||d.msg||'创建失败','error');return}
+    toast('创建完成','success');
+    closeModal('createContainerModal');
+    await loadContainers();
   // 找到新创建的容器，应用真机参数和代理
   const newC=allContainers.find(c=>c.name===name&&c.device_id===dev_id);
   if(newC){
@@ -878,8 +881,9 @@ async function createContainer(){
     const proxy_id=document.getElementById('cc_proxy').value;
     if(fp_id){await withBusy(null,'应用真机参数中…',async()=>{const r=await api('/api/containers/'+newC.id+'/apply_fp','POST',{fp_id});toast(r.code===200?'真机参数已应用':(r.msg||'真机参数应用失败'),r.code===200?'success':'error')})}
     if(proxy_id){await withBusy(null,'应用代理中…',async()=>{const r=await api('/api/containers/'+newC.id+'/apply_proxy','POST',{proxy_id});toast(r.code===200?'代理已应用':(r.msg||'代理应用失败'),r.code===200?'success':'error')})}
-    await loadContainers();
-  }
+      await loadContainers();
+    }
+  });
 }
 async function openDetail(cid){
   const d=await api('/api/containers/'+cid);

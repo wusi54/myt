@@ -364,6 +364,11 @@ def api_device_probe(dev_id):
         hv = cli.host_ver(dev['ip'])
         host_ver = hv.get('data') or hv.get('message') or ''
     db.update_device(dev_id, status=status, container_count=count, host_ver=str(host_ver))
+    if status == 'offline':
+        # 设备离线时，将名下容器状态置为 offline
+        for c in db.list_containers():
+            if c['device_id'] == dev_id:
+                db.update_container(c['id'], state='offline', status='offline')
     db.add_operation_log({'op_type': 'adb_probe', 'target': dev['ip'], 'status': status,
                           'detail': '容器数 ' + str(count)})
     return ok(db.get_device(dev_id))
@@ -549,6 +554,10 @@ def _sync_one_device(dev):
     res = cli.list_containers(dev['ip'])
     if res.get('code') != 200:
         db.update_device(dev['id'], status='offline')
+        # 设备离线时，将名下容器状态置为 offline，避免残留 running 显示
+        for c in db.list_containers():
+            if c['device_id'] == dev['id']:
+                db.update_container(c['id'], state='offline', status='offline')
         return 0
     # 容器列表接口为 /get/{ip}，返回结构因 myt 固件/版本而异：
     #   - 容器数组优先在 msg 字段下（/get 返回 {code,msg:[...]}），也兼容 data；
