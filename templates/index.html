@@ -880,7 +880,11 @@ async function createContainer(){
   await withBusy(btn,'创建中…',async()=>{
     // 1. 创建容器
     const idxs=allContainers.filter(c=>c.device_id===dev_id).map(c=>c.index_num||0);
-    const nextIndex=(idxs.length?Math.max(...idxs)+1:1);
+    // 找第一个可用的 index（从 1 开始，myt 不支持 0）
+    const used=new Set(idxs);
+    let nextIndex=1;
+    while(used.has(nextIndex)&&nextIndex<=12)nextIndex++;
+    if(nextIndex>12)nextIndex=1;
     const body={device_id:dev_id,name:name,index:nextIndex,resolution:resolution,image_addr:image_addr};
     const d=await api('/api/containers/create','POST',body);
     if(d.code!==200){toast(d.message||d.msg||'创建失败','error');return}
