@@ -372,7 +372,11 @@ tr:hover td{background:#1e2e3e}
 <div id="createContainerModal" class="modal-overlay"><div class="modal" style="max-width:500px">
 <h2>创建容器</h2>
 <div class="form-row"><label>所属设备 *</label><select id="cc_device"></select></div>
-<div class="form-row"><label>容器名称 *</label><input id="cc_name" placeholder="my_container"></div>
+<div class="form-row"><label>命名方式</label>
+  <label style="margin-right:12px"><input type="radio" name="cc_name_mode" value="auto" checked onchange="toggleCcNameMode()"> 自动生成</label>
+  <label><input type="radio" name="cc_name_mode" value="custom" onchange="toggleCcNameMode()"> 自定义</label>
+</div>
+<div class="form-row"><label>容器名称 *</label><input id="cc_name" placeholder="my_container" disabled></div>
 <div class="grid-2">
 <div class="form-row"><label>分辨率</label><select id="cc_resolution"><option value="">默认</option><option value="720x1280">720x1280</option><option value="1080x1920">1080x1920</option><option value="1080x2340">1080x2340</option><option value="1440x3200">1440x3200</option></select></div>
 <div class="form-row"><label>镜像地址</label><select id="cc_image_addr"><option value="">-- 选择镜像 --</option></select></div>
@@ -849,10 +853,17 @@ async function loadLogs(){
   });
   h+='</tbody></table>';el.innerHTML=h;
 }
+async function toggleCcNameMode(){
+  const mode=document.querySelector('input[name="cc_name_mode"]:checked').value;
+  const inp=document.getElementById('cc_name');
+  if(mode==='auto'){inp.disabled=true;inp.value='';inp.placeholder='自动生成 (设备端命名)'}
+  else{inp.disabled=false;inp.placeholder='my_container';inp.focus()}
+}
 async function showCreateContainerModal(){
   await loadContainers();
   const sel=document.getElementById('cc_device');sel.innerHTML=devices.map(d=>`<option value="${d.id}">${esc(d.name||d.ip)} (${esc(d.ip)})</option>`).join('');
-  document.getElementById('cc_name').value='';
+  document.querySelector('input[name="cc_name_mode"][value="auto"]').checked=true;
+  toggleCcNameMode();
   document.getElementById('cc_resolution').value='';
   // 镜像地址下拉：优先显示本地已下载/已使用的镜像（去重）
   const imgs=[...new Set(allContainers.map(c=>c.image).filter(Boolean))];
@@ -868,8 +879,10 @@ async function showCreateContainerModal(){
 }
 async function createContainer(){
   const dev_id=parseInt(document.getElementById('cc_device').value);
+  const name_mode=document.querySelector('input[name="cc_name_mode"]:checked').value;
+  const auto_name=(name_mode==='auto');
   const name=document.getElementById('cc_name').value.trim();
-  if(!name){toast('请输入容器名称','error');return}
+  if(!auto_name&&!name){toast('请输入容器名称','error');return}
   if(!dev_id){toast('请选择所属设备','error');return}
   const btn=document.querySelector('#createContainerModal .btn-primary');
   // 在关闭弹窗前捕获真机参数和代理的选择
@@ -885,13 +898,14 @@ async function createContainer(){
     let nextIndex=1;
     while(used.has(nextIndex)&&nextIndex<=12)nextIndex++;
     if(nextIndex>12)nextIndex=1;
-    const body={device_id:dev_id,name:name,index:nextIndex,resolution:resolution,image_addr:image_addr};
+    const body={device_id:dev_id,name:name,index:nextIndex,resolution:resolution,image_addr:image_addr,auto_name:auto_name};
     const d=await api('/api/containers/create','POST',body);
     if(d.code!==200){toast(d.message||d.msg||'创建失败','error');return}
     const newCid=d.data&&d.data.id;
+    const createdName=(d.data&&d.data.name)?d.data.name:name;
     if(!newCid){toast('创建成功但未获取到容器ID','error');return}
     closeModal('createContainerModal');
-    toast('容器创建成功','success');
+    toast('容器创建成功: '+createdName,'success');
     // 2. 开机
     await withBusy(null,'开机中，请稍候…',async()=>{
       const r=await api('/api/containers/'+newCid+'/start','POST',{});
