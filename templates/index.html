@@ -374,11 +374,13 @@ tr:hover td{background:#1e2e3e}
 <h2>创建容器</h2>
 <div class="form-row"><label>所属设备 *</label><select id="cc_device" onchange="updateCcHint()"></select></div>
 <div class="form-row"><label>容器名称 *</label><input id="cc_name" placeholder="my_container"></div>
-<div class="form-row"><label>可创建数量</label><span id="cc_hint" class="hint">请选择设备</span></div>
+<div class="form-row"><label>坑位（已用/总数）</label><span id="cc_hint" class="hint">请选择设备</span></div>
 <div class="grid-2">
 <div class="form-row"><label>分辨率</label><select id="cc_resolution"><option value="">默认</option><option value="720x1280">720x1280</option><option value="1080x1920">1080x1920</option><option value="1080x2340">1080x2340</option><option value="1440x3200">1440x3200</option></select></div>
 <div class="form-row"><label>镜像地址</label><select id="cc_image_addr"><option value="">-- 选择镜像 --</option></select></div>
 </div>
+<div class="form-row"><label>真机参数（可选）</label><select id="cc_fp"><option value="">-- 不应用 --</option></select></div>
+<div class="form-row"><label>代理配置（可选）</label><select id="cc_proxy"><option value="">-- 不应用 --</option></select></div>
 <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal('createContainerModal')">取消</button><button class="btn btn-primary" onclick="createContainer()">创建</button></div>
 </div></div>
 
@@ -867,6 +869,12 @@ function showCreateContainerModal(){
   const imgs=[...new Set(allContainers.map(c=>c.image).filter(Boolean))];
   const imgSel=document.getElementById('cc_image_addr');
   imgSel.innerHTML='<option value="">-- 选择镜像 --</option>'+imgs.map(i=>`<option value="${esc(i)}">${esc(i.length>60?i.substring(0,60)+'...':i)}</option>`).join('');
+  // 真机参数下拉（未占用优先）
+  document.getElementById('cc_fp').innerHTML='<option value="">-- 不应用 --</option>'+
+    realParams.filter(f=>!f.in_use).map(f=>`<option value="${f.id}">${esc(f.name)}${f.brand||f.model?' ('+esc([f.brand,f.model].filter(Boolean).join(' '))+')':''}</option>`).join('');
+  // 代理下拉（未故障、未占用优先）
+  document.getElementById('cc_proxy').innerHTML='<option value="">-- 不应用 --</option>'+
+    proxies.filter(p=>!p.in_use&&p.status!=='fault').map(p=>`<option value="${p.id}">${esc(p.name)} (${esc(p.ip)}:${esc(p.port)})</option>`).join('');
   showModal('createContainerModal');
 }
 async function createContainer(){
@@ -886,7 +894,19 @@ async function createContainer(){
   const body={device_id:dev_id,name:name,index:nextIndex,
     resolution:document.getElementById('cc_resolution').value.trim(),image_addr:document.getElementById('cc_image_addr').value.trim()};
   const d=await api('/api/containers/create','POST',body);
-  toast(d.message||d.msg||'创建完成',d.code===200?'success':'error');if(d.code===200){closeModal('createContainerModal');loadContainers()}
+  if(d.code!==200){toast(d.message||d.msg||'创建失败','error');return}
+  toast('创建完成','success');
+  closeModal('createContainerModal');
+  await loadContainers();
+  // 找到新创建的容器，应用真机参数和代理
+  const newC=allContainers.find(c=>c.name===name&&c.device_id===dev_id);
+  if(newC){
+    const fp_id=document.getElementById('cc_fp').value;
+    const proxy_id=document.getElementById('cc_proxy').value;
+    if(fp_id){await withBusy(null,'应用真机参数中…',async()=>{const r=await api('/api/containers/'+newC.id+'/apply_fp','POST',{fp_id});toast(r.code===200?'真机参数已应用':(r.msg||'真机参数应用失败'),r.code===200?'success':'error')})}
+    if(proxy_id){await withBusy(null,'应用代理中…',async()=>{const r=await api('/api/containers/'+newC.id+'/apply_proxy','POST',{proxy_id});toast(r.code===200?'代理已应用':(r.msg||'代理应用失败'),r.code===200?'success':'error')})}
+    await loadContainers();
+  }
 }
 async function openDetail(cid){
   const d=await api('/api/containers/'+cid);
