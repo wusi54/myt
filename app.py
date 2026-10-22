@@ -683,10 +683,25 @@ def api_container_create():
     dev = db.get_device(d.get('device_id'))
     if not dev:
         return err('设备不存在', 404)
-    name = (d.get('name') or '').strip()
+    index = d.get('index', 0)
+    cli = client_for(dev)
+    auto_name = d.get('auto_name', False)
+    if auto_name:
+        # 自动生成容器名：{devCode}_{index}_T{index padded to 4 digits}
+        try:
+            si = cli.systeminfo(dev['ip'])
+            dev_code = ''
+            if si.get('code') == 200:
+                dev_code = (si.get('data') or {}).get('devCode') or ''
+            if not dev_code:
+                dev_code = dev['ip'].replace('.', '')
+            name = f"{dev_code}_{index}_T{index:04d}"
+        except Exception:
+            name = f"container_{index}"
+    else:
+        name = (d.get('name') or '').strip()
     if not name:
         return err('容器名称不能为空')
-    index = d.get('index', 0)
     opts = {}
     for k in ('image_addr', 'memory', 'cpu', 'width', 'height', 'dpi',
               'fps', 'mac', 'random_dev', 'rpaport', 'adbport', 'custom_tag', 'sandbox'):
@@ -699,12 +714,15 @@ def api_container_create():
         if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
             opts['width'] = parts[0]
             opts['height'] = parts[1]
-    cli = client_for(dev)
     res = cli.create(dev['ip'], index, name, **opts)
     if res.get('code') == 200:
         _sync_one_device(dev)
         db.add_operation_log({'op_type': 'container', 'target': name,
                               'detail': '创建容器 (index=' + str(index) + ', device=' + dev['ip'] + ')', 'status': 'success'})
+        # 返回容器名，供前端显示
+        res['data'] = res.get('data') or {}
+        if isinstance(res['data'], dict):
+            res['data']['name'] = name
     return jsonify(res)
 
 
