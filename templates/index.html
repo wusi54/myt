@@ -372,9 +372,9 @@ tr:hover td{background:#1e2e3e}
 <!-- ========== Modal: 创建容器 ========== -->
 <div id="createContainerModal" class="modal-overlay"><div class="modal" style="max-width:500px">
 <h2>创建容器</h2>
-<div class="form-row"><label>所属设备 *</label><select id="cc_device"></select></div>
+<div class="form-row"><label>所属设备 *</label><select id="cc_device" onchange="updateCcHint()"></select></div>
 <div class="form-row"><label>容器名称 *</label><input id="cc_name" placeholder="my_container"></div>
-<div class="form-row"><label>位置索引</label><select id="cc_index"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option></select></div>
+<div class="form-row"><label>可创建数量</label><span id="cc_hint" class="hint">请选择设备</span></div>
 <div class="grid-2">
 <div class="form-row"><label>分辨率</label><select id="cc_resolution"><option value="">默认</option><option value="720x1280">720x1280</option><option value="1080x1920">1080x1920</option><option value="1080x2340">1080x2340</option><option value="1440x3200">1440x3200</option></select></div>
 <div class="form-row"><label>镜像地址</label><select id="cc_image_addr"><option value="">-- 选择镜像 --</option></select></div>
@@ -842,11 +842,27 @@ async function loadLogs(){
   });
   h+='</tbody></table>';el.innerHTML=h;
 }
+function updateCcHint(){
+  const dev_id=parseInt(document.getElementById('cc_device').value);
+  const dev=devices.find(d=>d.id===dev_id);
+  const curCount=allContainers.filter(c=>c.device_id===dev_id).length;
+  const maxC=dev?(dev.max_containers||0):0;
+  const hint=document.getElementById('cc_hint');
+  if(!hint)return;
+  if(maxC>0){
+    const remain=maxC-curCount;
+    hint.textContent='已用 '+curCount+' / 共 '+maxC+'，剩余 '+remain+' 个可创建';
+    hint.style.color=remain>0?'#3ad07f':'#ff6b6b';
+  }else{
+    hint.textContent='当前 '+curCount+' 个（未限制）';
+    hint.style.color='#8899aa';
+  }
+}
 function showCreateContainerModal(){
   const sel=document.getElementById('cc_device');sel.innerHTML=devices.map(d=>`<option value="${d.id}">${esc(d.name||d.ip)} (${esc(d.ip)})</option>`).join('');
   document.getElementById('cc_name').value='';
-  document.getElementById('cc_index').value='0';
   document.getElementById('cc_resolution').value='';
+  updateCcHint();
   // 镜像地址下拉：优先显示本地已下载/已使用的镜像（去重）
   const imgs=[...new Set(allContainers.map(c=>c.image).filter(Boolean))];
   const imgSel=document.getElementById('cc_image_addr');
@@ -859,10 +875,16 @@ async function createContainer(){
   const curCount=allContainers.filter(c=>c.device_id===dev_id).length;
   const maxC=dev?(dev.max_containers||0):0;
   if(maxC>0 && curCount>=maxC){toast('已达到最大容器数（'+maxC+'），无法创建更多','error');return}
-  const body={device_id:dev_id,name:document.getElementById('cc_name').value.trim(),
-    index:parseInt(document.getElementById('cc_index').value||'0'),
+  const name=document.getElementById('cc_name').value.trim();
+  if(!name){toast('请输入容器名称','error');return}
+  // 确认提示：告知用户将创建容器及剩余数量
+  const remain=maxC>0?(maxC-curCount-1):'不限';
+  if(!confirm('确认创建容器「'+name+'」？\n创建后剩余可创建：'+remain))return;
+  // 自动计算下一个可用 index：取当前最大 index + 1
+  const idxs=allContainers.filter(c=>c.device_id===dev_id).map(c=>c.index_num||0);
+  const nextIndex=(idxs.length?Math.max(...idxs)+1:0);
+  const body={device_id:dev_id,name:name,index:nextIndex,
     resolution:document.getElementById('cc_resolution').value.trim(),image_addr:document.getElementById('cc_image_addr').value.trim()};
-  if(!body.name){toast('请输入容器名称','error');return}
   const d=await api('/api/containers/create','POST',body);
   toast(d.message||d.msg||'创建完成',d.code===200?'success':'error');if(d.code===200){closeModal('createContainerModal');loadContainers()}
 }
