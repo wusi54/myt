@@ -546,6 +546,14 @@ tr:hover td{background:#1e2e3e}
         <div class="ss-result" id="screenModalProxyResult"></div>
       </div>
       <div class="ss-section">
+        <div class="ss-title">应用安装</div>
+        <select id="screenModalApp" class="flex-grow"><option value="">-- 选择应用 --</option></select>
+        <div class="ss-row">
+          <span class="wc-tb-btn screen-primary" id="screenModalAppInstall">安装应用</span>
+        </div>
+        <div class="ss-result" id="screenModalAppResult"></div>
+      </div>
+      <div class="ss-section">
         <div class="ss-title">操作</div>
         <div class="ss-row">
           <span class="wc-tb-btn screen-primary" id="screenModalRestart" title="重启投屏 Agent">重启</span>
@@ -1754,7 +1762,7 @@ document.addEventListener('pointermove',function(e){
 });
 
 // ==================== 独立投屏浮层（页内弹框，复用 WHEP 播放器） ====================
-const screenModalState={player:null,adb:'',kbCapture:false};
+const screenModalState={player:null,adb:'',kbCapture:false,containerId:''};
 function screenModalStatus(t,color){
   const el=document.getElementById('screenModalStatus');
   if(!el)return;
@@ -1816,13 +1824,22 @@ function populateScreenModalSelects(c){
         return `<option value="${p.id}" ${disabled?'disabled':''}>${esc(p.name)} (${esc(p.ip)}:${esc(p.port)}) [${esc(tag)}]</option>`;
       }).join('');
   }
+  // 存储当前容器 ID
+  screenModalState.containerId=cid||'';
+  // 应用下拉
+  const appSel=document.getElementById('screenModalApp');
+  if(appSel){
+    appSel.innerHTML='<option value="">-- 选择应用 --</option>'+
+      apps.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('');
+  }
   const hasC=!!cid;
-  ['screenModalFpApply','screenModalFpRelease','screenModalProxyApply','screenModalProxyRelease']
+  ['screenModalFpApply','screenModalFpRelease','screenModalProxyApply','screenModalProxyRelease','screenModalAppInstall']
     .forEach(id=>{const b=document.getElementById(id);if(b)b.disabled=!hasC});
   if(!hasC){
-    const r1=document.getElementById('screenModalFpResult'),r2=document.getElementById('screenModalProxyResult');
+    const r1=document.getElementById('screenModalFpResult'),r2=document.getElementById('screenModalProxyResult'),r3=document.getElementById('screenModalAppResult');
     if(r1){r1.style.display='block';r1.textContent='未找到对应容器，请在「容器管理」中先同步该实例';}
     if(r2)r2.style.display='none';
+    if(r3)r3.style.display='none';
   }
 }
 function showScreenResult(id,data){
@@ -1870,6 +1887,18 @@ async function screenModalReleaseProxy(){
     
     toast(d.code===200?'已关闭代理':(d.msg||'失败'),d.code===200?'success':'error');
     if(d.code===200){await Promise.all([loadProxies(),loadContainers()]);populateScreenModalSelects(c);loadScreenModalInfo(screenModalState.adb);}
+  });
+}
+async function screenModalInstallApp(){
+  const c=allContainers.find(x=>x.adb_addr===screenModalState.adb);
+  if(!c){toast('未找到对应容器','error');return}
+  const app_id=document.getElementById('screenModalApp').value;
+  if(!app_id){toast('请选择应用','error');return}
+  await withBusy(document.getElementById('screenModalAppInstall'),'安装中，请稍候…',async()=>{
+    const d=await api('/api/containers/'+c.id+'/install_apk','POST',{app_id});
+    const r=document.getElementById('screenModalAppResult');
+    if(r){r.style.display='block';r.textContent=JSON.stringify(d,null,2)}
+    toast(d.code===200?'安装完成':(d.msg||'安装失败'),d.code===200?'success':'error');
   });
 }
 function closeScreenModal(){
@@ -1949,6 +1978,7 @@ document.getElementById('screenModalFpApply').addEventListener('click',screenMod
 document.getElementById('screenModalFpRelease').addEventListener('click',screenModalReleaseFp);
 document.getElementById('screenModalProxyApply').addEventListener('click',screenModalApplyProxy);
 document.getElementById('screenModalProxyRelease').addEventListener('click',screenModalReleaseProxy);
+document.getElementById('screenModalAppInstall').addEventListener('click',screenModalInstallApp);
 document.getElementById('screenModalInput').addEventListener('keydown',function(e){
   if(e.key!=='Enter')return;
   e.preventDefault();
