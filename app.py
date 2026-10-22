@@ -688,10 +688,17 @@ def api_container_create():
         return err('容器名称不能为空')
     index = d.get('index', 0)
     opts = {}
-    for k in ('image_addr', 'memory', 'cpu', 'resolution', 'width', 'height', 'dpi',
+    for k in ('image_addr', 'memory', 'cpu', 'width', 'height', 'dpi',
               'fps', 'mac', 'random_dev', 'rpaport', 'adbport', 'custom_tag', 'sandbox'):
         if d.get(k) not in (None, ''):
             opts[k] = d[k]
+    # resolution "WxH" -> width/height (myt API 不接受 resolution 字符串)
+    res = (d.get('resolution') or '').strip()
+    if res and 'x' in res:
+        parts = res.split('x')
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            opts['width'] = parts[0]
+            opts['height'] = parts[1]
     cli = client_for(dev)
     res = cli.create(dev['ip'], index, name, **opts)
     if res.get('code') == 200:

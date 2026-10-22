@@ -52,7 +52,12 @@ class MytClient:
             r = requests.get(f"{self.base}{path}", params=params or {},
                              headers=headers or {},
                              timeout=timeout or self.timeout)
-            return r.json() if r.text else {'code': 500, 'msg': 'empty response'}
+            if not r.text:
+                return {'code': 500, 'msg': 'empty response', 'status': r.status_code}
+            try:
+                return r.json()
+            except Exception:
+                return {'code': 500, 'msg': 'non-json response: ' + r.text[:200], 'status': r.status_code}
         except Exception as e:
             return {'code': 500, 'msg': str(e)}
 
@@ -62,7 +67,12 @@ class MytClient:
         try:
             r = requests.post(f"{self.base}{path}", params=params or {}, json=data,
                               files=files, timeout=timeout or self.timeout)
-            return r.json() if r.text else {'code': 500, 'msg': 'empty response'}
+            if not r.text:
+                return {'code': 500, 'msg': 'empty response', 'status': r.status_code}
+            try:
+                return r.json()
+            except Exception:
+                return {'code': 500, 'msg': 'non-json response: ' + r.text[:200], 'status': r.status_code}
         except Exception as e:
             return {'code': 500, 'msg': str(e)}
 
