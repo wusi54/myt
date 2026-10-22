@@ -345,7 +345,6 @@ tr:hover td{background:#1e2e3e}
 <div class="form-row"><label>API 地址 (url，留空则用 http://IP:端口)</label><input id="dev_url" placeholder="http://113.105.100.58:83"></div>
 <div class="form-row"><label>名称</label><input id="dev_name" placeholder="可选"></div>
 <div class="form-row"><label>备注</label><input id="dev_remark" placeholder="可选"></div>
-<div class="form-row"><label>最大容器数（0=不限制）</label><input id="dev_max_containers" type="number" value="0" min="0"></div>
   <div class="form-row"><label>投屏网络</label><select id="dev_screen_net"><option value="wan">外网（API url 主机）</option><option value="lan">内网（设备IP）</option></select></div>
 <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal('deviceModal')">取消</button><button class="btn btn-primary" onclick="saveDevice()">保存</button></div>
 </div></div>
@@ -372,9 +371,8 @@ tr:hover td{background:#1e2e3e}
 <!-- ========== Modal: 创建容器 ========== -->
 <div id="createContainerModal" class="modal-overlay"><div class="modal" style="max-width:500px">
 <h2>创建容器</h2>
-<div class="form-row"><label>所属设备 *</label><select id="cc_device" onchange="updateCcHint()"></select></div>
+<div class="form-row"><label>所属设备 *</label><select id="cc_device"></select></div>
 <div class="form-row"><label>容器名称 *</label><input id="cc_name" placeholder="my_container"></div>
-<div class="form-row"><label>坑位（已用/总数）</label><span id="cc_hint" class="hint">请选择设备</span></div>
 <div class="grid-2">
 <div class="form-row"><label>分辨率</label><select id="cc_resolution"><option value="">默认</option><option value="720x1280">720x1280</option><option value="1080x1920">1080x1920</option><option value="1080x2340">1080x2340</option><option value="1440x3200">1440x3200</option></select></div>
 <div class="form-row"><label>镜像地址</label><select id="cc_image_addr"><option value="">-- 选择镜像 --</option></select></div>
@@ -687,14 +685,13 @@ function editDevice(id){
   document.getElementById('dev_port').value=d.port;document.getElementById('dev_url').value=d.url||'';
   document.getElementById('dev_name').value=d.name||'';document.getElementById('dev_remark').value=d.remark||'';
   document.getElementById('dev_screen_net').value=d.screen_net||'wan';
-  document.getElementById('dev_max_containers').value=d.max_containers||0;
   showModal('deviceModal');
 }
 async function saveDevice(){
   const id=document.getElementById('dev_id').value;
   const body={ip:document.getElementById('dev_ip').value.trim(),port:document.getElementById('dev_port').value.trim(),
     url:document.getElementById('dev_url').value.trim(),name:document.getElementById('dev_name').value.trim(),screen_net:document.getElementById('dev_screen_net').value,
-    remark:document.getElementById('dev_remark').value.trim(),max_containers:parseInt(document.getElementById('dev_max_containers').value)||0};
+    remark:document.getElementById('dev_remark').value.trim()};
   if(!body.ip){toast('请输入IP','error');return}
   const d=id?await api('/api/devices/'+id,'PUT',body):await api('/api/devices','POST',body);
   toast(d.msg,d.code===200?'success':'error');if(d.code===200){closeModal('deviceModal');loadDevices()}
@@ -844,27 +841,10 @@ async function loadLogs(){
   });
   h+='</tbody></table>';el.innerHTML=h;
 }
-function updateCcHint(){
-  const dev_id=parseInt(document.getElementById('cc_device').value);
-  const dev=devices.find(d=>d.id===dev_id);
-  const curCount=allContainers.filter(c=>c.device_id===dev_id).length;
-  const maxC=dev?(dev.max_containers||0):0;
-  const hint=document.getElementById('cc_hint');
-  if(!hint)return;
-  if(maxC>0){
-    const remain=maxC-curCount;
-    hint.textContent='已用 '+curCount+' / 共 '+maxC+'，剩余 '+remain+' 个可创建';
-    hint.style.color=remain>0?'#3ad07f':'#ff6b6b';
-  }else{
-    hint.textContent='当前 '+curCount+' 个（未限制）';
-    hint.style.color='#8899aa';
-  }
-}
 function showCreateContainerModal(){
   const sel=document.getElementById('cc_device');sel.innerHTML=devices.map(d=>`<option value="${d.id}">${esc(d.name||d.ip)} (${esc(d.ip)})</option>`).join('');
   document.getElementById('cc_name').value='';
   document.getElementById('cc_resolution').value='';
-  updateCcHint();
   // 镜像地址下拉：优先显示本地已下载/已使用的镜像（去重）
   const imgs=[...new Set(allContainers.map(c=>c.image).filter(Boolean))];
   const imgSel=document.getElementById('cc_image_addr');
@@ -879,15 +859,8 @@ function showCreateContainerModal(){
 }
 async function createContainer(){
   const dev_id=parseInt(document.getElementById('cc_device').value);
-  const dev=devices.find(d=>d.id===dev_id);
-  const curCount=allContainers.filter(c=>c.device_id===dev_id).length;
-  const maxC=dev?(dev.max_containers||0):0;
-  if(maxC>0 && curCount>=maxC){toast('已达到最大容器数（'+maxC+'），无法创建更多','error');return}
   const name=document.getElementById('cc_name').value.trim();
   if(!name){toast('请输入容器名称','error');return}
-  // 确认提示：告知用户将创建容器及剩余数量
-  const remain=maxC>0?(maxC-curCount-1):'不限';
-  if(!confirm('确认创建容器「'+name+'」？\n创建后剩余可创建：'+remain))return;
   // 自动计算下一个可用 index：取当前最大 index + 1
   const idxs=allContainers.filter(c=>c.device_id===dev_id).map(c=>c.index_num||0);
   const nextIndex=(idxs.length?Math.max(...idxs)+1:0);
