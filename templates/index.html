@@ -898,8 +898,8 @@ async function createContainer(){
       if(r.code!==200){toast('开机失败: '+(r.msg||''), 'error');return}
       toast('容器已开机','success');
     });
-    // 等待容器上线
-    await new Promise(resolve=>setTimeout(resolve,3000));
+    // 等待容器上线（myt 容器启动需要几秒）
+    await new Promise(resolve=>setTimeout(resolve,6000));
     await loadContainers();
     // 3. 应用真机参数（开机后）
     if(fp_id){
