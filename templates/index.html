@@ -854,7 +854,12 @@ function showCreateContainerModal(){
   showModal('createContainerModal');
 }
 async function createContainer(){
-  const body={device_id:parseInt(document.getElementById('cc_device').value),name:document.getElementById('cc_name').value.trim(),
+  const dev_id=parseInt(document.getElementById('cc_device').value);
+  const dev=devices.find(d=>d.id===dev_id);
+  const curCount=allContainers.filter(c=>c.device_id===dev_id).length;
+  const maxC=dev?(dev.max_containers||0):0;
+  if(maxC>0 && curCount>=maxC){toast('已达到最大容器数（'+maxC+'），无法创建更多','error');return}
+  const body={device_id:dev_id,name:document.getElementById('cc_name').value.trim(),
     index:parseInt(document.getElementById('cc_index').value||'0'),
     resolution:document.getElementById('cc_resolution').value.trim(),image_addr:document.getElementById('cc_image_addr').value.trim()};
   if(!body.name){toast('请输入容器名称','error');return}
