@@ -554,7 +554,7 @@ tr:hover td{background:#1e2e3e}
         </div>
       </div>
     </div>
-    <input id="screenModalKbInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="0" style="position:absolute;bottom:4px;right:4px;width:120px;height:24px;opacity:0.3;border:1px solid #3a4a5a;border-radius:3px;background:#0f1923;color:#fff;font-size:11px;padding:2px 4px;z-index:10" placeholder="键盘输入…">
+    <input id="screenModalKbInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="0" style="position:absolute;top:4px;left:4px;width:120px;height:24px;opacity:0.3;border:1px solid #3a4a5a;border-radius:3px;background:#0f1923;color:#fff;font-size:11px;padding:2px 4px;z-index:10" placeholder="键盘输入…">
   </div>
 </div>
 
@@ -1861,13 +1861,13 @@ function enableKbCapture(){
   screenModalState.kbCapture=true;
   document.getElementById('screenModalKbHint').style.display='block';
   const kb=document.getElementById('screenModalKbInput');
-  if(kb){kb.value='';kb.focus();}
+  if(kb){kb.style.opacity='1';kb.value='';kb.focus();}
 }
 function disableKbCapture(){
   screenModalState.kbCapture=false;
   document.getElementById('screenModalKbHint').style.display='none';
   const kb=document.getElementById('screenModalKbInput');
-  if(kb)kb.blur();
+  if(kb){kb.style.opacity='0.3';kb.blur();}
 }
 document.addEventListener('keydown',function(e){
   const modal=document.getElementById('screenModal');
