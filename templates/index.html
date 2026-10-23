@@ -602,7 +602,7 @@ let currentContainer=null, pickCb=null, pickMulti=true, pickSelected=new Set();
 let proxyPage=0; const PROXY_PAGE_SIZE=20;
 let CURRENT_USER=null;
 
-function toast(msg,type='info'){const t=document.getElementById('toast');t.textContent=msg;t.className='toast '+type;setTimeout(()=>{t.style.display='none'},3200)}
+function toast(msg,type='info'){const t=document.getElementById('toast');t.textContent=msg;t.className='toast '+type;t.style.display='block';setTimeout(()=>{t.style.display='none'},3200)}
 // 全局“处理中”提示：并发计数，避免嵌套时提前隐藏
 let _busyCount=0;
 function startBusy(msg){_busyCount++;const t=document.getElementById('busyText'),b=document.getElementById('globalBusy');if(t)t.textContent=msg||'处理中…';if(b)b.classList.add('active')}
@@ -1935,10 +1935,10 @@ async function screenModalInstallApp(){
   const app_id=document.getElementById('screenModalApp').value;
   if(!app_id){toast('请选择应用','error');return}
   await withBusy(document.getElementById('screenModalAppInstall'),'安装中，请稍候…',async()=>{
-    const d=await api('/api/containers/'+c.id+'/install_apk','POST',{app_id});
-    const r=document.getElementById('screenModalAppResult');
-    if(r){r.style.display='block';r.textContent=JSON.stringify(d,null,2)}
-    toast(d.code===200?'安装完成':(d.msg||'安装失败'),d.code===200?'success':'error');
+    try{
+      const d=await api('/api/containers/'+c.id+'/install_apk','POST',{app_id});
+      toast(d.code===200?'安装完成':(d.msg||'安装失败'),d.code===200?'success':'error');
+    }catch(e){toast('安装异常: '+e,'error')}
   });
 }
 function closeScreenModal(){
