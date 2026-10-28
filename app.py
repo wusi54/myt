@@ -2475,9 +2475,27 @@ def _run_delivery_workflow(wid):
             next_idx = 1
         cli = client_for(dev)
         body_opts = {}
-        res = cli.create(dev['ip'], next_idx, f'auto_{next_idx}', **body_opts)
-        if res.get('code') != 200:
-            raise Exception(res.get('msg') or res.get('message') or '创建失败')
+        # 生成唯一容器名：设备码_坑位_时间戳后缀，避免删除重建时同名冲突
+        import time as _t
+        _dev_code = ''
+        try:
+            _si = cli.systeminfo(dev['ip'])
+            if _si.get('code') == 200:
+                _dev_code = (_si.get('data') or {}).get('devCode') or ''
+        except Exception:
+            pass
+        if not _dev_code:
+            _dev_code = dev['ip'].replace('.', '')
+        _suffix = str(int(_t.time() * 1000))[-8:]
+        _cname = f"{_dev_code}_{next_idx}_{_suffix}"
+        def _do_create():
+            r = cli.create(dev['ip'], next_idx, _cname, **body_opts)
+            if r.get('code') != 200:
+                raise Exception(r.get('msg') or r.get('message') or '创建失败')
+            return r
+        _ok, _res = _retry(_do_create, attempts=3, delay=4, desc='创建容器')
+        if not _ok:
+            raise _res
         # sync
         _sync_one_device(dev)
         # find created container
