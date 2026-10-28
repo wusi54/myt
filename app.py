@@ -2387,6 +2387,40 @@ def _update_workflow_step(wid, step_name, status, message='', result=None):
     db.update_delivery_workflow(wid, steps=steps, current_step=step_name)
 
 
+def _wait_container_running(device_id, container_name, timeout=45, interval=3):
+    """等待容器开机完成（轮询容器状态直到 running 或超时）"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            dev = db.get_device(device_id)
+            if dev:
+                _sync_one_device(dev)
+            containers = db.list_containers()
+            for c in containers:
+                if c.get('device_id') == device_id and c.get('name') == container_name:
+                    st = (c.get('state') or '').lower()
+                    if st == 'running':
+                        return True
+        except Exception:
+            pass
+        time.sleep(interval)
+    return False
+
+
+def _retry(fn, attempts=3, delay=5, desc=''):
+    """带重试的调用，返回 (ok, result_or_err)"""
+    last_err = None
+    for i in range(attempts):
+        try:
+            return True, fn()
+        except Exception as e:
+            last_err = e
+            if i < attempts - 1:
+                print(f'[delivery] {desc} 第 {i+1} 次失败: {e}，{delay}s 后重试', flush=True)
+                time.sleep(delay)
+    return False, last_err
+
+
 def _run_delivery_workflow(wid):
     """执行设备交付工作流"""
     wf = db.get_delivery_workflow(wid)
@@ -2483,9 +2517,9 @@ def _run_delivery_workflow(wid):
         if res.get('code') != 200:
             raise Exception(res.get('msg') or res.get('message') or '开机失败')
         _sync_one_device(dev)
-        _update_workflow_step(wid, 'start_container', 'success', '容器已开机', {'state': 'running'})
+        _update_workflow_step(wid, 'start_container', 'running', '容器启动中，等待开机完成…')
         db.add_operation_log({'op_type': 'delivery', 'target': container_name,
-                              'detail': '交付流程: 开机成功', 'status': 'success'})
+                              'detail': '交付流程: 开机指令已下发', 'status': 'success'})
     except Exception as e:
         _update_workflow_step(wid, 'start_container', 'failed', str(e))
         db.update_delivery_workflow(wid, status='failed')
@@ -2493,20 +2527,28 @@ def _run_delivery_workflow(wid):
                               'detail': f'交付流程: 开机失败 - {e}', 'status': 'fail'})
         return
 
-    # Wait for container to come online
-    time.sleep(6)
-    _sync_one_device(db.get_device(device_id))
+    # 等待容器开机完成（轮询状态，最多 45s）
+    if not _wait_container_running(device_id, container_name):
+        _update_workflow_step(wid, 'start_container', 'failed', '容器开机超时（45s 未变为 running）')
+        for _n, _l in [('apply_fp', '导入真机参数'), ('install_apps', '安装应用'), ('apply_proxy', '配置代理'), ('deliver_etcd', '交付到etcd')]:
+            _update_workflow_step(wid, _n, 'skipped', '开机失败，跳过')
+        db.update_delivery_workflow(wid, status='failed', current_step='start_container')
+        return
+    _update_workflow_step(wid, 'start_container', 'success', '容器已开机', {'state': 'running'})
 
-    # Step 3: 导入真机参数
+    # Step 3: 导入真机参数（带重试：开机后系统启动有延迟，导入指纹容易失败）
     _update_workflow_step(wid, 'apply_fp', 'running')
     if fp_id:
-        try:
+        def _do_fp():
             from app import _do_apply_fp
             with app.app_context():
                 r = _do_apply_fp(fp_id, container_id)
             r_data = r.get_json() if hasattr(r, 'get_json') else {}
             if r_data.get('code') != 200:
                 raise Exception(r_data.get('msg') or r_data.get('message') or '导入失败')
+            return r_data
+        ok, res = _retry(_do_fp, attempts=3, delay=6, desc='导入真机参数')
+        if ok:
             fp = db.get_real_param(fp_id)
             _update_workflow_step(wid, 'apply_fp', 'success', '真机参数已导入', {
                 'fp_id': fp_id,
@@ -2516,10 +2558,10 @@ def _run_delivery_workflow(wid):
             })
             db.add_operation_log({'op_type': 'delivery', 'target': container_name,
                                   'detail': '交付流程: 真机参数导入成功', 'status': 'success'})
-        except Exception as e:
-            _update_workflow_step(wid, 'apply_fp', 'failed', str(e))
+        else:
+            _update_workflow_step(wid, 'apply_fp', 'failed', str(res))
             db.add_operation_log({'op_type': 'delivery', 'target': container_name,
-                                  'detail': f'交付流程: 真机参数导入失败 - {e}', 'status': 'fail'})
+                                  'detail': f'交付流程: 真机参数导入失败 - {res}', 'status': 'fail'})
             # 串行：上一步失败，后续步骤标记为 skipped 并终止
             for _n, _l in [('install_apps', '安装应用'), ('apply_proxy', '配置代理'), ('deliver_etcd', '交付到etcd')]:
                 _update_workflow_step(wid, _n, 'skipped', '上一步失败，跳过')
@@ -2563,16 +2605,19 @@ def _run_delivery_workflow(wid):
     else:
         _update_workflow_step(wid, 'install_apps', 'success', '未选择应用，跳过')
 
-    # Step 5: 配置代理
+    # Step 5: 配置代理（带重试）
     _update_workflow_step(wid, 'apply_proxy', 'running')
     if proxy_id:
-        try:
+        def _do_proxy():
             from app import _do_apply_proxy
             with app.app_context():
                 r = _do_apply_proxy(proxy_id, container_id)
             r_data = r.get_json() if hasattr(r, 'get_json') else {}
             if r_data.get('code') != 200:
                 raise Exception(r_data.get('msg') or r_data.get('message') or '配置失败')
+            return r_data
+        ok, res = _retry(_do_proxy, attempts=3, delay=5, desc='配置代理')
+        if ok:
             px = db.get_proxy(proxy_id)
             _update_workflow_step(wid, 'apply_proxy', 'success', '代理已配置', {
                 'proxy_id': proxy_id,
@@ -2583,10 +2628,10 @@ def _run_delivery_workflow(wid):
             })
             db.add_operation_log({'op_type': 'delivery', 'target': container_name,
                                   'detail': '交付流程: 代理配置成功', 'status': 'success'})
-        except Exception as e:
-            _update_workflow_step(wid, 'apply_proxy', 'failed', str(e))
+        else:
+            _update_workflow_step(wid, 'apply_proxy', 'failed', str(res))
             db.add_operation_log({'op_type': 'delivery', 'target': container_name,
-                                  'detail': f'交付流程: 代理配置失败 - {e}', 'status': 'fail'})
+                                  'detail': f'交付流程: 代理配置失败 - {res}', 'status': 'fail'})
             _update_workflow_step(wid, 'deliver_etcd', 'skipped', '上一步失败，跳过')
             db.update_delivery_workflow(wid, status='failed', current_step='apply_proxy')
             return
