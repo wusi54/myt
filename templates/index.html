@@ -2159,28 +2159,56 @@ function viewDelivery(wid){
   api('/api/delivery/status/'+wid).then(d=>{
     const wf=d.data||{};
     const steps=wf.steps||[];
-    let h='<div style="padding:12px">';
-    h+='<div style="margin:8px 0;font-size:14px">设备: <b>'+esc(wf.device_ip)+'</b> | 状态: '+esc(wf.status)+'</div>';
-    steps.forEach(s=>{
-      const icon=s.status==='success'?'✅':(s.status==='failed'?'❌':(s.status==='running'?'⏳':'⬜'));
-      const borderColor=s.status==='success'?'#3ad07f':(s.status==='failed'?'#ff6b6b':(s.status==='running'?'#f0ad4e':'#5a6a7a'));
-      h+='<div style="padding:8px 12px;margin:6px 0;border-left:3px solid '+borderColor+';background:#0f1923;border-radius:4px">';
-      h+='<div>'+icon+' <b>'+esc(s.label)+'</b> - '+esc(s.status)+'</div>';
-      if(s.message)h+='<div style="font-size:12px;color:#9fb3c8;margin-top:2px">'+esc(s.message)+'</div>';
+    // 返回字段的中文标签映射
+    const keyLabel={container_id:'容器ID',container_name:'容器名称',adb_addr:'ADB地址',index:'槽位',state:'状态',
+      fp_id:'参数ID',fp_name:'参数名称',brand:'机型',model:'型号',
+      app_id:'应用ID',app_name:'应用名称',apps:'已装应用',
+      proxy_id:'代理ID',proxy_name:'代理名称',proxy_addr:'代理节点',region:'地区',isp:'运营商',
+      etcd_key:'etcd路径'};
+    const statusIcon={success:'<span style="color:#3ad07f">✔</span>',failed:'<span style="color:#ff6b6b">✘</span>',running:'<span style="color:#f0ad4e">◷</span>',pending:'<span style="color:#5a6a7a">○</span>'};
+    const statusColor={success:'#3ad07f',failed:'#ff6b6b',running:'#f0ad4e',pending:'#5a6a7a'};
+    let h='<div style="padding:16px">';
+    h+='<div style="margin-bottom:14px;font-size:14px;color:#cfe3f5">设备 <b>'+esc(wf.device_ip)+'</b> · 容器 <b>'+esc(wf.container_name||'-')+'</b></div>';
+    // 工作流卡片（纵向流程，箭头连接）
+    steps.forEach((s,i)=>{
+      const st=s.status||'pending';
+      const sc=statusColor[st]||'#5a6a7a';
+      h+='<div style="background:#0d1520;border:1px solid #2a3a4a;border-top:3px solid '+sc+';border-radius:8px;padding:12px;margin-bottom:8px;position:relative">';
+      // header
+      h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
+      h+='<div style="display:flex;align-items:center;gap:8px"><span style="display:inline-flex;width:22px;height:22px;border-radius:50%;background:#1a2a3a;align-items:center;justify-content:center;font-size:12px;color:#9fb3c8">'+(i+1)+'</span><b style="color:#cfe3f5">'+esc(s.label)+'</b></div>';
+      h+='<div style="display:flex;align-items:center;gap:4px;font-size:12px">'+(statusIcon[st]||'')+'<span style="color:'+sc+'">'+esc(st)+'</span></div>';
+      h+='</div>';
+      // message
+      if(s.message)h+='<div style="font-size:12px;color:#9fb3c8;margin-bottom:6px;word-break:break-all">'+esc(s.message)+'</div>';
+      // result info
       const r=s.result;
       if(r){
-        h+='<div style="font-size:12px;color:#5a6a7a;margin-top:4px">';
+        h+='<div style="background:#0a1218;border-radius:6px;padding:8px 10px">';
+        if(r.apps && Array.isArray(r.apps)){
+          h+='<div style="font-size:12px;color:#8899aa">'+keyLabel.apps+':</div>';
+          r.apps.forEach(a=>{
+            h+='<div style="font-size:12px;color:#cfe3f5;padding-left:10px">· '+esc(a.app_name||a.app_id)+'</div>';
+          });
+        }
         Object.keys(r).forEach(k=>{
-          h+='<div>'+esc(k)+': <span style="color:#cfe3f5">'+esc(String(r[k]))+'</span></div>';
+          if(k==='apps')return;
+          const v=r[k];
+          if(typeof v==='object'){h+='<div style="font-size:12px"><span style="color:#8899aa">'+esc(keyLabel[k]||k)+':</span> <span style="color:#cfe3f5;word-break:break-all">'+esc(JSON.stringify(v))+'</span></div>';}
+          else{h+='<div style="font-size:12px"><span style="color:#8899aa">'+esc(keyLabel[k]||k)+':</span> <span style="color:#cfe3f5;word-break:break-all">'+esc(String(v))+'</span></div>';}
         });
         h+='</div>';
       }
       h+='</div>';
+      // arrow between steps
+      if(i<steps.length-1){
+        h+='<div style="text-align:center;color:#5a6a7a;font-size:14px;line-height:1;margin:-2px 0 6px">↓</div>';
+      }
     });
     h+='</div>';
     const modal=document.createElement('div');
     modal.className='modal-overlay active';
-    modal.innerHTML='<div class="modal" style="max-width:600px"><h2>交付详情</h2>'+h+'<div class="modal-actions"><button class="btn btn-outline" onclick="closeDeliveryModal(this)">关闭</button></div></div>';
+    modal.innerHTML='<div class="modal" style="max-width:620px;max-height:80vh;overflow-y:auto"><h2>交付工作流</h2>'+h+'<div class="modal-actions"><button class="btn btn-outline" onclick="closeDeliveryModal(this)">关闭</button></div></div>';
     document.body.appendChild(modal);
   });
 }
