@@ -2520,7 +2520,11 @@ def _run_delivery_workflow(wid):
             _update_workflow_step(wid, 'apply_fp', 'failed', str(e))
             db.add_operation_log({'op_type': 'delivery', 'target': container_name,
                                   'detail': f'交付流程: 真机参数导入失败 - {e}', 'status': 'fail'})
-            # Non-fatal, continue
+            # 串行：上一步失败，后续步骤标记为 skipped 并终止
+            for _n, _l in [('install_apps', '安装应用'), ('apply_proxy', '配置代理'), ('deliver_etcd', '交付到etcd')]:
+                _update_workflow_step(wid, _n, 'skipped', '上一步失败，跳过')
+            db.update_delivery_workflow(wid, status='failed', current_step='apply_fp')
+            return
     else:
         _update_workflow_step(wid, 'apply_fp', 'success', '未选择真机参数，跳过')
 
@@ -2552,7 +2556,10 @@ def _run_delivery_workflow(wid):
             _update_workflow_step(wid, 'install_apps', 'failed', str(e))
             db.add_operation_log({'op_type': 'delivery', 'target': container_name,
                                   'detail': f'交付流程: 应用安装失败 - {e}', 'status': 'fail'})
-            # Non-fatal, continue
+            for _n, _l in [('apply_proxy', '配置代理'), ('deliver_etcd', '交付到etcd')]:
+                _update_workflow_step(wid, _n, 'skipped', '上一步失败，跳过')
+            db.update_delivery_workflow(wid, status='failed', current_step='install_apps')
+            return
     else:
         _update_workflow_step(wid, 'install_apps', 'success', '未选择应用，跳过')
 
@@ -2580,7 +2587,9 @@ def _run_delivery_workflow(wid):
             _update_workflow_step(wid, 'apply_proxy', 'failed', str(e))
             db.add_operation_log({'op_type': 'delivery', 'target': container_name,
                                   'detail': f'交付流程: 代理配置失败 - {e}', 'status': 'fail'})
-            # Non-fatal, continue
+            _update_workflow_step(wid, 'deliver_etcd', 'skipped', '上一步失败，跳过')
+            db.update_delivery_workflow(wid, status='failed', current_step='apply_proxy')
+            return
     else:
         _update_workflow_step(wid, 'apply_proxy', 'success', '未选择代理，跳过')
 

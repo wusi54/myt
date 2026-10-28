@@ -143,7 +143,7 @@ class MytClient:
         早期实现错误地给路径加了 /and_api/v1/ 前缀、把指纹包进 {'devinfo': ...}、
         并附加扁平字段 query params，导致 myt 返回 code 3「自定义设备信息设置失败」。
         """
-        return self.post(f'/set_custom_devinfo/{ip}/{name}', data=data)
+        return self.post(f'/set_custom_devinfo/{ip}/{name}', data=data, timeout=60)
 
     def random_devinfo(self, ip, name, **opts):
         return self.get(f'/and_api/v1/random_devinfo/{ip}/{name}', params=opts)

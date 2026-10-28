@@ -2210,8 +2210,8 @@ function viewDelivery(wid){
       app_id:'应用ID',app_name:'应用名称',apps:'已装应用',
       proxy_id:'代理ID',proxy_name:'代理名称',proxy_addr:'代理节点',region:'地区',isp:'运营商',
       etcd_key:'etcd路径'};
-    const statusIcon={success:'<span style="color:#3ad07f">✔</span>',failed:'<span style="color:#ff6b6b">✘</span>',running:'<span style="color:#f0ad4e">◷</span>',pending:'<span style="color:#5a6a7a">○</span>'};
-    const statusColor={success:'#3ad07f',failed:'#ff6b6b',running:'#f0ad4e',pending:'#5a6a7a'};
+    const statusIcon={success:'<span style="color:#3ad07f">✔</span>',failed:'<span style="color:#ff6b6b">✘</span>',running:'<span style="color:#f0ad4e">◷</span>',pending:'<span style="color:#5a6a7a">○</span>',skipped:'<span style="color:#8899aa">⏭</span>'};
+    const statusColor={success:'#3ad07f',failed:'#ff6b6b',running:'#f0ad4e',pending:'#5a6a7a',skipped:'#8899aa'};
     let h='<div style="padding:16px">';
     h+='<div style="margin-bottom:14px;font-size:14px;color:#cfe3f5">设备 <b>'+esc(wf.device_ip)+'</b> · 容器 <b>'+esc(wf.container_name||'-')+'</b></div>';
     // 工作流卡片（纵向流程，箭头连接）
@@ -2267,33 +2267,46 @@ function showDeliveryModal(){
   const fps=realParams.filter(f=>!f.in_use);
   const proxiesList=proxies.filter(p=>p.status!=='fault'&&!p.in_use);
   const appsList=apps;
-  // 收集所有标签
   const allTags=[...new Set(appsList.flatMap(a=>a.tags||[]))];
   let h='<div class="modal-overlay active" id="deliveryModal"><div class="modal" style="max-width:620px"><h2>新建设备交付</h2>';
   h+='<div class="form-row"><label>设备 *</label><select id="dlv_device">'+devs.map(d=>`<option value="${d.id}" data-ip="${esc(d.ip)}">${esc(d.name||d.ip)}</option>`).join('')+'</select></div>';
-  // 真机参数 + 自动随机
-  h+='<div class="form-row"><label>真机参数</label><div style="flex:1;display:flex;gap:8px;align-items:center">'
-    +'<select id="dlv_fp" style="flex:1"><option value="">-- 不应用 --</option>'+fps.map(f=>`<option value="${f.id}">${esc(f.name)}</option>`).join('')+'</select>'
-    +'<label style="white-space:nowrap;font-size:12px"><input type="checkbox" id="dlv_fp_auto"> 自动随机</label></div></div>';
-  // 代理 + 自动随机
-  h+='<div class="form-row"><label>代理</label><div style="flex:1;display:flex;gap:8px;align-items:center">'
-    +'<select id="dlv_proxy" style="flex:1"><option value="">-- 不应用 --</option>'+proxiesList.map(p=>`<option value="${p.id}">${esc(p.name)} (${esc(p.ip)}:${esc(p.port)})</option>`).join('')+'</select>'
-    +'<label style="white-space:nowrap;font-size:12px"><input type="checkbox" id="dlv_proxy_auto"> 自动随机</label></div></div>';
-  // 应用安装：标签选择 + 手动多选
-  h+='<div class="form-row"><label>应用标签</label><div style="flex:1;display:flex;gap:8px;align-items:center">'
-    +'<select id="dlv_app_tags" style="flex:1"><option value="">-- 不按标签 --</option>'+allTags.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')+'</select></div></div>';
-  h+='<div class="form-row"><label>安装应用</label><select id="dlv_apps" multiple style="height:70px">'+appsList.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')+'</select></div>';
+  // 真机参数：自动随机作为下拉选项
+  h+='<div class="form-row"><label>真机参数</label><select id="dlv_fp">'
+    +'<option value="">-- 不应用 --</option>'
+    +'<option value="__auto__">自动随机</option>'
+    +fps.map(f=>`<option value="${f.id}">${esc(f.name)}</option>`).join('')+'</select></div>';
+  // 代理：自动随机作为下拉选项
+  h+='<div class="form-row"><label>代理</label><select id="dlv_proxy">'
+    +'<option value="">-- 不应用 --</option>'
+    +'<option value="__auto__">自动随机</option>'
+    +proxiesList.map(p=>`<option value="${p.id}">${esc(p.name)} (${esc(p.ip)}:${esc(p.port)})</option>`).join('')+'</select></div>';
+  // 应用标签 + 安装应用（标签过滤）
+  h+='<div class="form-row"><label>应用标签</label><select id="dlv_app_tags" onchange="filterDlvApps()">'
+    +'<option value="">-- 不按标签 --</option>'+allTags.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')+'</select></div>';
+  h+='<div class="form-row"><label>安装应用</label><select id="dlv_apps" multiple style="height:80px">'+appsList.map(a=>`<option value="${a.id}" data-tags="${esc(JSON.stringify(a.tags||[]))}">${esc(a.name)}</option>`).join('')+'</select></div>';
   h+='<div class="modal-actions"><button class="btn btn-outline" onclick="closeDeliveryModal(this)">取消</button><button class="btn btn-primary" onclick="runDelivery()">开始交付</button></div></div></div>';
   document.body.insertAdjacentHTML('beforeend', h);
+}
+function filterDlvApps(){
+  const tag=document.getElementById('dlv_app_tags').value;
+  const sel=document.getElementById('dlv_apps');
+  Array.from(sel.options).forEach(o=>{
+    if(!tag){o.style.display='';return}
+    let tags=[];
+    try{tags=JSON.parse(o.dataset.tags||'[]')}catch(e){}
+    o.style.display=tags.includes(tag)?'':'none';
+  });
 }
 async function runDelivery(){
   const devSel=document.getElementById('dlv_device');
   const dev_id=parseInt(devSel.value);
   const dev_ip=devSel.options[devSel.selectedIndex].dataset.ip;
-  const fp_id=document.getElementById('dlv_fp').value;
-  const proxy_id=document.getElementById('dlv_proxy').value;
-  const fp_auto=document.getElementById('dlv_fp_auto').checked;
-  const proxy_auto=document.getElementById('dlv_proxy_auto').checked;
+  const fpVal=document.getElementById('dlv_fp').value;
+  const proxyVal=document.getElementById('dlv_proxy').value;
+  const fp_id=(fpVal==='__auto__')?'':fpVal;
+  const proxy_id=(proxyVal==='__auto__')?'':proxyVal;
+  const fp_auto=(fpVal==='__auto__');
+  const proxy_auto=(proxyVal==='__auto__');
   const appTag=document.getElementById('dlv_app_tags').value;
   const appSel=document.getElementById('dlv_apps');
   const app_ids=Array.from(appSel.selectedOptions).map(o=>o.value);
@@ -2303,6 +2316,6 @@ async function runDelivery(){
   if(d.code===200){toast('交付流程已启动','success');document.getElementById('deliveryModal').remove();loadDeliveries()}
   else{toast(d.msg||'启动失败','error')}
 }
-</script></script>
+</script></script></script>
 </body>
 </html>
