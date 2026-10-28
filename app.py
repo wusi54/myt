@@ -2520,7 +2520,9 @@ def _run_delivery_workflow(wid):
                               'detail': f'交付流程: 创建容器成功 (index={next_idx})', 'status': 'success'})
     except Exception as e:
         _update_workflow_step(wid, 'create_container', 'failed', str(e))
-        db.update_delivery_workflow(wid, status='failed')
+        for _n, _l in [('start_container', '开机'), ('apply_fp', '导入真机参数'), ('install_apps', '安装应用'), ('apply_proxy', '配置代理'), ('deliver_etcd', '交付到etcd')]:
+            _update_workflow_step(wid, _n, 'skipped', '创建容器失败，跳过')
+        db.update_delivery_workflow(wid, status='failed', current_step='create_container')
         db.add_operation_log({'op_type': 'delivery', 'target': device_ip,
                               'detail': f'交付流程: 创建容器失败 - {e}', 'status': 'fail'})
         return
@@ -2540,7 +2542,9 @@ def _run_delivery_workflow(wid):
                               'detail': '交付流程: 开机指令已下发', 'status': 'success'})
     except Exception as e:
         _update_workflow_step(wid, 'start_container', 'failed', str(e))
-        db.update_delivery_workflow(wid, status='failed')
+        for _n, _l in [('apply_fp', '导入真机参数'), ('install_apps', '安装应用'), ('apply_proxy', '配置代理'), ('deliver_etcd', '交付到etcd')]:
+            _update_workflow_step(wid, _n, 'skipped', '开机失败，跳过')
+        db.update_delivery_workflow(wid, status='failed', current_step='start_container')
         db.add_operation_log({'op_type': 'delivery', 'target': container_name,
                               'detail': f'交付流程: 开机失败 - {e}', 'status': 'fail'})
         return
