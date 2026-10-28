@@ -588,11 +588,21 @@ def _sync_one_device(dev):
                 break
         # 主键用稳定槽位 ip:index（容器在设备上的序号，改名不变），避免用会变的 name 导致 id 漂移；
         # 无 index 时才退化为 ip:name。
-        # 容器 ID：直接使用 API 返回的 id 字段，不自行生成 fallback ID
+        # 容器 ID：优先使用 API 返回的 id 字段；无 id 时 fallback 到 ip:index（兼容 /get 接口）
         cid = str(c.get('id') or '').strip()
         if not cid:
-            print(f'[sync] API 未返回 id 字段, device={dev["ip"]}, name={raw_name}, keys={list(c.keys())}', flush=True)
-            continue  # 跳过无 ID 的容器，不创建记录
+            # fallback: ip:index
+            idx_val = 0
+            for k in INDEX_KEYS:
+                v = c.get(k)
+                if v is not None and str(v).strip():
+                    try:
+                        idx_val = int(v)
+                        break
+                    except (ValueError, TypeError):
+                        pass
+            cid = f"{dev['ip']}:{idx_val}"
+            print(f'[sync] API 未返回 id 字段, fallback to {cid}, device={dev["ip"]}, name={raw_name}', flush=True)
         seen.add(cid)
         adb_port = str(c.get('adb') or '')
         s5 = c.get('s5') or {}
@@ -2194,6 +2204,382 @@ if os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
         _reparse_real_params()
     except Exception:
         pass
+
+
+
+# ==================== etcd 客户端（v2 REST API）====================
+ETCD_URL = os.environ.get('ETCD_URL', 'http://etcd:2379')
+
+
+def etcd_get(key):
+    """从 etcd 读取 key，返回 value 或 None"""
+    import requests
+    try:
+        r = requests.get(f'{ETCD_URL}/v2/keys/{key}', timeout=10)
+        if r.status_code == 200:
+            return r.json().get('node', {}).get('value')
+        return None
+    except Exception as e:
+        print(f'[etcd] get {key} failed: {e}', flush=True)
+        return None
+
+
+def etcd_put(key, value):
+    """写入 etcd"""
+    import requests
+    try:
+        r = requests.put(f'{ETCD_URL}/v2/keys/{key}', data={'value': value}, timeout=10)
+        return r.status_code in (200, 201)
+    except Exception as e:
+        print(f'[etcd] put {key} failed: {e}', flush=True)
+        return False
+
+
+def etcd_delete(key):
+    """删除 etcd key"""
+    import requests
+    try:
+        r = requests.delete(f'{ETCD_URL}/v2/keys/{key}', timeout=10)
+        return r.status_code in (200, 204)
+    except Exception as e:
+        print(f'[etcd] delete {key} failed: {e}', flush=True)
+        return False
+
+
+def etcd_list(prefix):
+    """列出 prefix 下的所有 key"""
+    import requests
+    try:
+        r = requests.get(f'{ETCD_URL}/v2/keys/{prefix}?recursive=true', timeout=10)
+        if r.status_code == 200:
+            nodes = r.json().get('node', {}).get('nodes', [])
+            result = []
+            for n in nodes:
+                result.append({'key': n.get('key', ''), 'value': n.get('value', '')})
+            return result
+        return []
+    except Exception as e:
+        print(f'[etcd] list {prefix} failed: {e}', flush=True)
+        return []
+
+
+# ==================== 设备交付工作流 ====================
+WORKFLOW_STEPS = [
+    ('create_container', '创建容器'),
+    ('start_container', '开机'),
+    ('apply_fp', '导入真机参数'),
+    ('install_apps', '安装应用'),
+    ('apply_proxy', '配置代理'),
+    ('deliver_etcd', '交付到etcd'),
+]
+
+
+def _update_workflow_step(wid, step_name, status, message=''):
+    """更新工作流的某个步骤状态"""
+    wf = db.get_delivery_workflow(wid)
+    if not wf:
+        return
+    steps = wf.get('steps', [])
+    for s in steps:
+        if s['name'] == step_name:
+            s['status'] = status
+            s['message'] = message
+            if status == 'running':
+                s['started_at'] = db.now()
+            if status in ('success', 'failed'):
+                s['finished_at'] = db.now()
+            break
+    db.update_delivery_workflow(wid, steps=steps, current_step=step_name)
+
+
+def _run_delivery_workflow(wid):
+    """执行设备交付工作流"""
+    wf = db.get_delivery_workflow(wid)
+    if not wf:
+        return
+    db.update_delivery_workflow(wid, status='running', current_step='create_container')
+    device_ip = wf['device_ip']
+    device_id = wf['device_id']
+    fp_id = wf.get('fp_id', '')
+    proxy_id = wf.get('proxy_id', '')
+    app_ids = wf.get('apps_to_install', [])
+    container_id = None
+    container_name = None
+
+    # Step 1: 创建容器
+    _update_workflow_step(wid, 'create_container', 'running')
+    try:
+        dev = db.get_device(device_id)
+        if not dev:
+            raise Exception('设备不存在')
+        # 计算 next index
+        containers = db.list_containers()
+        dev_containers = [c for c in containers if c.get('device_id') == device_id]
+        idxs = [c.get('index_num', 0) for c in dev_containers]
+        used = set(idxs)
+        next_idx = 1
+        while next_idx in used and next_idx <= 12:
+            next_idx += 1
+        if next_idx > 12:
+            next_idx = 1
+        cli = client_for(dev)
+        body_opts = {}
+        res = cli.create(dev['ip'], next_idx, f'auto_{next_idx}', **body_opts)
+        if res.get('code') != 200:
+            raise Exception(res.get('msg') or res.get('message') or '创建失败')
+        # sync
+        _sync_one_device(dev)
+        # find created container
+        containers = db.list_containers()
+        new_c = None
+        for c in containers:
+            if c.get('device_id') == device_id and c.get('index_num') == next_idx:
+                new_c = c
+                break
+        if not new_c:
+            raise Exception('创建成功但未找到容器记录')
+        container_id = new_c['id']
+        container_name = new_c['name']
+        db.update_delivery_workflow(wid, container_id=container_id, container_name=container_name)
+        _update_workflow_step(wid, 'create_container', 'success', f'容器 {container_name} 创建成功')
+        db.add_operation_log({'op_type': 'delivery', 'target': container_name,
+                              'detail': f'交付流程: 创建容器成功 (index={next_idx})', 'status': 'success'})
+    except Exception as e:
+        _update_workflow_step(wid, 'create_container', 'failed', str(e))
+        db.update_delivery_workflow(wid, status='failed')
+        db.add_operation_log({'op_type': 'delivery', 'target': device_ip,
+                              'detail': f'交付流程: 创建容器失败 - {e}', 'status': 'fail'})
+        return
+
+    # Step 2: 开机
+    _update_workflow_step(wid, 'start_container', 'running')
+    try:
+        c = db.get_container(container_id)
+        dev = db.get_device(c['device_id'])
+        cli = client_for(dev)
+        res = cli.start(dev['ip'], c['name'])
+        if res.get('code') != 200:
+            raise Exception(res.get('msg') or res.get('message') or '开机失败')
+        _sync_one_device(dev)
+        _update_workflow_step(wid, 'start_container', 'success', '容器已开机')
+        db.add_operation_log({'op_type': 'delivery', 'target': container_name,
+                              'detail': '交付流程: 开机成功', 'status': 'success'})
+    except Exception as e:
+        _update_workflow_step(wid, 'start_container', 'failed', str(e))
+        db.update_delivery_workflow(wid, status='failed')
+        db.add_operation_log({'op_type': 'delivery', 'target': container_name,
+                              'detail': f'交付流程: 开机失败 - {e}', 'status': 'fail'})
+        return
+
+    # Wait for container to come online
+    time.sleep(6)
+    _sync_one_device(db.get_device(device_id))
+
+    # Step 3: 导入真机参数
+    _update_workflow_step(wid, 'apply_fp', 'running')
+    if fp_id:
+        try:
+            from app import _do_apply_fp
+            r = _do_apply_fp(fp_id, container_id)
+            # _do_apply_fp returns jsonify response, check code
+            r_data = r.get_json() if hasattr(r, 'get_json') else {}
+            if r_data.get('code') != 200:
+                raise Exception(r_data.get('msg') or r_data.get('message') or '导入失败')
+            _update_workflow_step(wid, 'apply_fp', 'success', '真机参数已导入')
+            db.add_operation_log({'op_type': 'delivery', 'target': container_name,
+                                  'detail': '交付流程: 真机参数导入成功', 'status': 'success'})
+        except Exception as e:
+            _update_workflow_step(wid, 'apply_fp', 'failed', str(e))
+            db.add_operation_log({'op_type': 'delivery', 'target': container_name,
+                                  'detail': f'交付流程: 真机参数导入失败 - {e}', 'status': 'fail'})
+            # Non-fatal, continue
+    else:
+        _update_workflow_step(wid, 'apply_fp', 'success', '未选择真机参数，跳过')
+
+    # Step 4: 安装应用
+    _update_workflow_step(wid, 'install_apps', 'running')
+    if app_ids:
+        try:
+            c = db.get_container(container_id)
+            dev = db.get_device(c['device_id'])
+            cli = client_for(dev)
+            for aid in app_ids:
+                a = db.get_app(aid)
+                if not a:
+                    continue
+                import os
+                apk_path = os.path.join(APP_UPLOAD_DIR, a['filename'])
+                if not os.path.exists(apk_path):
+                    continue
+                status, msg = cli.install_apk(dev['ip'], c['name'], apk_path, a['filename'])
+                db.add_operation_log({'op_type': 'delivery', 'target': container_name,
+                                      'detail': f'交付流程: 安装应用 {a["name"]} - {msg}', 'status': status})
+            _update_workflow_step(wid, 'install_apps', 'success', f'已安装 {len(app_ids)} 个应用')
+        except Exception as e:
+            _update_workflow_step(wid, 'install_apps', 'failed', str(e))
+            db.add_operation_log({'op_type': 'delivery', 'target': container_name,
+                                  'detail': f'交付流程: 应用安装失败 - {e}', 'status': 'fail'})
+            # Non-fatal, continue
+    else:
+        _update_workflow_step(wid, 'install_apps', 'success', '未选择应用，跳过')
+
+    # Step 5: 配置代理
+    _update_workflow_step(wid, 'apply_proxy', 'running')
+    if proxy_id:
+        try:
+            from app import _do_apply_proxy
+            r = _do_apply_proxy(proxy_id, container_id)
+            r_data = r.get_json() if hasattr(r, 'get_json') else {}
+            if r_data.get('code') != 200:
+                raise Exception(r_data.get('msg') or r_data.get('message') or '配置失败')
+            _update_workflow_step(wid, 'apply_proxy', 'success', '代理已配置')
+            db.add_operation_log({'op_type': 'delivery', 'target': container_name,
+                                  'detail': '交付流程: 代理配置成功', 'status': 'success'})
+        except Exception as e:
+            _update_workflow_step(wid, 'apply_proxy', 'failed', str(e))
+            db.add_operation_log({'op_type': 'delivery', 'target': container_name,
+                                  'detail': f'交付流程: 代理配置失败 - {e}', 'status': 'fail'})
+            # Non-fatal, continue
+    else:
+        _update_workflow_step(wid, 'apply_proxy', 'success', '未选择代理，跳过')
+
+    # Step 6: 交付到 etcd
+    _update_workflow_step(wid, 'deliver_etcd', 'running')
+    try:
+        etcd_key = f"/myt/devices/{device_ip}/{container_name}"
+        delivery_data = json.dumps({
+            'device_ip': device_ip,
+            'container_name': container_name,
+            'container_id': container_id,
+            'fp_id': fp_id,
+            'proxy_id': proxy_id,
+            'app_ids': app_ids,
+            'status': 'delivered',
+            'delivered_at': db.now(),
+        }, ensure_ascii=False)
+        ok = etcd_put(etcd_key, delivery_data)
+        if not ok:
+            raise Exception('etcd 写入失败')
+        db.update_delivery_workflow(wid, etcd_key=etcd_key)
+        _update_workflow_step(wid, 'deliver_etcd', 'success', f'已交付到 etcd: {etcd_key}')
+        db.add_operation_log({'op_type': 'delivery', 'target': container_name,
+                              'detail': f'交付流程: etcd 交付成功 ({etcd_key})', 'status': 'success'})
+    except Exception as e:
+        _update_workflow_step(wid, 'deliver_etcd', 'failed', str(e))
+        db.add_operation_log({'op_type': 'delivery', 'target': container_name,
+                              'detail': f'交付流程: etcd 交付失败 - {e}', 'status': 'fail'})
+
+    # Final status
+    wf = db.get_delivery_workflow(wid)
+    steps = wf.get('steps', [])
+    all_success = all(s.get('status') == 'success' for s in steps)
+    db.update_delivery_workflow(wid, status='completed' if all_success else 'failed')
+
+
+# ==================== 设备交付 API ====================
+@app.route('/api/delivery/run', methods=['POST'])
+def api_delivery_run():
+    """启动单个设备交付工作流"""
+    d = request.json or {}
+    device_ip = d.get('device_ip', '')
+    device_id = d.get('device_id')
+    if not device_id:
+        # try to find device by ip
+        for dev in db.list_devices():
+            if dev.get('ip') == device_ip:
+                device_id = dev.get('id')
+                break
+    if not device_id:
+        return err('设备不存在', 404)
+    wf = db.add_delivery_workflow({
+        'device_ip': device_ip,
+        'device_id': device_id,
+        'fp_id': d.get('fp_id', ''),
+        'proxy_id': d.get('proxy_id', ''),
+        'apps_to_install': d.get('app_ids', []),
+        'status': 'pending',
+        'steps': [{'name': n, 'label': l, 'status': 'pending', 'message': '', 'started_at': '', 'finished_at': ''}
+                  for n, l in WORKFLOW_STEPS],
+    })
+    threading.Thread(target=_run_delivery_workflow, args=(wf['id'],), daemon=True).start()
+    return ok({'workflow_id': wf['id']}, '交付流程已启动')
+
+
+@app.route('/api/delivery/status/<wid>', methods=['GET'])
+def api_delivery_status(wid):
+    wf = db.get_delivery_workflow(wid)
+    if not wf:
+        return err('工作流不存在', 404)
+    return ok(wf)
+
+
+@app.route('/api/delivery/list', methods=['GET'])
+def api_delivery_list():
+    return ok(db.list_delivery_workflows())
+
+
+@app.route('/api/delivery/delete/<wid>', methods=['DELETE'])
+def api_delivery_delete(wid):
+    db.delete_delivery_workflow(wid)
+    return ok(None, '已删除')
+
+
+@app.route('/api/delivery/batch', methods=['POST'])
+def api_delivery_batch():
+    """外部调用的两阶段接口：
+    Phase 1: 从 etcd 读取已有设备，执行删除
+    Phase 2: 创建新设备（运行交付工作流）
+    """
+    d = request.json or {}
+    etcd_prefix = d.get('etcd_prefix', '/myt/devices/')
+    new_devices = d.get('devices', [])
+    results = {'phase1_deleted': [], 'phase1_failed': [], 'phase2_workflows': []}
+
+    # Phase 1: 从 etcd 读取并删除已有设备
+    existing = etcd_list(etcd_prefix)
+    for item in existing:
+        key = item['key']
+        try:
+            # 提取 device_ip from key: /myt/devices/{ip}/{name}
+            parts = key.strip('/').split('/')
+            if len(parts) >= 3:
+                dev_ip = parts[2]
+                # 查找对应的容器
+                containers = db.list_containers()
+                for c in containers:
+                    if c.get('device_ip') == dev_ip or c.get('device_ip', '').startswith(dev_ip):
+                        # 调用删除接口
+                        dev = db.get_device(c['device_id'])
+                        if dev:
+                            cli = client_for(dev)
+                            res = cli.remove(dev['ip'], c['name'])
+                            if res.get('code') == 200:
+                                db.delete_container(c['id'])
+                                etcd_delete(key)
+                                results['phase1_deleted'].append({'key': key, 'container': c['name']})
+                            else:
+                                results['phase1_failed'].append({'key': key, 'error': res.get('msg', '')})
+        except Exception as e:
+            results['phase1_failed'].append({'key': key, 'error': str(e)})
+
+    # Phase 2: 创建新设备
+    for dev_config in new_devices:
+        wf = db.add_delivery_workflow({
+            'device_ip': dev_config.get('device_ip', ''),
+            'device_id': dev_config.get('device_id', 0),
+            'fp_id': dev_config.get('fp_id', ''),
+            'proxy_id': dev_config.get('proxy_id', ''),
+            'apps_to_install': dev_config.get('app_ids', []),
+            'status': 'pending',
+            'steps': [{'name': n, 'label': l, 'status': 'pending', 'message': '', 'started_at': '', 'finished_at': ''}
+                      for n, l in WORKFLOW_STEPS],
+        })
+        threading.Thread(target=_run_delivery_workflow, args=(wf['id'],), daemon=True).start()
+        results['phase2_workflows'].append({'workflow_id': wf['id'], 'device_ip': dev_config.get('device_ip', '')})
+
+    db.add_operation_log({'op_type': 'delivery', 'target': 'batch',
+                          'detail': f'批量交付: 删除 {len(results["phase1_deleted"])} 个, 创建 {len(results["phase2_workflows"])} 个', 'status': 'success'})
+    return ok(results, '批量交付已启动')
 
 
 if __name__ == '__main__':

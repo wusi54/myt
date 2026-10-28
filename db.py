@@ -33,6 +33,73 @@ def gen_uuid():
     return str(uuid.uuid4())
 
 
+
+# ==================== delivery_workflows ====================
+def add_delivery_workflow(rec):
+    ts = now()
+    rec.setdefault('id', gen_id())
+    rec.setdefault('created', ts)
+    rec['updated'] = ts
+    if 'steps' in rec and not isinstance(rec['steps'], str):
+        rec['steps'] = json.dumps(rec['steps'], ensure_ascii=False)
+    if 'apps_to_install' in rec and not isinstance(rec['apps_to_install'], str):
+        rec['apps_to_install'] = json.dumps(rec['apps_to_install'], ensure_ascii=False)
+    cols = ['id', 'device_ip', 'device_id', 'container_id', 'container_name', 'status',
+            'current_step', 'steps', 'etcd_key', 'apps_to_install', 'fp_id', 'proxy_id',
+            'created', 'updated']
+    execute(f"INSERT INTO delivery_workflows ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+            tuple(rec.get(k, '') for k in cols))
+    return rec
+
+
+def get_delivery_workflow(wid):
+    r = row('SELECT * FROM delivery_workflows WHERE id=?', (wid,))
+    if r:
+        r = dict(r)
+        try:
+            r['steps'] = json.loads(r.get('steps') or '[]')
+        except Exception:
+            r['steps'] = []
+        try:
+            r['apps_to_install'] = json.loads(r.get('apps_to_install') or '[]')
+        except Exception:
+            r['apps_to_install'] = []
+    return r
+
+
+def list_delivery_workflows():
+    rows_list = rows('SELECT * FROM delivery_workflows ORDER BY created DESC')
+    result = []
+    for r in rows_list:
+        r = dict(r)
+        try:
+            r['steps'] = json.loads(r.get('steps') or '[]')
+        except Exception:
+            r['steps'] = []
+        try:
+            r['apps_to_install'] = json.loads(r.get('apps_to_install') or '[]')
+        except Exception:
+            r['apps_to_install'] = []
+        result.append(r)
+    return result
+
+
+def update_delivery_workflow(wid, **fields):
+    if not fields:
+        return
+    fields['updated'] = now()
+    if 'steps' in fields and not isinstance(fields['steps'], str):
+        fields['steps'] = json.dumps(fields['steps'], ensure_ascii=False)
+    if 'apps_to_install' in fields and not isinstance(fields['apps_to_install'], str):
+        fields['apps_to_install'] = json.dumps(fields['apps_to_install'], ensure_ascii=False)
+    cols = ', '.join(f'{k}=?' for k in fields)
+    execute(f'UPDATE delivery_workflows SET {cols} WHERE id=?', (*fields.values(), wid))
+
+
+def delete_delivery_workflow(wid):
+    execute('DELETE FROM delivery_workflows WHERE id=?', (wid,))
+
+
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -170,6 +237,22 @@ SCHEMA = [
         detail TEXT DEFAULT '',
         status TEXT DEFAULT '',
         created TEXT DEFAULT ''
+    )''',
+    '''CREATE TABLE IF NOT EXISTS delivery_workflows (
+        id TEXT PRIMARY KEY,
+        device_ip TEXT NOT NULL,
+        device_id INTEGER DEFAULT 0,
+        container_id TEXT DEFAULT '',
+        container_name TEXT DEFAULT '',
+        status TEXT DEFAULT 'pending',
+        current_step TEXT DEFAULT '',
+        steps TEXT DEFAULT '[]',
+        etcd_key TEXT DEFAULT '',
+        apps_to_install TEXT DEFAULT '[]',
+        fp_id TEXT DEFAULT '',
+        proxy_id TEXT DEFAULT '',
+        created TEXT DEFAULT '',
+        updated TEXT DEFAULT ''
     )''',
 ]
 

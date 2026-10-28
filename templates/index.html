@@ -650,7 +650,8 @@ function refreshCurrentPage(){
   const loaders={
     pageDevices:loadDevices, pageContainers:loadContainers, pageRealParams:loadRealParams,
     pageProxies:loadProxies, pageApps:loadApps, pageLogs:loadLogs, pageUsers:loadUsers,
-    pageScreenWall:()=>{Promise.all([loadContainers(),loadDevices()]).then(()=>{autoFillWall();renderWall();})}
+    pageScreenWall:()=>{Promise.all([loadContainers(),loadDevices()]).then(()=>{autoFillWall();renderWall();})},
+    pageDelivery:loadDeliveries
   };
   const f=loaders[currentPage]; if(f)f();
   toast('已刷新当前页','info');
@@ -2126,6 +2127,70 @@ async function deleteUser(id){
     .then(()=>loadDevices()).then(()=>loadRealParams()).then(()=>loadProxies()).then(()=>loadApps()).then(()=>loadContainers())
     .then(()=>switchPage(target, targetEl));
 })();
+
+// ==================== 设备交付工作流 ====================
+async function loadDeliveries(){
+  const d=await api('/api/delivery/list');
+  const list=d.data||[];
+  const el=document.getElementById('deliveryList');
+  if(!list.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无交付记录</div>';return}
+  let h='<table><thead><tr><th>设备IP</th><th>状态</th><th>当前步骤</th><th>容器</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
+  list.forEach(w=>{
+    const st=w.status==='completed'?'<span class="badge badge-green">完成</span>':(w.status==='failed'?'<span class="badge badge-red">失败</span>':(w.status==='running'?'<span class="badge badge-yellow">进行中</span>':'<span class="badge badge-gray">等待</span>'));
+    h+=`<tr><td>${esc(w.device_ip)}</td><td>${st}</td><td>${esc(w.current_step)}</td><td>${esc(w.container_name||'-')}</td><td style="font-size:11px;color:#8899aa">${esc(w.created||'-')}</td><td><button class="btn btn-sm btn-outline" onclick="viewDelivery('${w.id}')">详情</button> <button class="btn btn-sm btn-danger" onclick="deleteDelivery('${w.id}')">删除</button></td></tr>`;
+  });
+  h+='</tbody></table>';el.innerHTML=h;
+}
+function closeDeliveryModal(btn){const m=btn.closest('.modal-overlay');if(m)m.remove()}
+function viewDelivery(wid){
+  api('/api/delivery/status/'+wid).then(d=>{
+    const wf=d.data||{};
+    const steps=wf.steps||[];
+    let h='<div style="padding:12px"><h3>交付流程详情</h3>';
+    h+='<div style="margin:8px 0">设备: '+esc(wf.device_ip)+' | 状态: '+esc(wf.status)+'</div>';
+    h+='<div style="margin:8px 0">步骤:</div>';
+    steps.forEach(s=>{
+      const icon=s.status==='success'?'✅':(s.status==='failed'?'❌':(s.status==='running'?'⏳':'⬜'));
+      h+=`<div style="padding:4px 8px;margin:2px 0;border-left:3px solid ${s.status==='success'?'#3ad07f':(s.status==='failed'?'#ff6b6b':'#5a6a7a')};background:#0f1923">${icon} ${esc(s.label)} - ${esc(s.status)} ${s.message?'('+esc(s.message)+')':''}</div>`;
+    });
+    h+='</div>';
+    const modal=document.createElement('div');
+    modal.className='modal-overlay active';
+    modal.innerHTML='<div class="modal" style="max-width:600px"><h2>交付详情</h2>'+h+'<div class="modal-actions"><button class="btn btn-outline" onclick="closeDeliveryModal(this)">关闭</button></div></div>';
+    document.body.appendChild(modal);
+  });
+}
+async function deleteDelivery(wid){
+  if(!confirm('确定删除该交付记录？'))return;
+  await api('/api/delivery/delete/'+wid,'DELETE');
+  loadDeliveries();
+}
+function showDeliveryModal(){
+  const devs=devices;
+  const fps=realParams.filter(f=>!f.in_use);
+  const proxiesList=proxies.filter(p=>p.status!=='fault'&&!p.in_use);
+  const appsList=apps;
+  let h='<div class="modal-overlay active" id="deliveryModal"><div class="modal" style="max-width:600px"><h2>新建设备交付</h2>';
+  h+='<div class="form-row"><label>设备 *</label><select id="dlv_device">'+devs.map(d=>`<option value="${d.id}" data-ip="${esc(d.ip)}">${esc(d.name||d.ip)}</option>`).join('')+'</select></div>';
+  h+='<div class="form-row"><label>真机参数</label><select id="dlv_fp"><option value="">-- 不应用 --</option>'+fps.map(f=>`<option value="${f.id}">${esc(f.name)}</option>`).join('')+'</select></div>';
+  h+='<div class="form-row"><label>代理</label><select id="dlv_proxy"><option value="">-- 不应用 --</option>'+proxiesList.map(p=>`<option value="${p.id}">${esc(p.name)} (${esc(p.ip)}:${esc(p.port)})</option>`).join('')+'</select></div>';
+  h+='<div class="form-row"><label>安装应用</label><select id="dlv_apps" multiple style="height:80px">'+appsList.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')+'</select></div>';
+  h+='<div class="modal-actions"><button class="btn btn-outline" onclick="closeDeliveryModal(this)">取消</button><button class="btn btn-primary" onclick="runDelivery()">开始交付</button></div></div></div>';
+  document.body.insertAdjacentHTML('beforeend', h);
+}
+async function runDelivery(){
+  const devSel=document.getElementById('dlv_device');
+  const dev_id=parseInt(devSel.value);
+  const dev_ip=devSel.options[devSel.selectedIndex].dataset.ip;
+  const fp_id=document.getElementById('dlv_fp').value;
+  const proxy_id=document.getElementById('dlv_proxy').value;
+  const appSel=document.getElementById('dlv_apps');
+  const app_ids=Array.from(appSel.selectedOptions).map(o=>o.value);
+  const body={device_ip:dev_ip,device_id:dev_id,fp_id:fp_id,proxy_id:proxy_id,app_ids:app_ids};
+  const d=await api('/api/delivery/run','POST',body);
+  if(d.code===200){toast('交付流程已启动','success');document.getElementById('deliveryModal').remove();loadDeliveries()}
+  else{toast(d.msg||'启动失败','error')}
+}
 </script>
 </body>
 </html>
