@@ -616,6 +616,25 @@ let proxyPage=0; const PROXY_PAGE_SIZE=20;
 let CURRENT_USER=null;
 
 function toast(msg,type='info'){const t=document.getElementById('toast');t.textContent=msg;t.className='toast '+type;t.style.display='block';setTimeout(()=>{t.style.display='none'},3200)}
+function confirmDlg(msg,title){
+  return new Promise(resolve=>{
+    const ov=document.createElement('div');
+    ov.className='modal-overlay active';
+    ov.style.zIndex='3000';
+    ov.innerHTML='<div class="modal" style="max-width:380px">'
+      +'<h2>'+(title||'确认操作')+'</h2>'
+      +'<div style="padding:8px 0 16px;color:#cfe3f5;font-size:14px;word-break:break-all">'+msg+'</div>'
+      +'<div class="modal-actions">'
+      +'<button class="btn btn-outline" id="__cd_cancel">取消</button>'
+      +'<button class="btn btn-danger" id="__cd_ok">确定</button>'
+      +'</div></div>';
+    document.body.appendChild(ov);
+    const done=val=>{ov.remove();resolve(val)};
+    ov.querySelector('#__cd_ok').onclick=()=>done(true);
+    ov.querySelector('#__cd_cancel').onclick=()=>done(false);
+    ov.addEventListener('click',e=>{if(e.target===ov)done(false)});
+  });
+}
 // 全局“处理中”提示：并发计数，避免嵌套时提前隐藏
 let _busyCount=0;
 function startBusy(msg){_busyCount++;const t=document.getElementById('busyText'),b=document.getElementById('globalBusy');if(t)t.textContent=msg||'处理中…';if(b)b.classList.add('active')}
@@ -723,7 +742,7 @@ async function saveDevice(){
   const d=id?await api('/api/devices/'+id,'PUT',body):await api('/api/devices','POST',body);
   toast(d.msg,d.code===200?'success':'error');if(d.code===200){closeModal('deviceModal');loadDevices()}
 }
-async function deleteDevice(id){if(!confirm('确定删除该设备及其容器缓存?'))return;const d=await api('/api/devices/'+id,'DELETE');toast(d.msg,d.code===200?'success':'error');loadDevices()}
+async function deleteDevice(id){if(!(await confirmDlg('确定删除该设备及其容器缓存?','删除确认')))return;const d=await api('/api/devices/'+id,'DELETE');toast(d.msg,d.code===200?'success':'error');loadDevices()}
 async function toggleDevice(id){const d=await api('/api/devices/'+id+'/toggle','POST',{});toast(d.msg,d.code===200?'success':'error');await loadDevices();wallItems=wallItems.filter(w=>!deviceDisabled((w.adbAddr||'').split(':')[0]));if(currentPage==='pageScreenWall')refreshCurrentPage()}
 function deviceDisabled(ip){const d=devices.find(x=>x.ip===ip);return d?!d.enabled:false}
 async function probeDevice(id){toast('检测中...','info');const d=await api('/api/devices/'+id+'/probe','POST',{});toast(d.code===200?('状态: '+d.data.status):(d.msg||'失败'),d.code===200?'success':'error');loadDevices()}
@@ -1042,7 +1061,7 @@ async function detailInstallApp(){
 }
 async function detailAction(action){
   const names={start:'启动',stop:'停止',reboot:'重启',reset:'重置',remove:'删除'};
-  if((action==='remove'||action==='reset')&&!confirm('确定'+names[action]+'该容器?'))return;
+  if((action==='remove'||action==='reset')&&!(await confirmDlg('确定'+names[action]+'容器？','操作确认')))return;
   await withBusy(null,names[action]+'中…',async()=>{
     const d=await api('/api/containers/'+currentContainer.id+'/'+action,'POST',{});
     toast(names[action]+': '+(d.code===200?'成功':(d.msg||'失败')),d.code===200?'success':'error');
@@ -1128,15 +1147,15 @@ async function saveRealParam(){
   const d=await api('/api/real_params','POST',body);toast(d.msg,d.code===200?'success':'error');if(d.code===200){closeModal('realParamModal');loadRealParams()}
 }
 async function viewParam(id){const d=await api('/api/real_params/'+id);if(d.code===200){document.getElementById('viewContent').textContent=JSON.stringify(d.data,null,2);showModal('viewModal')}}
-async function deleteParam(id){if(!confirm('确定删除该参数?'))return;const d=await api('/api/real_params/'+id,'DELETE');toast(d.msg,d.code===200?'success':'error');loadRealParams()}
+async function deleteParam(id){if(!(await confirmDlg('确定删除该参数?','删除确认')))return;const d=await api('/api/real_params/'+id,'DELETE');toast(d.msg,d.code===200?'success':'error');loadRealParams()}
 async function releaseParam(id){const d=await api('/api/real_params/'+id+'/release','POST',{});toast(d.msg||'已释放','success');loadRealParams();loadContainers()}
 function applyParam(id){
   pickContainers('选择要导入参数的容器', false, async (ids)=>{const d=await api('/api/real_params/'+id+'/apply','POST',{container_id:ids[0]});toast(d.code===200?'已应用':(d.msg||'失败'),d.code===200?'success':'error');loadRealParams();loadContainers()});
 }
-function batchDeleteParams(){
+async function batchDeleteParams(){
   const ids=Array.from(document.querySelectorAll('.rp-cb:checked')).map(c=>c.value);
   if(!ids.length){toast('请勾选参数','error');return}
-  if(!confirm('确定删除选中的 '+ids.length+' 条参数?'))return;
+  if(!(await confirmDlg('确定删除选中的 '+ids.length+' 条记录？','删除确认')))return;
   api('/api/real_params/batch_delete','POST',{ids}).then(d=>{toast(d.msg,d.code===200?'success':'error');loadRealParams()});
 }
 function batchApplyParams(btn){
@@ -1250,7 +1269,7 @@ async function importProxies(btn){
     const d=await api('/api/proxies/import','POST',{text});toast(d.msg,d.code===200?'success':'error');if(d.code===200){closeModal('importProxyModal');loadProxies()}
   });
 }
-async function deleteProxy(id){if(!confirm('确定删除该代理?'))return;const d=await api('/api/proxies/'+id,'DELETE');toast(d.msg,d.code===200?'success':'error');loadProxies()}
+async function deleteProxy(id){if(!(await confirmDlg('确定删除该代理?','删除确认')))return;const d=await api('/api/proxies/'+id,'DELETE');toast(d.msg,d.code===200?'success':'error');loadProxies()}
 async function releaseProxy(id){const d=await api('/api/proxies/'+id+'/release','POST',{});toast(d.msg||'已释放','success');loadProxies();loadContainers()}
 function applyProxy(id){
   pickContainers('选择要配置代理的容器', false, async (ids)=>{const d=await api('/api/proxies/'+id+'/apply','POST',{container_id:ids[0]});toast(d.code===200?'已配置':(d.msg||'失败'),d.code===200?'success':'error');loadProxies();loadContainers()});
@@ -1262,10 +1281,10 @@ async function testProxy(id){
   if(d.code===200){const data=d.data||{};row.querySelector('.px-latency').textContent=data.latency||'-';row.querySelector('.px-region').textContent=data.region||'-';row.querySelector('.px-isp').textContent=data.isp||'-';toast('测试成功 '+(data.latency||''),'success')}
   else toast(d.msg||'测试失败','error');
 }
-function batchDeleteProxies(){
+async function batchDeleteProxies(){
   const ids=Array.from(document.querySelectorAll('.px-cb:checked')).map(c=>c.value);
   if(!ids.length){toast('请勾选代理','error');return}
-  if(!confirm('确定删除选中的 '+ids.length+' 个代理?'))return;
+  if(!(await confirmDlg('确定删除选中的 '+ids.length+' 条记录？','删除确认')))return;
   api('/api/proxies/batch_delete','POST',{ids}).then(d=>{toast(d.msg,d.code===200?'success':'error');loadProxies()});
 }
 function batchApplyProxies(btn){
@@ -1324,7 +1343,7 @@ async function uploadApp(){
   const fd=new FormData();fd.append('file',fileInput.files[0]);fd.append('name',document.getElementById('ua_name').value.trim()||fileInput.files[0].name);
   const d=await api('/api/apps/upload','POST',fd,true);toast(d.msg,d.code===200?'success':'error');if(d.code===200){closeModal('uploadAppModal');loadApps()}
 }
-async function deleteApp(id){if(!confirm('确定删除该应用?'))return;const d=await api('/api/apps/'+id,'DELETE');toast(d.msg,d.code===200?'success':'error');loadApps()}
+async function deleteApp(id){if(!(await confirmDlg('确定删除该应用?','删除确认')))return;const d=await api('/api/apps/'+id,'DELETE');toast(d.msg,d.code===200?'success':'error');loadApps()}
 function installApp(id){
   pickContainers('选择要安装的容器（可多选）', true, async (cids)=>{
     toast('安装中，请稍候...','info');
@@ -1677,7 +1696,7 @@ async function stopAgentStream(adb){
 // 删除：停止投屏 + 从墙格移除 + 关闭弹窗
 async function deleteScreenModalDevice(adb){
   if(!adb)return;
-  if(!confirm('确认删除该设备投屏？将停止推流并从群控墙移除。'))return;
+  if(!(await confirmDlg('确认删除该设备投屏？将停止推流并从群控墙移除。','删除确认')))return;
   await withBusy(null,'删除中…',async()=>{
     try{
       const r=await fetch('/api/screen/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({adb_addr:adb})});
@@ -2057,7 +2076,7 @@ function renderCurrentUser(){
   else{roleEl.style.display='none';document.getElementById('navUsers').style.display='none'}
 }
 async function doLogout(){
-  if(!confirm('确定退出登录?'))return;
+  if(!(await confirmDlg('确定退出登录?','删除确认')))return;
   destroyWallPlayers();
   await api('/api/auth/logout','POST',{});
   location.href='/login';
@@ -2126,7 +2145,7 @@ async function saveUser(){
   if(d.code===200){closeModal('userModal');loadUsers()}
 }
 async function deleteUser(id){
-  if(!confirm('确定删除该用户?'))return;
+  if(!(await confirmDlg('确定删除该用户?','删除确认')))return;
   const d=await api('/api/users/'+id,'DELETE');
   toast(d.msg,d.code===200?'success':'error');loadUsers();
 }
@@ -2214,7 +2233,7 @@ function viewDelivery(wid){
   });
 }
 async function deleteDelivery(wid){
-  if(!confirm('确定删除该交付记录？'))return;
+  if(!(await confirmDlg('确定删除该交付记录？','删除确认')))return;
   await api('/api/delivery/delete/'+wid,'DELETE');
   loadDeliveries();
 }
