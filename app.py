@@ -2502,8 +2502,8 @@ def _run_delivery_workflow(wid):
     if fp_id:
         try:
             from app import _do_apply_fp
-            r = _do_apply_fp(fp_id, container_id)
-            # _do_apply_fp returns jsonify response, check code
+            with app.app_context():
+                r = _do_apply_fp(fp_id, container_id)
             r_data = r.get_json() if hasattr(r, 'get_json') else {}
             if r_data.get('code') != 200:
                 raise Exception(r_data.get('msg') or r_data.get('message') or '导入失败')
@@ -2561,7 +2561,8 @@ def _run_delivery_workflow(wid):
     if proxy_id:
         try:
             from app import _do_apply_proxy
-            r = _do_apply_proxy(proxy_id, container_id)
+            with app.app_context():
+                r = _do_apply_proxy(proxy_id, container_id)
             r_data = r.get_json() if hasattr(r, 'get_json') else {}
             if r_data.get('code') != 200:
                 raise Exception(r_data.get('msg') or r_data.get('message') or '配置失败')
