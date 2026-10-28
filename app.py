@@ -32,6 +32,26 @@ import auth
 import myt_client
 from myt_client import MytClient, normalize_base
 
+# 从项目根目录的 .env 文件加载环境变量（轻量内置解析，无需 python-dotenv）。
+# 仅当对应变量尚未在进程环境中存在时才写入，避免覆盖真实的系统/编排环境变量。
+def _load_env_file():
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+    if not os.path.exists(env_path):
+        return
+    try:
+        with open(env_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                k, v = line.split('=', 1)
+                k, v = k.strip(), v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+    except Exception:
+        pass
+_load_env_file()
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.environ.get('UPLOAD_DIR') or os.path.join(BASE_DIR, 'uploads')          # 真机参数文件
 APP_UPLOAD_DIR = os.environ.get('APP_UPLOAD_DIR') or os.path.join(BASE_DIR, 'app_uploads')   # APK
@@ -52,12 +72,30 @@ auth.ensure_default_admin()
 # 无需登录即可访问的路径
 PUBLIC_PATHS = {'/login', '/healthz', '/api/auth/login'}
 
+# 外部 API 静态令牌：启用 /api/ext/* 外部接口所需。
+# 通过环境变量 EXTERNAL_API_TOKEN 配置；为空时外部接口返回 503（未启用）。
+EXTERNAL_API_TOKEN = os.environ.get('EXTERNAL_API_TOKEN', '')
+
 
 @app.before_request
 def _auth_guard():
     p = request.path
     if p.startswith('/static/') or p == '/favicon.ico':
         return None
+    if p.startswith('/api/ext/'):
+        # 外部 API：使用静态令牌鉴权，不走管理员会话
+        token = request.headers.get('Authorization', '')
+        if token.startswith('Bearer '):
+            token = token[7:].strip()
+        else:
+            token = (request.headers.get('X-External-Token') or '').strip()
+        if not EXTERNAL_API_TOKEN:
+            return jsonify({'code': 503, 'msg': '外部 API 未启用（未配置 EXTERNAL_API_TOKEN）', 'data': None}), 503
+        if token and token == EXTERNAL_API_TOKEN:
+            g.user = {'username': 'external-api', 'role': 'external'}
+            g.external_api = True
+            return None
+        return jsonify({'code': 401, 'msg': '外部 API 令牌无效', 'data': None}), 401
     if p in PUBLIC_PATHS:
         return None
     user = auth.current_user()
@@ -549,13 +587,21 @@ def api_logs():
 
 
 # ==================== 容器管理 ====================
-def _sync_one_device(dev):
-    cli = client_for(dev)
+# 容器同步时单台设备的网络超时（秒）。离线/不可达设备会在此超时后快速失败，
+# 避免默认 30s 超时在“逐台串行”遍历下被多台设备叠加放大导致同步极慢。
+# 可用环境变量 CONTAINER_SYNC_TIMEOUT 覆盖。
+SYNC_HTTP_TIMEOUT = int(os.environ.get('CONTAINER_SYNC_TIMEOUT', '8'))
+
+
+def _sync_one_device(dev, timeout=None, all_containers=None):
+    base = normalize_base(dev.get('url'), dev.get('ip'), dev.get('port'))
+    cli = MytClient(base, timeout=timeout) if timeout else client_for(dev)
     res = cli.list_containers(dev['ip'])
     if res.get('code') != 200:
         db.update_device(dev['id'], status='offline')
         # 设备离线时，将名下容器状态置为 offline，避免残留 running 显示
-        for c in db.list_containers():
+        rows = all_containers if all_containers is not None else db.list_containers()
+        for c in rows:
             if c['device_id'] == dev['id']:
                 db.update_container(c['id'], state='offline', status='offline')
         return 0
@@ -630,8 +676,9 @@ def _sync_one_device(dev):
             'resolution': f"{c.get('width', '')}x{c.get('height', '')}",
             'data_path': c.get('data') or c.get('Data') or '',
         })
-    # 清理该设备下已消失的容器
-    for row in db.list_containers():
+    # 清理该设备下已消失的容器（复用一次加载的全量容器，避免每设备重复全表扫描）
+    rows = all_containers if all_containers is not None else db.list_containers()
+    for row in rows:
         if row['device_id'] == dev['id'] and row['id'] not in seen:
             _release_container_proxy(row)
             db.delete_container(row['id'])
@@ -646,15 +693,24 @@ def api_containers_sync():
         dev = db.get_device(dev_id)
         if not dev:
             return err('设备不存在', 404)
-        n = _sync_one_device(dev)
+        n = _sync_one_device(dev, timeout=SYNC_HTTP_TIMEOUT)
         return ok({'count': n}, f'同步完成，共 {n} 个容器')
+    devs = db.list_devices()
+    if not devs:
+        return ok({'count': 0}, '无设备，同步完成')
+    # 一次性加载全量容器，避免每设备重复全表扫描；并行同步各设备以缩短整体耗时
+    all_containers = db.list_containers()
     total = 0
-    for dev in db.list_devices():
-        try:
-            total += _sync_one_device(dev)
-        except Exception:
-            pass
-    return ok({'count': total}, f'同步完成，共 {total} 个容器')
+    errors = 0
+    with ThreadPoolExecutor(max_workers=min(16, max(4, len(devs)))) as ex:
+        futs = [ex.submit(_sync_one_device, dev, SYNC_HTTP_TIMEOUT, all_containers) for dev in devs]
+        for fut in as_completed(futs):
+            try:
+                total += fut.result()
+            except Exception:
+                errors += 1
+    msg = f'同步完成，共 {total} 个容器' + (f'，{errors} 台设备失败' if errors else '')
+    return ok({'count': total, 'errors': errors}, msg)
 
 
 @app.route('/api/containers', methods=['GET'])
@@ -802,6 +858,31 @@ def api_container_remove(cid):
     return _container_action(cid, 'remove')
 
 
+@app.route('/api/containers/<cid>/delete_record', methods=['POST'])
+def api_container_delete_record(cid):
+    """仅删除本地数据库中的容器记录，不调用实际实例/容器删除接口。
+
+    用于清理「设备已下线但本地库仍残留容器数据」的情况：仅解除其占用的代理/
+    真机参数（均为本地DB操作，不做任何远程调用），然后删除该容器行。
+    """
+    c = db.get_container(cid)
+    if not c:
+        return err('容器不存在', 404)
+    # 本地DB释放占用（不调用 s5_stop / 容器删除等远程接口，设备可能已下线）
+    if c.get('proxy_id'):
+        p = db.get_proxy(c['proxy_id'])
+        if p:
+            db.update_proxy(p['id'], status=('fault' if p['status'] == 'fault' else 'idle'),
+                            in_use=0, instance_id='', instance_name='')
+    if c.get('fp_id'):
+        db.update_real_param(c['fp_id'], status='idle', in_use=0,
+                             instance_id='', instance_name='')
+    db.delete_container(cid)
+    db.add_operation_log({'op_type': 'proxy', 'target': c.get('name') or '',
+                          'detail': '删除本地容器记录(不调用实例删除)', 'status': 'success'})
+    return ok(None, '已删除本地记录')
+
+
 @app.route('/api/containers/<cid>/random_devinfo', methods=['POST'])
 def api_container_random_devinfo(cid):
     c = db.get_container(cid)
@@ -881,7 +962,7 @@ def _release_container_proxy(c):
     fid = c.get('fp_id')
     if fid:
         try:
-            db.update_real_param(fid, status='idle', in_use=0, instance_id='')
+            db.update_real_param(fid, status='idle', in_use=0, instance_id='', instance_name='')
         except Exception:
             pass
 
@@ -898,7 +979,7 @@ def reconcile_orphan_occupancy():
             fixed += 1
     for f in db.list_real_params():
         if f['in_use'] and f.get('instance_id') and f['instance_id'] not in live_ids:
-            db.update_real_param(f['id'], status='idle', in_use=0, instance_id='')
+            db.update_real_param(f['id'], status='idle', in_use=0, instance_id='', instance_name='')
             fixed += 1
     return fixed
 
@@ -1104,7 +1185,10 @@ def _reparse_real_params():
 def api_real_params():
     items = db.list_real_params()
     for it in items:
+        data = json.loads(it.get('data') or '{}')
         it['file_count'] = len(json.loads(it.get('files') or '[]'))
+        # 暴露常用标识字段，便于列表直接展示（oaid 等；源文件/手动新增含该字段时显示）
+        it['oaid'] = data.get('oaid') or data.get('OAID') or ''
         it.pop('data', None)
     return ok(items)
 
@@ -1271,6 +1355,12 @@ def _do_apply_fp(fp_id, cid):
     # set_custom_devinfo 需要「完整指纹 JSON」(env/sensors/cpuinfo/... 结构)，
     # 不能用 fp['data']（_flatten_props 摊平后的 {属性:值} dict，会触发 myt code 3）。
     body = _build_devinfo_body(fp)
+    # 提前校验：缺少源指纹文件时退化为扁平体，发给 myt 必被 code 3 拒绝；此处给出明确错误，避免模糊失败。
+    _STRUCT_KEYS = ('env', 'sensors', 'cpuinfo', 'cpuinfos', 'deviceId', 'sysinfo',
+                    'telinfo', 'build', 'build_fingerprint')
+    if not isinstance(body, dict) or not any(k in body for k in _STRUCT_KEYS):
+        return err('该真机参数缺少完整指纹文件（仅摊平字段），myt 会拒绝导入(code 3)；'
+                   '请在「真机参数库」通过文件重新导入该参数')
     res = client_for(dev).set_custom_devinfo(dev['ip'], c['name'], body)
     if res.get('code') == 200:
         if c['fp_id'] and c['fp_id'] != fp_id:
@@ -1611,8 +1701,10 @@ def api_app_upload():
     safe = f'{fid}_{f.filename}'
     path = os.path.join(APP_UPLOAD_DIR, safe)
     f.save(path)
+    tags_raw = (request.form.get('tags') or '').strip()
+    tags = [t.strip() for t in tags_raw.split(',') if t.strip()] if tags_raw else []
     entry = db.add_app({'id': fid, 'name': request.form.get('name') or f.filename,
-                        'filename': safe, 'filesize': os.path.getsize(path)})
+                        'filename': safe, 'filesize': os.path.getsize(path), 'tags': tags})
     return ok(entry, '上传成功')
 
 
@@ -2356,6 +2448,330 @@ def etcd_list(prefix):
         return []
 
 
+def _list_etcd_devices():
+    """读取 etcd /myt/devices/ 下所有设备注册记录。返回 (items, status)，status 为 'ok' 或 'unreachable'。"""
+    import requests
+    try:
+        r = requests.post(f'{ETCD_URL}/v3/auth/authenticate',
+                          json={'name': ETCD_USER, 'password': ETCD_PASSWORD}, timeout=5)
+        reachable = (r.status_code in (200, 401))
+    except Exception:
+        reachable = False
+    if not reachable:
+        return [], 'unreachable'
+    items = etcd_list('/myt/devices/')
+    out = []
+    for it in items:
+        key = it.get('key') or ''
+        try:
+            v = json.loads(it.get('value') or '{}')
+        except Exception:
+            v = {}
+        rec = {'key': key}
+        for f in ('env', 'wan_ip', 'lan_ip', 'adb_addr', 'adb_port', 'phone_number',
+                 'proxy', 'container_name', 'container_id', 'fp_id', 'proxy_id',
+                 'status', 'delivered_at', 'offline_at'):
+            rec[f] = v.get(f, '')
+        out.append(rec)
+    out.sort(key=lambda r: (str(r.get('env') or ''), str(r.get('wan_ip') or ''),
+                            str(r.get('container_name') or '')))
+    return out, 'ok'
+
+
+# ==================== etcd 设备注册管理 ====================
+@app.route('/api/etcd_devices', methods=['GET'])
+def api_etcd_devices():
+    """列出 etcd 中已注册的设备（/myt/devices/ 前缀），反映上下线状态。"""
+    items, status = _list_etcd_devices()
+    if status == 'unreachable':
+        return ok({'items': [], 'etcd_status': 'unreachable'}, 'etcd 不可达或未配置')
+    return ok({'items': items, 'etcd_status': 'ok'}, f'共 {len(items)} 个注册设备')
+
+
+@app.route('/api/etcd_devices/set_status', methods=['POST'])
+def api_etcd_devices_set_status():
+    """手动上下线：改写 etcd 记录 status（offline=下线，online=恢复为 delivered）。"""
+    d = request.json or {}
+    key = (d.get('key') or '').strip()
+    status = d.get('status')
+    if not key:
+        return err('缺少 key')
+    if status not in ('online', 'offline'):
+        return err('status 非法')
+    raw = etcd_get(key)
+    if raw is None:
+        return err('etcd 记录不存在', 404)
+    try:
+        v = json.loads(raw)
+    except Exception:
+        v = {}
+    if status == 'offline':
+        v['status'] = 'offline'
+        v['offline_at'] = db.now()
+    else:
+        v['status'] = 'delivered'
+        v['offline_at'] = ''
+    if not etcd_put(key, json.dumps(v, ensure_ascii=False)):
+        return err('etcd 写入失败')
+    db.add_operation_log({'op_type': 'etcd', 'target': key,
+                          'detail': ('下线' if status == 'offline' else '上线') + ' etcd 设备',
+                          'status': 'success'})
+    return ok(None, '已' + ('下线' if status == 'offline' else '上线'))
+
+
+@app.route('/api/etcd_devices/delete', methods=['POST'])
+def api_etcd_devices_delete():
+    """删除 etcd 中的设备注册记录（清理已下线/残留设备）。"""
+    d = request.json or {}
+    key = (d.get('key') or '').strip()
+    if not key:
+        return err('缺少 key')
+    if not etcd_delete(key):
+        return err('etcd 删除失败')
+    db.add_operation_log({'op_type': 'etcd', 'target': key,
+                          'detail': '删除 etcd 设备记录', 'status': 'success'})
+    return ok(None, '已删除')
+
+
+# ==================== 外部 API (供外部系统读取/重建设备) ====================
+@app.route('/api/ext/devices', methods=['GET'])
+def api_ext_devices():
+    """外部接口：列出 etcd 中已注册设备，供外部系统读取后重建。
+
+    鉴权：请求头 `Authorization: Bearer <EXTERNAL_API_TOKEN>` 或 `X-External-Token: <token>`。
+    返回字段含实例业务标识：instance_id(容器/实例id，全局唯一)、adb_addr、phone_number、container_name 等；
+    外部删除/重建请优先使用这些业务标识，而非 etcd 路径 key。
+    """
+    items, status = _list_etcd_devices()
+    if status == 'unreachable':
+        return err('etcd 不可达或未配置', 503)
+    return ok({'devices': items, 'total': len(items)})
+
+
+def _find_etcd_device_by(**fields):
+    """在 etcd /myt/devices/ 中按给定字段精确匹配设备记录，返回 (record_dict, key) 或 (None, None)。"""
+    for it in etcd_list('/myt/devices/'):
+        try:
+            v = json.loads(it.get('value') or '{}')
+        except Exception:
+            v = {}
+        if all(str(v.get(k, '')) == str(val) for k, val in fields.items()):
+            return v, it.get('key') or ''
+    return None, None
+
+
+@app.route('/api/ext/devices/delete', methods=['POST'])
+def api_ext_devices_delete():
+    """外部接口：删除 etcd 中指定设备注册记录（用于重建前清理）。
+
+    业务标识（任一即可，推荐 instance_id）：
+      instance_id:  容器/实例 id（=containers.id，etcd 记录中的 container_id，全局唯一）
+      adb_addr:     adb 地址（device_ip:adb_port；多设备复用同一 lan_ip 时可能不唯一）
+      phone_number: 手机号（交付时 etcd 全局去重，删除释放后会被复用）
+    兼容：key（etcd 完整路径）。
+    """
+    d = request.get_json(force=True, silent=True) or {}
+    key = (d.get('key') or '').strip()
+    instance_id = (d.get('instance_id') or d.get('container_id') or '').strip()
+    adb_addr = (d.get('adb_addr') or '').strip()
+    phone_number = (d.get('phone_number') or '').strip()
+    del_key = key
+    if not del_key:
+        if instance_id:
+            _, del_key = _find_etcd_device_by(container_id=instance_id)
+        elif adb_addr:
+            _, del_key = _find_etcd_device_by(adb_addr=adb_addr)
+        elif phone_number:
+            _, del_key = _find_etcd_device_by(phone_number=phone_number)
+    if not del_key:
+        return err('未找到匹配的设备记录（请检查 instance_id/adb_addr/phone_number）', 404)
+    if not etcd_delete(del_key):
+        return err('etcd 删除失败（etcd 不可达或记录不存在）', 503)
+    db.add_operation_log({'op_type': 'etcd', 'target': del_key,
+                          'detail': '外部API删除 etcd 设备记录', 'status': 'success'})
+    return ok(None, '已删除')
+
+
+# 外部重建/交付默认安装的应用标签组（对应「应用管理」中给应用所打的标签）。
+# 可通过环境变量 DELIVERY_DEFAULT_TAGS（逗号分隔）覆盖；默认交付组为「交付组」。
+DEFAULT_DELIVERY_TAGS = [t.strip() for t in os.environ.get('DELIVERY_DEFAULT_TAGS', '交付组').split(',') if t.strip()]
+
+
+@app.route('/api/ext/devices/rebuild', methods=['POST'])
+def api_ext_devices_rebuild():
+    """外部接口：换机重建。按业务标识定位设备，删除旧 etcd 注册 + 本地容器记录（释放 fp/proxy 占用，
+    不调用远程删除，因为机器已更换），并按默认/传入配置重跑交付工作流。
+
+    业务标识（任一即可，推荐 instance_id）：
+      instance_id:  业务标识，按 etcd 记录 container_id 或 container_name 精确匹配（优先 container_id，其次 container_name；容器名唯一，可直接用作 instance_id）
+      adb_addr / phone_number / key（兼容）
+    应用安装（默认行为）：
+      - 默认：安装「交付组」标签下的全部应用（标签见 DEFAULT_DELIVERY_TAGS / 环境变量 DELIVERY_DEFAULT_TAGS）
+      - 覆盖（优先级）：app_ids(list) > app_packages(list, 按包名 pkg 匹配) > app_tags(list, 按标签匹配)
+    代理配置（默认行为）：
+      - 默认：全部配置代理（proxy_auto=1，自动分配空闲代理）
+      - 覆盖：proxy_enabled=false 关闭代理；proxy_id 指定代理；proxy_auto 可显式控制
+    其他可选覆盖：fp_id, env, container_name, fp_auto(bool)
+    返回：{workflow_id, device_ip, container_name, deleted_key}
+    """
+    d = request.get_json(force=True, silent=True) or {}
+    key = (d.get('key') or '').strip()
+    instance_id = (d.get('instance_id') or d.get('container_id') or '').strip()
+    adb_addr = (d.get('adb_addr') or '').strip()
+    phone_number = (d.get('phone_number') or '').strip()
+
+    # 1) 定位 etcd 设备记录（含配置与 key）
+    rec, del_key = None, key
+    if del_key:
+        raw = etcd_get(del_key)
+        if raw:
+            try:
+                rec = json.loads(raw)
+            except Exception:
+                rec = None
+    if not rec:
+        if instance_id:
+            # 业务标识：优先按 container_id 精确匹配，匹配不到再按 container_name 匹配
+            # （容器名在项目内唯一，可作为 instance_id 使用）
+            rec, del_key = _find_etcd_device_by(container_id=instance_id)
+            if not rec:
+                rec, del_key = _find_etcd_device_by(container_name=instance_id)
+        elif adb_addr:
+            rec, del_key = _find_etcd_device_by(adb_addr=adb_addr)
+        elif phone_number:
+            rec, del_key = _find_etcd_device_by(phone_number=phone_number)
+    # 回退：etcd 无记录时，按 instance_id 在本地容器表解析（支持 id 或 name，容器名唯一）
+    # 场景：交付流程在中途（如真机参数导入失败）中断，本地容器已建但没走到「交付到etcd」，
+    # 此时 etcd 无记录，重建应直接基于本地容器重跑，而非 404。
+    local_c = None
+    if not rec and instance_id:
+        for c in db.list_containers():
+            if c['id'] == instance_id or c['name'] == instance_id:
+                local_c = c
+                break
+
+    if not rec and not local_c:
+        return err('未找到匹配的设备记录（etcd 与本地容器表均未匹配 instance_id/adb_addr/phone_number）', 404)
+
+    # 统一抽取定位信息（etcd 优先，回退本地容器）
+    device_ip = (d.get('device_ip') or (rec or {}).get('lan_ip') or (local_c or {}).get('device_ip') or '').strip()
+    container_id = (rec or {}).get('container_id', '') or (local_c or {}).get('id', '')
+    container_name = (d.get('container_name') or (rec or {}).get('container_name') or '').strip() or (local_c or {}).get('name', '')
+
+    # 2) 解析本地设备（用于重跑交付工作流）
+    dev = None
+    device_id = d.get('device_id')
+    if device_id:
+        dev = db.get_device(device_id)
+    if not dev and device_ip:
+        for dv in db.list_devices():
+            if dv.get('ip') == device_ip:
+                dev = dv
+                break
+    if not dev and local_c:
+        dev = db.get_device(local_c['device_id'])
+    if not dev:
+        return err('未找到对应本地设备（device_ip=%s）' % device_ip, 404)
+
+    # 3) 删除阶段：清理旧 etcd 记录 + 本地容器记录（释放占用）；不做远程删除（机器已换）
+    deleted_key = None
+    if del_key and etcd_delete(del_key):
+        deleted_key = del_key
+    if container_id:
+        c = db.get_container(container_id)
+        if c:
+            if c.get('proxy_id'):
+                p = db.get_proxy(c['proxy_id'])
+                if p:
+                    db.update_proxy(p['id'], status=('fault' if p['status'] == 'fault' else 'idle'),
+                                    in_use=0, instance_id='', instance_name='')
+            if c.get('fp_id'):
+                db.update_real_param(c['fp_id'], status='idle', in_use=0,
+                                     instance_id='', instance_name='')
+            db.delete_container(c['id'])
+
+    # 4) 重建：默认行为（符合业务约定）
+    #    - 应用：默认安装「交付组」标签下的全部应用；可被 app_ids / app_packages(包名) / app_tags 覆盖
+    #    - 代理：默认全部配置代理(proxy_auto=1)；proxy_enabled=false 关闭，proxy_id 可指定
+    fp_id = d.get('fp_id', rec.get('fp_id', ''))
+    proxy_id = d.get('proxy_id', rec.get('proxy_id', ''))
+    env = (d.get('env') or rec.get('env') or os.environ.get('DELIVERY_ENV', 'test')).strip()
+    new_cname = container_name or rec.get('container_name') or ''
+
+    # 应用解析优先级：app_ids > app_packages(包名) > app_tags > 默认交付组标签
+    app_ids = d.get('app_ids')
+    if app_ids is None:
+        app_ids = []
+    elif isinstance(app_ids, str):
+        try:
+            app_ids = json.loads(app_ids)
+        except Exception:
+            app_ids = []
+    app_tags = []
+    if not app_ids:
+        app_packages = d.get('app_packages')
+        if app_packages:
+            pkgs = app_packages if isinstance(app_packages, list) else [app_packages]
+            pkg_map = {a.get('pkg', ''): a['id'] for a in db.list_apps()}
+            app_ids = []
+            missing = []
+            for pk in pkgs:
+                pid = pkg_map.get(pk)
+                if pid:
+                    app_ids.append(pid)
+                else:
+                    missing.append(pk)
+            if missing:
+                db.add_operation_log({'op_type': 'delivery', 'target': new_cname or device_ip,
+                                      'detail': '外部API重建: 以下包名未匹配到应用: ' + ','.join(missing), 'status': 'warn'})
+        elif d.get('app_tags'):
+            at = d.get('app_tags')
+            app_tags = at if isinstance(at, list) else [at]
+        else:
+            app_tags = list(DEFAULT_DELIVERY_TAGS)
+
+    # 代理解析：默认开启；proxy_enabled=false 关闭，proxy_id 可指定
+    proxy_enabled = d.get('proxy_enabled', True)
+    if proxy_enabled is False or (isinstance(proxy_enabled, str) and proxy_enabled.lower() in ('0', 'false', 'no')):
+        proxy_auto = 0
+        proxy_id = ''
+    else:
+        proxy_auto = 1 if d.get('proxy_auto', True) else 0
+        if d.get('proxy_id'):
+            proxy_id = d.get('proxy_id')
+
+    fp_auto = 1 if d.get('fp_auto', rec.get('fp_auto')) else 0
+
+    wf = db.add_delivery_workflow({
+        'device_ip': device_ip,
+        'device_id': dev['id'],
+        'fp_id': fp_id,
+        'proxy_id': proxy_id,
+        'apps_to_install': app_ids,
+        'app_tags': app_tags,
+        'fp_auto': fp_auto,
+        'proxy_auto': proxy_auto,
+        'status': 'pending',
+        'steps': [{'name': n, 'label': l, 'status': 'pending', 'message': '', 'started_at': '', 'finished_at': ''}
+                  for n, l in WORKFLOW_STEPS],
+    })
+    db.update_delivery_workflow(wf['id'], etcd_key=del_key or '', env=env)
+    threading.Thread(target=_run_delivery_workflow, args=(wf['id'],), daemon=True).start()
+    db.add_operation_log({'op_type': 'delivery', 'target': new_cname or device_ip,
+                          'detail': '外部API换机重建(删旧etcd+本地记录, 重跑交付)', 'status': 'success'})
+    return ok({'workflow_id': wf['id'], 'device_ip': device_ip, 'container_name': new_cname,
+               'deleted_key': deleted_key}, '换机重建已启动')
+
+
+@app.route('/api/ext/delivery/status/<wid>', methods=['GET'])
+def api_ext_delivery_status(wid):
+    """外部接口：查询换机重建工作流进度（配合 /api/ext/devices/rebuild 使用）。"""
+    wf = db.get_delivery_workflow(wid)
+    if not wf:
+        return err('工作流不存在', 404)
+    return ok(wf)
+
+
 # ==================== 设备交付工作流 ====================
 WORKFLOW_STEPS = [
     ('create_container', '创建容器'),
@@ -2607,7 +3023,7 @@ def _run_delivery_workflow(wid):
                 r = _do_apply_fp(fp_id, container_id)
             r_data = r.get_json() if hasattr(r, 'get_json') else {}
             if r_data.get('code') != 200:
-                raise Exception(r_data.get('msg') or r_data.get('message') or '导入失败')
+                raise Exception(f"myt code {r_data.get('code')}: {r_data.get('message') or r_data.get('msg') or '导入失败'}")
             return r_data
         ok, res = _retry(_do_fp, attempts=3, delay=6, desc='导入真机参数')
         if ok:
@@ -2639,28 +3055,41 @@ def _run_delivery_workflow(wid):
             c = db.get_container(container_id)
             dev = db.get_device(c['device_id'])
             cli = client_for(dev)
+            installed, failed = [], []
             for aid in app_ids:
                 a = db.get_app(aid)
                 if not a:
+                    failed.append({'app_id': aid, 'app_name': '', 'reason': '应用记录不存在'})
                     continue
-                import os
                 apk_path = os.path.join(APP_UPLOAD_DIR, a['filename'])
                 if not os.path.exists(apk_path):
+                    failed.append({'app_id': aid, 'app_name': a.get('name', ''),
+                                   'reason': f"APK 文件不存在: {a['filename']}"})
                     continue
                 status, msg = cli.install_apk(dev['ip'], c['name'], apk_path, a['filename'])
                 db.add_operation_log({'op_type': 'delivery', 'target': container_name,
-                                      'detail': f'交付流程: 安装应用 {a["name"]} - {msg}', 'status': status})
-            installed = []
-            for aid in app_ids:
-                a = db.get_app(aid)
-                if a:
+                                      'detail': f"交付流程: 安装应用 {a['name']} - {msg}",
+                                      'status': status})
+                if status == 'success':
                     installed.append({'app_id': aid, 'app_name': a.get('name', '')})
+                else:
+                    failed.append({'app_id': aid, 'app_name': a.get('name', ''), 'reason': msg})
+            if failed:
+                # 任一应用安装失败：标记失败并中断，禁止继续交付（避免交付一个缺应用的设备）
+                _update_workflow_step(wid, 'install_apps', 'failed',
+                                     f"有 {len(failed)} 个应用安装失败", {'installed': installed, 'failed': failed})
+                db.add_operation_log({'op_type': 'delivery', 'target': container_name,
+                                      'detail': f"交付流程: 应用安装失败 - {failed}", 'status': 'fail'})
+                for _n, _l in [('apply_proxy', '配置代理'), ('allocate_phone', '分配手机号'), ('deliver_etcd', '交付到etcd')]:
+                    _update_workflow_step(wid, _n, 'skipped', '上一步失败，跳过')
+                db.update_delivery_workflow(wid, status='failed', current_step='install_apps')
+                return
             _update_workflow_step(wid, 'install_apps', 'success', f'已安装 {len(installed)} 个应用', {'apps': installed})
         except Exception as e:
             _update_workflow_step(wid, 'install_apps', 'failed', str(e))
             db.add_operation_log({'op_type': 'delivery', 'target': container_name,
                                   'detail': f'交付流程: 应用安装失败 - {e}', 'status': 'fail'})
-            for _n, _l in [('apply_proxy', '配置代理'), ('deliver_etcd', '交付到etcd')]:
+            for _n, _l in [('apply_proxy', '配置代理'), ('allocate_phone', '分配手机号'), ('deliver_etcd', '交付到etcd')]:
                 _update_workflow_step(wid, _n, 'skipped', '上一步失败，跳过')
             db.update_delivery_workflow(wid, status='failed', current_step='install_apps')
             return
@@ -2765,6 +3194,53 @@ def _run_delivery_workflow(wid):
     db.update_delivery_workflow(wid, status='completed' if all_success else 'failed')
 
 
+def _delete_container_full(c):
+    """完整删除设备容器：远端删除 → 释放代理/真机参数 → 删除 etcd 记录 → 删除本地记录。返回 (ok, msg)"""
+    dev = db.get_device(c['device_id'])
+    if not dev:
+        return False, '设备不存在'
+    etcd_keys = [item['key'] for item in etcd_list('/myt/devices/')
+                 if item.get('key', '').split('/')[-1] == c['name']
+                 or _safe_json(item.get('value')).get('container_id') == c['id']]
+    res = client_for(dev).remove(dev['ip'], c['name'])
+    if res.get('code') != 200:
+        return False, res.get('msg') or res.get('message') or '远端删除失败'
+    _release_container_proxy(c)
+    for key in etcd_keys:
+        etcd_delete(key)
+    db.delete_container(c['id'])
+    db.add_operation_log({'op_type': 'delivery', 'target': c['name'],
+                          'detail': f'删除设备容器 (etcd 删除 {len(etcd_keys)} 条记录)', 'status': 'success'})
+    return True, ''
+
+
+def _safe_json(s):
+    try:
+        v = json.loads(s or '{}')
+        return v if isinstance(v, dict) else {}
+    except Exception:
+        return {}
+
+
+def _start_delivery(cfg):
+    wf = db.add_delivery_workflow({
+        'device_ip': cfg.get('device_ip', ''),
+        'device_id': cfg.get('device_id', 0),
+        'fp_id': cfg.get('fp_id', ''),
+        'proxy_id': cfg.get('proxy_id', ''),
+        'apps_to_install': cfg.get('app_ids', []),
+        'app_tags': cfg.get('app_tags', []),
+        'fp_auto': 1 if cfg.get('fp_auto') else 0,
+        'proxy_auto': 1 if cfg.get('proxy_auto') else 0,
+        'env': cfg.get('env', ''),
+        'status': 'pending',
+        'steps': [{'name': n, 'label': l, 'status': 'pending', 'message': '', 'started_at': '', 'finished_at': ''}
+                  for n, l in WORKFLOW_STEPS],
+    })
+    threading.Thread(target=_run_delivery_workflow, args=(wf['id'],), daemon=True).start()
+    return wf
+
+
 # ==================== 设备交付 API ====================
 @app.route('/api/delivery/run', methods=['POST'])
 def api_delivery_run():
@@ -2816,6 +3292,34 @@ def api_delivery_delete(wid):
     return ok(None, '已删除')
 
 
+@app.route('/api/delivery/replace', methods=['POST'])
+def api_delivery_replace():
+    """容器更换：删除旧容器（含 etcd 记录），沿用上次交付配置重新创建交付"""
+    cid = (request.json or {}).get('container_id', '')
+    c = db.get_container(cid)
+    if not c:
+        return err('容器不存在', 404)
+    prev = next((w for w in db.list_delivery_workflows() if w.get('container_id') == cid), None)
+    dev = db.get_device(c['device_id'])
+    if prev:
+        cfg = {
+            'fp_id': '' if prev.get('fp_auto') else prev.get('fp_id', ''),
+            'proxy_id': '' if prev.get('proxy_auto') else prev.get('proxy_id', ''),
+            'fp_auto': prev.get('fp_auto'),
+            'proxy_auto': prev.get('proxy_auto'),
+            'app_ids': prev.get('apps_to_install', []),
+            'app_tags': prev.get('app_tags', []),
+            'env': prev.get('env', ''),
+        }
+    else:
+        cfg = {'fp_id': c.get('fp_id', ''), 'proxy_id': c.get('proxy_id', '')}
+    ok_del, msg = _delete_container_full(c)
+    if not ok_del:
+        return err(f'删除旧容器失败: {msg}')
+    wf = _start_delivery({**cfg, 'device_ip': dev['ip'] if dev else '', 'device_id': c['device_id']})
+    return ok({'workflow_id': wf['id']}, '已删除旧容器，重新交付已启动')
+
+
 @app.route('/api/delivery/batch', methods=['POST'])
 def api_delivery_batch():
     """外部调用的两阶段接口：
@@ -2827,49 +3331,34 @@ def api_delivery_batch():
     new_devices = d.get('devices', [])
     results = {'phase1_deleted': [], 'phase1_failed': [], 'phase2_workflows': []}
 
-    # Phase 1: 从 etcd 读取并删除已有设备
+    # Phase 1: 从 etcd 读取记录（key: /myt/devices/{wan_ip}/{container_name}），删除对应容器
     existing = etcd_list(etcd_prefix)
     for item in existing:
         key = item['key']
-        try:
-            # 提取 device_ip from key: /myt/devices/{ip}/{name}
-            parts = key.strip('/').split('/')
-            if len(parts) >= 3:
-                dev_ip = parts[2]
-                # 查找对应的容器
-                containers = db.list_containers()
-                for c in containers:
-                    if c.get('device_ip') == dev_ip or c.get('device_ip', '').startswith(dev_ip):
-                        # 调用删除接口
-                        dev = db.get_device(c['device_id'])
-                        if dev:
-                            cli = client_for(dev)
-                            res = cli.remove(dev['ip'], c['name'])
-                            if res.get('code') == 200:
-                                db.delete_container(c['id'])
-                                etcd_delete(key)
-                                results['phase1_deleted'].append({'key': key, 'container': c['name']})
-                            else:
-                                results['phase1_failed'].append({'key': key, 'error': res.get('msg', '')})
-        except Exception as e:
-            results['phase1_failed'].append({'key': key, 'error': str(e)})
+        cname = key.split('/')[-1]
+        c = next((x for x in db.list_containers() if x.get('name') == cname), None)
+        if not c:
+            results['phase1_failed'].append({'key': key, 'error': '本地未找到对应容器'})
+            continue
+        ok_del, msg = _delete_container_full(c)
+        if ok_del:
+            results['phase1_deleted'].append({'key': key, 'container': cname})
+        else:
+            results['phase1_failed'].append({'key': key, 'error': msg})
 
     # Phase 2: 创建新设备
     for dev_config in new_devices:
-        wf = db.add_delivery_workflow({
+        wf = _start_delivery({
             'device_ip': dev_config.get('device_ip', ''),
             'device_id': dev_config.get('device_id', 0),
             'fp_id': dev_config.get('fp_id', ''),
             'proxy_id': dev_config.get('proxy_id', ''),
-            'apps_to_install': dev_config.get('app_ids', []),
+            'app_ids': dev_config.get('app_ids', []),
             'app_tags': dev_config.get('app_tags', []),
-            'fp_auto': 1 if dev_config.get('fp_auto') else 0,
-            'proxy_auto': 1 if dev_config.get('proxy_auto') else 0,
-            'status': 'pending',
-            'steps': [{'name': n, 'label': l, 'status': 'pending', 'message': '', 'started_at': '', 'finished_at': ''}
-                      for n, l in WORKFLOW_STEPS],
+            'fp_auto': dev_config.get('fp_auto'),
+            'proxy_auto': dev_config.get('proxy_auto'),
+            'env': dev_config.get('env', ''),
         })
-        threading.Thread(target=_run_delivery_workflow, args=(wf['id'],), daemon=True).start()
         results['phase2_workflows'].append({'workflow_id': wf['id'], 'device_ip': dev_config.get('device_ip', '')})
 
     db.add_operation_log({'op_type': 'delivery', 'target': 'batch',
