@@ -2363,6 +2363,7 @@ WORKFLOW_STEPS = [
     ('apply_fp', '导入真机参数'),
     ('install_apps', '安装应用'),
     ('apply_proxy', '配置代理'),
+    ('allocate_phone', '分配手机号'),
     ('deliver_etcd', '交付到etcd'),
 ]
 
@@ -2419,6 +2420,45 @@ def _retry(fn, attempts=3, delay=5, desc=''):
                 print(f'[delivery] {desc} 第 {i+1} 次失败: {e}，{delay}s 后重试', flush=True)
                 time.sleep(delay)
     return False, last_err
+
+
+def _get_wan_ip(dev):
+    """取设备外网 IP：优先 url 的 host，其次 adb_host_for"""
+    url = (dev.get('url') or '').strip()
+    if url:
+        from urllib.parse import urlparse
+        p = urlparse(url if url.startswith('http') else 'http://' + url)
+        if p.hostname:
+            return p.hostname
+    try:
+        h = adb_host_for(dev)
+        if h:
+            return str(h).split(':')[0]
+    except Exception:
+        pass
+    return dev.get('ip', '')
+
+
+PHONE_NUM_START = 13974300000
+PHONE_NUM_END = 13974399999
+
+
+def _allocate_phone_number():
+    """从 etcd 现有记录中找出未使用的手机号，返回 (phone, err)"""
+    used = set()
+    for item in etcd_list('/myt/devices/'):
+        try:
+            v = json.loads(item.get('value') or '{}')
+            pn = str(v.get('phone_number') or '').strip()
+            if pn:
+                used.add(pn)
+        except Exception:
+            continue
+    for num in range(PHONE_NUM_START, PHONE_NUM_END + 1):
+        pn = str(num)
+        if pn not in used:
+            return pn, None
+    return None, '手机号区间已用尽（13974300000~13974399999）'
 
 
 def _run_delivery_workflow(wid):
@@ -2660,12 +2700,43 @@ def _run_delivery_workflow(wid):
     else:
         _update_workflow_step(wid, 'apply_proxy', 'success', '未选择代理，跳过')
 
-    # Step 6: 交付到 etcd
+    # Step 6: 分配手机号（etcd 全局去重）
+    _update_workflow_step(wid, 'allocate_phone', 'running')
+    phone_number, phone_err = _allocate_phone_number()
+    if phone_err:
+        _update_workflow_step(wid, 'allocate_phone', 'failed', phone_err)
+        for _n, _l in [('deliver_etcd', '交付到etcd')]:
+            _update_workflow_step(wid, _n, 'skipped', '分配手机号失败，跳过')
+        db.update_delivery_workflow(wid, status='failed', current_step='allocate_phone')
+        db.add_operation_log({'op_type': 'delivery', 'target': container_name,
+                              'detail': f'交付流程: 分配手机号失败 - {phone_err}', 'status': 'fail'})
+        return
+    _update_workflow_step(wid, 'allocate_phone', 'success', f'已分配手机号 {phone_number}', {'phone_number': phone_number})
+    db.add_operation_log({'op_type': 'delivery', 'target': container_name,
+                          'detail': f'交付流程: 分配手机号 {phone_number}', 'status': 'success'})
+
+    # Step 7: 交付到 etcd（key 用外网 IP，value 暴露 env/wan_ip/lan_ip/adb/phone/proxy）
     _update_workflow_step(wid, 'deliver_etcd', 'running')
     try:
-        etcd_key = f"/myt/devices/{device_ip}/{container_name}"
+        dev = db.get_device(device_id)
+        wan_ip = _get_wan_ip(dev)
+        c = db.get_container(container_id)
+        adb_addr = (c or {}).get('adb_addr', '')
+        adb_port = (c or {}).get('adb_port', '')
+        # proxy 信息
+        px = db.get_proxy(proxy_id) if proxy_id else None
+        proxy_text = f"{px.get('ip', '')}:{px.get('port', '')}" if px else ''
+        # env：优先工作流自带，其次环境变量
+        env = (wf.get('env') or os.environ.get('DELIVERY_ENV', 'test')).strip()
+        etcd_key = f"/myt/devices/{wan_ip}/{container_name}"
         delivery_data = json.dumps({
-            'device_ip': device_ip,
+            'env': env,
+            'wan_ip': wan_ip,
+            'lan_ip': device_ip,
+            'adb_addr': adb_addr,
+            'adb_port': str(adb_port),
+            'phone_number': phone_number,
+            'proxy': proxy_text,
             'container_name': container_name,
             'container_id': container_id,
             'fp_id': fp_id,
@@ -2677,8 +2748,9 @@ def _run_delivery_workflow(wid):
         ok = etcd_put(etcd_key, delivery_data)
         if not ok:
             raise Exception('etcd 写入失败')
-        db.update_delivery_workflow(wid, etcd_key=etcd_key)
-        _update_workflow_step(wid, 'deliver_etcd', 'success', f'已交付到 etcd: {etcd_key}', {'etcd_key': etcd_key})
+        db.update_delivery_workflow(wid, etcd_key=etcd_key, phone_number=phone_number, env=env)
+        _update_workflow_step(wid, 'deliver_etcd', 'success', f'已交付到 etcd: {etcd_key}', {
+            'etcd_key': etcd_key, 'wan_ip': wan_ip, 'phone_number': phone_number, 'proxy': proxy_text, 'env': env})
         db.add_operation_log({'op_type': 'delivery', 'target': container_name,
                               'detail': f'交付流程: etcd 交付成功 ({etcd_key})', 'status': 'success'})
     except Exception as e:

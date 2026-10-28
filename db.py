@@ -48,7 +48,7 @@ def add_delivery_workflow(rec):
         rec['app_tags'] = json.dumps(rec['app_tags'], ensure_ascii=False)
     cols = ['id', 'device_ip', 'device_id', 'container_id', 'container_name', 'status',
             'current_step', 'steps', 'etcd_key', 'apps_to_install', 'app_tags', 'fp_id', 'proxy_id',
-            'fp_auto', 'proxy_auto', 'created', 'updated']
+            'fp_auto', 'proxy_auto', 'phone_number', 'env', 'created', 'updated']
     execute(f"INSERT INTO delivery_workflows ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
             tuple(rec.get(k, '') for k in cols))
     return rec
@@ -263,6 +263,8 @@ SCHEMA = [
         proxy_id TEXT DEFAULT '',
         fp_auto INTEGER DEFAULT 0,
         proxy_auto INTEGER DEFAULT 0,
+        phone_number TEXT DEFAULT '',
+        env TEXT DEFAULT '',
         created TEXT DEFAULT '',
         updated TEXT DEFAULT ''
     )''',
@@ -300,6 +302,10 @@ def _ensure_columns(conn):
         conn.execute("ALTER TABLE delivery_workflows ADD COLUMN fp_auto INTEGER DEFAULT 0")
     if 'proxy_auto' not in dw_cols:
         conn.execute("ALTER TABLE delivery_workflows ADD COLUMN proxy_auto INTEGER DEFAULT 0")
+    if 'phone_number' not in dw_cols:
+        conn.execute("ALTER TABLE delivery_workflows ADD COLUMN phone_number TEXT DEFAULT ''")
+    if 'env' not in dw_cols:
+        conn.execute("ALTER TABLE delivery_workflows ADD COLUMN env TEXT DEFAULT ''")
 
 
 def init_db():
