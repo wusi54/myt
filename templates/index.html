@@ -657,6 +657,7 @@ function switchPage(pageId,el){
   if(pageId==='pageApps')loadApps();
   if(pageId==='pageScreenWall'){Promise.all([loadContainers(),loadDevices()]).then(()=>{autoFillWall();renderWall();});}
   if(pageId==='pageLogs')loadLogs();
+  if(pageId==='pageDelivery')loadDeliveries();
   if(pageId==='pageUsers')loadUsers();
 }
 function refreshCurrentPage(){
@@ -2147,24 +2148,55 @@ async function loadDeliveries(){
   const list=d.data||[];
   const el=document.getElementById('deliveryList');
   if(!list.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无交付记录</div>';return}
-  let h='<table><thead><tr><th>设备IP</th><th>状态</th><th>当前步骤</th><th>容器</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
+  let h='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">';
   list.forEach(w=>{
-    const st=w.status==='completed'?'<span class="badge badge-green">完成</span>':(w.status==='failed'?'<span class="badge badge-red">失败</span>':(w.status==='running'?'<span class="badge badge-yellow">进行中</span>':'<span class="badge badge-gray">等待</span>'));
-    h+=`<tr><td>${esc(w.device_ip)}</td><td>${st}</td><td>${esc(w.current_step)}</td><td>${esc(w.container_name||'-')}</td><td style="font-size:11px;color:#8899aa">${esc(w.created||'-')}</td><td><button class="btn btn-sm btn-outline" onclick="viewDelivery('${w.id}')">详情</button> <button class="btn btn-sm btn-danger" onclick="deleteDelivery('${w.id}')">删除</button></td></tr>`;
+    const steps=w.steps||[];
+    const statusColor=w.status==='completed'?'#3ad07f':(w.status==='failed'?'#ff6b6b':(w.status==='running'?'#f0ad4e':'#5a6a7a'));
+    const statusText=w.status==='completed'?'完成':(w.status==='failed'?'失败':(w.status==='running'?'进行中':'等待'));
+    h+='<div style="background:#0d1520;border:1px solid #2a3a4a;border-radius:8px;padding:12px">';
+    h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
+    h+='<div style="font-weight:700;color:#cfe3f5">'+esc(w.device_ip)+'</div>';
+    h+='<span style="color:'+statusColor+';font-size:12px;font-weight:700">'+statusText+'</span>';
+    h+='</div>';
+    h+='<div style="font-size:11px;color:#5a6a7a;margin-bottom:8px">'+esc(w.created||'')+'</div>';
+    // steps mini display
+    h+='<div style="margin-bottom:8px">';
+    steps.forEach(s=>{
+      const icon=s.status==='success'?'✅':(s.status==='failed'?'❌':(s.status==='running'?'⏳':'⬜'));
+      h+='<span style="margin-right:6px;font-size:12px" title="'+esc(s.label)+': '+esc(s.status)+'">'+icon+'</span>';
+    });
+    h+='</div>';
+    // container info
+    if(w.container_name){
+      h+='<div style="font-size:12px;color:#9fb3c8;margin-bottom:4px">容器: '+esc(w.container_name)+'</div>';
+    }
+    h+='<div style="margin-top:8px"><button class="btn btn-sm btn-outline" onclick="viewDelivery(\''+w.id+'\')">详情</button> <button class="btn btn-sm btn-danger" onclick="deleteDelivery(\''+w.id+'\')">删除</button></div>';
+    h+='</div>';
   });
-  h+='</tbody></table>';el.innerHTML=h;
+  h+='</div>';
+  el.innerHTML=h;
 }
-function closeDeliveryModal(btn){const m=btn.closest('.modal-overlay');if(m)m.remove()}
 function viewDelivery(wid){
   api('/api/delivery/status/'+wid).then(d=>{
     const wf=d.data||{};
     const steps=wf.steps||[];
-    let h='<div style="padding:12px"><h3>交付流程详情</h3>';
-    h+='<div style="margin:8px 0">设备: '+esc(wf.device_ip)+' | 状态: '+esc(wf.status)+'</div>';
-    h+='<div style="margin:8px 0">步骤:</div>';
+    let h='<div style="padding:12px">';
+    h+='<div style="margin:8px 0;font-size:14px">设备: <b>'+esc(wf.device_ip)+'</b> | 状态: '+esc(wf.status)+'</div>';
     steps.forEach(s=>{
       const icon=s.status==='success'?'✅':(s.status==='failed'?'❌':(s.status==='running'?'⏳':'⬜'));
-      h+=`<div style="padding:4px 8px;margin:2px 0;border-left:3px solid ${s.status==='success'?'#3ad07f':(s.status==='failed'?'#ff6b6b':'#5a6a7a')};background:#0f1923">${icon} ${esc(s.label)} - ${esc(s.status)} ${s.message?'('+esc(s.message)+')':''}</div>`;
+      const borderColor=s.status==='success'?'#3ad07f':(s.status==='failed'?'#ff6b6b':(s.status==='running'?'#f0ad4e':'#5a6a7a'));
+      h+='<div style="padding:8px 12px;margin:6px 0;border-left:3px solid '+borderColor+';background:#0f1923;border-radius:4px">';
+      h+='<div>'+icon+' <b>'+esc(s.label)+'</b> - '+esc(s.status)+'</div>';
+      if(s.message)h+='<div style="font-size:12px;color:#9fb3c8;margin-top:2px">'+esc(s.message)+'</div>';
+      const r=s.result;
+      if(r){
+        h+='<div style="font-size:12px;color:#5a6a7a;margin-top:4px">';
+        Object.keys(r).forEach(k=>{
+          h+='<div>'+esc(k)+': <span style="color:#cfe3f5">'+esc(String(r[k]))+'</span></div>';
+        });
+        h+='</div>';
+      }
+      h+='</div>';
     });
     h+='</div>';
     const modal=document.createElement('div');

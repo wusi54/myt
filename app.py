@@ -2274,8 +2274,8 @@ WORKFLOW_STEPS = [
 ]
 
 
-def _update_workflow_step(wid, step_name, status, message=''):
-    """更新工作流的某个步骤状态"""
+def _update_workflow_step(wid, step_name, status, message='', result=None):
+    """更新工作流的某个步骤状态（result 存返回信息：容器 id/name/adb、代理节点等）"""
     wf = db.get_delivery_workflow(wid)
     if not wf:
         return
@@ -2284,6 +2284,8 @@ def _update_workflow_step(wid, step_name, status, message=''):
         if s['name'] == step_name:
             s['status'] = status
             s['message'] = message
+            if result is not None:
+                s['result'] = result
             if status == 'running':
                 s['started_at'] = db.now()
             if status in ('success', 'failed'):
@@ -2341,7 +2343,12 @@ def _run_delivery_workflow(wid):
         container_id = new_c['id']
         container_name = new_c['name']
         db.update_delivery_workflow(wid, container_id=container_id, container_name=container_name)
-        _update_workflow_step(wid, 'create_container', 'success', f'容器 {container_name} 创建成功')
+        _update_workflow_step(wid, 'create_container', 'success', f'容器 {container_name} 创建成功', {
+            'container_id': container_id,
+            'container_name': container_name,
+            'adb_addr': new_c.get('adb_addr', ''),
+            'index': new_c.get('index_num', next_idx),
+        })
         db.add_operation_log({'op_type': 'delivery', 'target': container_name,
                               'detail': f'交付流程: 创建容器成功 (index={next_idx})', 'status': 'success'})
     except Exception as e:
@@ -2361,7 +2368,7 @@ def _run_delivery_workflow(wid):
         if res.get('code') != 200:
             raise Exception(res.get('msg') or res.get('message') or '开机失败')
         _sync_one_device(dev)
-        _update_workflow_step(wid, 'start_container', 'success', '容器已开机')
+        _update_workflow_step(wid, 'start_container', 'success', '容器已开机', {'state': 'running'})
         db.add_operation_log({'op_type': 'delivery', 'target': container_name,
                               'detail': '交付流程: 开机成功', 'status': 'success'})
     except Exception as e:
@@ -2385,7 +2392,13 @@ def _run_delivery_workflow(wid):
             r_data = r.get_json() if hasattr(r, 'get_json') else {}
             if r_data.get('code') != 200:
                 raise Exception(r_data.get('msg') or r_data.get('message') or '导入失败')
-            _update_workflow_step(wid, 'apply_fp', 'success', '真机参数已导入')
+            fp = db.get_real_param(fp_id)
+            _update_workflow_step(wid, 'apply_fp', 'success', '真机参数已导入', {
+                'fp_id': fp_id,
+                'fp_name': (fp or {}).get('name', ''),
+                'brand': (fp or {}).get('brand', ''),
+                'model': (fp or {}).get('model', ''),
+            })
             db.add_operation_log({'op_type': 'delivery', 'target': container_name,
                                   'detail': '交付流程: 真机参数导入成功', 'status': 'success'})
         except Exception as e:
@@ -2414,7 +2427,12 @@ def _run_delivery_workflow(wid):
                 status, msg = cli.install_apk(dev['ip'], c['name'], apk_path, a['filename'])
                 db.add_operation_log({'op_type': 'delivery', 'target': container_name,
                                       'detail': f'交付流程: 安装应用 {a["name"]} - {msg}', 'status': status})
-            _update_workflow_step(wid, 'install_apps', 'success', f'已安装 {len(app_ids)} 个应用')
+            installed = []
+            for aid in app_ids:
+                a = db.get_app(aid)
+                if a:
+                    installed.append({'app_id': aid, 'app_name': a.get('name', '')})
+            _update_workflow_step(wid, 'install_apps', 'success', f'已安装 {len(installed)} 个应用', {'apps': installed})
         except Exception as e:
             _update_workflow_step(wid, 'install_apps', 'failed', str(e))
             db.add_operation_log({'op_type': 'delivery', 'target': container_name,
@@ -2432,7 +2450,14 @@ def _run_delivery_workflow(wid):
             r_data = r.get_json() if hasattr(r, 'get_json') else {}
             if r_data.get('code') != 200:
                 raise Exception(r_data.get('msg') or r_data.get('message') or '配置失败')
-            _update_workflow_step(wid, 'apply_proxy', 'success', '代理已配置')
+            px = db.get_proxy(proxy_id)
+            _update_workflow_step(wid, 'apply_proxy', 'success', '代理已配置', {
+                'proxy_id': proxy_id,
+                'proxy_name': (px or {}).get('name', ''),
+                'proxy_addr': f"{(px or {}).get('ip', '')}:{(px or {}).get('port', '')}",
+                'region': (px or {}).get('region', ''),
+                'isp': (px or {}).get('isp', ''),
+            })
             db.add_operation_log({'op_type': 'delivery', 'target': container_name,
                                   'detail': '交付流程: 代理配置成功', 'status': 'success'})
         except Exception as e:
@@ -2461,7 +2486,7 @@ def _run_delivery_workflow(wid):
         if not ok:
             raise Exception('etcd 写入失败')
         db.update_delivery_workflow(wid, etcd_key=etcd_key)
-        _update_workflow_step(wid, 'deliver_etcd', 'success', f'已交付到 etcd: {etcd_key}')
+        _update_workflow_step(wid, 'deliver_etcd', 'success', f'已交付到 etcd: {etcd_key}', {'etcd_key': etcd_key})
         db.add_operation_log({'op_type': 'delivery', 'target': container_name,
                               'detail': f'交付流程: etcd 交付成功 ({etcd_key})', 'status': 'success'})
     except Exception as e:
