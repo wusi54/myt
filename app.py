@@ -2207,17 +2207,76 @@ if os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
 
 
 
-# ==================== etcd 客户端（v2 REST API）====================
+# ==================== etcd 客户端（v3 gRPC-gateway + 基本认证）====================
+# 环境区分：
+#   test: 113.105.100.58:2379 (root / zkts@2026test)
+#   live: 113.105.100.58:2579 (root / zkts@2026test)
 ETCD_URL = os.environ.get('ETCD_URL', 'http://etcd:2379')
+ETCD_USER = os.environ.get('ETCD_USER', 'root')
+ETCD_PASSWORD = os.environ.get('ETCD_PASSWORD', '')
+
+
+_etcd_token = {'token': '', 'expire': 0}
+
+
+def _etcd_auth_token():
+    """获取并缓存 etcd v3 认证 token（v3 gRPC-gateway 用 token 而非 basic auth）"""
+    import requests, time
+    global _etcd_token
+    if _etcd_token['token'] and time.time() < _etcd_token['expire']:
+        return _etcd_token['token']
+    try:
+        r = requests.post(f'{ETCD_URL}/v3/auth/authenticate',
+                          json={'name': ETCD_USER, 'password': ETCD_PASSWORD}, timeout=10)
+        if r.status_code == 200:
+            _etcd_token['token'] = r.json().get('token', '')
+            _etcd_token['expire'] = time.time() + 300  # 缓存 5 分钟
+            return _etcd_token['token']
+    except Exception as e:
+        print(f'[etcd] authenticate failed: {e}', flush=True)
+    return ''
+
+
+def _etcd_headers():
+    h = {'Content-Type': 'application/json'}
+    token = _etcd_auth_token()
+    if token:
+        h['Authorization'] = token
+    return h
+
+
+def _b64(s):
+    import base64
+    return base64.b64encode((s or '').encode()).decode()
+
+
+def _b64decode(b):
+    import base64
+    try:
+        return base64.b64decode(b or '').decode()
+    except Exception:
+        return ''
+
+
+def _range_end(prefix):
+    """计算 prefix 的 range_end（最后一个字节 +1，用于前缀查询/删除）"""
+    b = (prefix or '').encode()
+    for i in range(len(b) - 1, -1, -1):
+        if b[i] < 0xff:
+            return b[:i] + bytes([b[i] + 1]) + b[i + 1:]
+    return b'\x00'
 
 
 def etcd_get(key):
-    """从 etcd 读取 key，返回 value 或 None"""
+    """从 etcd 读取 key，返回 value 或 None（v3 range）"""
     import requests
     try:
-        r = requests.get(f'{ETCD_URL}/v2/keys/{key}', timeout=10)
+        r = requests.post(f'{ETCD_URL}/v3/kv/range', json={'key': _b64(key)},
+                          headers=_etcd_headers(), timeout=10)
         if r.status_code == 200:
-            return r.json().get('node', {}).get('value')
+            kvs = r.json().get('kvs', [])
+            if kvs:
+                return _b64decode(kvs[0].get('value'))
         return None
     except Exception as e:
         print(f'[etcd] get {key} failed: {e}', flush=True)
@@ -2225,37 +2284,59 @@ def etcd_get(key):
 
 
 def etcd_put(key, value):
-    """写入 etcd"""
+    """写入 etcd（v3 put）"""
     import requests
     try:
-        r = requests.put(f'{ETCD_URL}/v2/keys/{key}', data={'value': value}, timeout=10)
-        return r.status_code in (200, 201)
+        r = requests.post(f'{ETCD_URL}/v3/kv/put', json={'key': _b64(key), 'value': _b64(value)},
+                          headers=_etcd_headers(), timeout=10)
+        return r.status_code == 200
     except Exception as e:
         print(f'[etcd] put {key} failed: {e}', flush=True)
         return False
 
 
 def etcd_delete(key):
-    """删除 etcd key"""
+    """删除 etcd key（v3 deleterange）"""
     import requests
     try:
-        r = requests.delete(f'{ETCD_URL}/v2/keys/{key}', timeout=10)
-        return r.status_code in (200, 204)
+        r = requests.post(f'{ETCD_URL}/v3/kv/deleterange', json={'key': _b64(key)},
+                          headers=_etcd_headers(), timeout=10)
+        return r.status_code == 200
     except Exception as e:
         print(f'[etcd] delete {key} failed: {e}', flush=True)
         return False
 
 
-def etcd_list(prefix):
-    """列出 prefix 下的所有 key"""
+def etcd_delete_prefix(prefix):
+    """删除 prefix 下所有 key（v3 deleterange + range_end）"""
     import requests
     try:
-        r = requests.get(f'{ETCD_URL}/v2/keys/{prefix}?recursive=true', timeout=10)
+        re_bytes = _range_end(prefix)
+        re_b64 = __import__('base64').b64encode(re_bytes).decode()
+        r = requests.post(f'{ETCD_URL}/v3/kv/deleterange',
+                          json={'key': _b64(prefix), 'range_end': re_b64},
+                          headers=_etcd_headers(), timeout=10)
+        return r.status_code == 200
+    except Exception as e:
+        print(f'[etcd] delete_prefix {prefix} failed: {e}', flush=True)
+        return False
+
+
+def etcd_list(prefix):
+    """列出 prefix 下的所有 key（v3 range + range_end）"""
+    import requests
+    import base64
+    try:
+        re_bytes = _range_end(prefix)
+        re_b64 = base64.b64encode(re_bytes).decode()
+        r = requests.post(f'{ETCD_URL}/v3/kv/range',
+                          json={'key': _b64(prefix), 'range_end': re_b64},
+                          headers=_etcd_headers(), timeout=10)
         if r.status_code == 200:
-            nodes = r.json().get('node', {}).get('nodes', [])
+            kvs = r.json().get('kvs', [])
             result = []
-            for n in nodes:
-                result.append({'key': n.get('key', ''), 'value': n.get('value', '')})
+            for kv in kvs:
+                result.append({'key': _b64decode(kv.get('key')), 'value': _b64decode(kv.get('value'))})
             return result
         return []
     except Exception as e:
