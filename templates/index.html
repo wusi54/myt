@@ -1326,16 +1326,41 @@ async function loadApps(){const d=await api('/api/apps');apps=d.data||[];renderA
 function renderApps(){
   const el=document.getElementById('appList');
   if(!apps.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无应用，请上传APK</div>';return}
-  let h='<table><thead><tr><th>名称</th><th>文件名</th><th>大小</th><th>上传时间</th><th>操作</th></tr></thead><tbody>';
+  let h='<table><thead><tr><th>名称</th><th>文件名</th><th>大小</th><th>标签</th><th>上传时间</th><th>操作</th></tr></thead><tbody>';
   apps.forEach(a=>{
     const sz=a.filesize>1048576?(a.filesize/1048576).toFixed(1)+' MB':(a.filesize/1024).toFixed(1)+' KB';
+    const tags=(a.tags||[]).map(t=>`<span class="badge badge-green" style="margin-right:3px">${esc(t)}</span>`).join('')||'-';
     h+=`<tr><td>${esc(a.name)}</td><td style="font-size:11px;color:#8899aa">${esc(a.filename)}</td><td>${sz}</td>
+    <td>${tags}</td>
     <td style="font-size:11px;color:#8899aa">${esc(a.created||'-')}</td>
     <td><button class="btn btn-sm btn-primary" onclick="installApp('${a.id}')">安装到容器</button>
+    <button class="btn btn-sm btn-outline" onclick="editAppTags('${a.id}')">设置标签</button>
     <a class="btn btn-sm btn-outline" href="/api/apps/${a.id}/download">下载</a>
     <button class="btn btn-sm btn-danger" onclick="deleteApp('${a.id}')">删除</button></td></tr>`;
   });
   h+='</tbody></table>';el.innerHTML=h;
+}
+function editAppTags(aid){
+  const a=apps.find(x=>x.id===aid);
+  if(!a)return;
+  const cur=(a.tags||[]).join(',');
+  const ov=document.createElement('div');
+  ov.className='modal-overlay active';
+  ov.innerHTML='<div class="modal" style="max-width:420px"><h2>设置应用标签</h2>'
+    +'<div style="padding:8px 0;color:#9fb3c8;font-size:13px">'+esc(a.name)+'</div>'
+    +'<div class="form-row"><label>标签（逗号分隔）</label><input id="at_tags" placeholder="交付组,工具组" value="'+esc(cur)+'"></div>'
+    +'<p class="hint" style="margin-top:4px">示例：交付组、工具组。交付工作流可按标签批量安装应用。</p>'
+    +'<div class="modal-actions"><button class="btn btn-outline" onclick="closeDeliveryModal(this)">取消</button><button class="btn btn-primary" onclick="saveAppTags(\''+aid+'\',this)">保存</button></div></div>';
+  document.body.appendChild(ov);
+}
+async function saveAppTags(aid,btn){
+  const val=document.getElementById('at_tags').value.trim();
+  const tags=val?val.split(',').map(s=>s.trim()).filter(Boolean):[];
+  await withBusy(btn,'保存中…',async()=>{
+    const d=await api('/api/apps/'+aid+'/tags','POST',{tags});
+    toast(d.msg||'已保存',d.code===200?'success':'error');
+    if(d.code===200){btn.closest('.modal-overlay').remove();loadApps()}
+  });
 }
 async function uploadApp(){
   const fileInput=document.getElementById('ua_file');
@@ -2242,11 +2267,22 @@ function showDeliveryModal(){
   const fps=realParams.filter(f=>!f.in_use);
   const proxiesList=proxies.filter(p=>p.status!=='fault'&&!p.in_use);
   const appsList=apps;
-  let h='<div class="modal-overlay active" id="deliveryModal"><div class="modal" style="max-width:600px"><h2>新建设备交付</h2>';
+  // 收集所有标签
+  const allTags=[...new Set(appsList.flatMap(a=>a.tags||[]))];
+  let h='<div class="modal-overlay active" id="deliveryModal"><div class="modal" style="max-width:620px"><h2>新建设备交付</h2>';
   h+='<div class="form-row"><label>设备 *</label><select id="dlv_device">'+devs.map(d=>`<option value="${d.id}" data-ip="${esc(d.ip)}">${esc(d.name||d.ip)}</option>`).join('')+'</select></div>';
-  h+='<div class="form-row"><label>真机参数</label><select id="dlv_fp"><option value="">-- 不应用 --</option>'+fps.map(f=>`<option value="${f.id}">${esc(f.name)}</option>`).join('')+'</select></div>';
-  h+='<div class="form-row"><label>代理</label><select id="dlv_proxy"><option value="">-- 不应用 --</option>'+proxiesList.map(p=>`<option value="${p.id}">${esc(p.name)} (${esc(p.ip)}:${esc(p.port)})</option>`).join('')+'</select></div>';
-  h+='<div class="form-row"><label>安装应用</label><select id="dlv_apps" multiple style="height:80px">'+appsList.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')+'</select></div>';
+  // 真机参数 + 自动随机
+  h+='<div class="form-row"><label>真机参数</label><div style="flex:1;display:flex;gap:8px;align-items:center">'
+    +'<select id="dlv_fp" style="flex:1"><option value="">-- 不应用 --</option>'+fps.map(f=>`<option value="${f.id}">${esc(f.name)}</option>`).join('')+'</select>'
+    +'<label style="white-space:nowrap;font-size:12px"><input type="checkbox" id="dlv_fp_auto"> 自动随机</label></div></div>';
+  // 代理 + 自动随机
+  h+='<div class="form-row"><label>代理</label><div style="flex:1;display:flex;gap:8px;align-items:center">'
+    +'<select id="dlv_proxy" style="flex:1"><option value="">-- 不应用 --</option>'+proxiesList.map(p=>`<option value="${p.id}">${esc(p.name)} (${esc(p.ip)}:${esc(p.port)})</option>`).join('')+'</select>'
+    +'<label style="white-space:nowrap;font-size:12px"><input type="checkbox" id="dlv_proxy_auto"> 自动随机</label></div></div>';
+  // 应用安装：标签选择 + 手动多选
+  h+='<div class="form-row"><label>应用标签</label><div style="flex:1;display:flex;gap:8px;align-items:center">'
+    +'<select id="dlv_app_tags" style="flex:1"><option value="">-- 不按标签 --</option>'+allTags.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')+'</select></div></div>';
+  h+='<div class="form-row"><label>安装应用</label><select id="dlv_apps" multiple style="height:70px">'+appsList.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')+'</select></div>';
   h+='<div class="modal-actions"><button class="btn btn-outline" onclick="closeDeliveryModal(this)">取消</button><button class="btn btn-primary" onclick="runDelivery()">开始交付</button></div></div></div>';
   document.body.insertAdjacentHTML('beforeend', h);
 }
@@ -2256,13 +2292,17 @@ async function runDelivery(){
   const dev_ip=devSel.options[devSel.selectedIndex].dataset.ip;
   const fp_id=document.getElementById('dlv_fp').value;
   const proxy_id=document.getElementById('dlv_proxy').value;
+  const fp_auto=document.getElementById('dlv_fp_auto').checked;
+  const proxy_auto=document.getElementById('dlv_proxy_auto').checked;
+  const appTag=document.getElementById('dlv_app_tags').value;
   const appSel=document.getElementById('dlv_apps');
   const app_ids=Array.from(appSel.selectedOptions).map(o=>o.value);
-  const body={device_ip:dev_ip,device_id:dev_id,fp_id:fp_id,proxy_id:proxy_id,app_ids:app_ids};
+  const body={device_ip:dev_ip,device_id:dev_id,fp_id:fp_id,proxy_id:proxy_id,app_ids:app_ids,
+    fp_auto:fp_auto,proxy_auto:proxy_auto,app_tags:appTag?[appTag]:[]};
   const d=await api('/api/delivery/run','POST',body);
   if(d.code===200){toast('交付流程已启动','success');document.getElementById('deliveryModal').remove();loadDeliveries()}
   else{toast(d.msg||'启动失败','error')}
 }
-</script>
+</script></script>
 </body>
 </html>

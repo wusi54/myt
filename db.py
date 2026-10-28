@@ -44,9 +44,11 @@ def add_delivery_workflow(rec):
         rec['steps'] = json.dumps(rec['steps'], ensure_ascii=False)
     if 'apps_to_install' in rec and not isinstance(rec['apps_to_install'], str):
         rec['apps_to_install'] = json.dumps(rec['apps_to_install'], ensure_ascii=False)
+    if 'app_tags' in rec and not isinstance(rec['app_tags'], str):
+        rec['app_tags'] = json.dumps(rec['app_tags'], ensure_ascii=False)
     cols = ['id', 'device_ip', 'device_id', 'container_id', 'container_name', 'status',
-            'current_step', 'steps', 'etcd_key', 'apps_to_install', 'fp_id', 'proxy_id',
-            'created', 'updated']
+            'current_step', 'steps', 'etcd_key', 'apps_to_install', 'app_tags', 'fp_id', 'proxy_id',
+            'fp_auto', 'proxy_auto', 'created', 'updated']
     execute(f"INSERT INTO delivery_workflows ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
             tuple(rec.get(k, '') for k in cols))
     return rec
@@ -64,6 +66,10 @@ def get_delivery_workflow(wid):
             r['apps_to_install'] = json.loads(r.get('apps_to_install') or '[]')
         except Exception:
             r['apps_to_install'] = []
+        try:
+            r['app_tags'] = json.loads(r.get('app_tags') or '[]')
+        except Exception:
+            r['app_tags'] = []
     return r
 
 
@@ -92,6 +98,8 @@ def update_delivery_workflow(wid, **fields):
         fields['steps'] = json.dumps(fields['steps'], ensure_ascii=False)
     if 'apps_to_install' in fields and not isinstance(fields['apps_to_install'], str):
         fields['apps_to_install'] = json.dumps(fields['apps_to_install'], ensure_ascii=False)
+    if 'app_tags' in fields and not isinstance(fields['app_tags'], str):
+        fields['app_tags'] = json.dumps(fields['app_tags'], ensure_ascii=False)
     cols = ', '.join(f'{k}=?' for k in fields)
     execute(f'UPDATE delivery_workflows SET {cols} WHERE id=?', (*fields.values(), wid))
 
@@ -207,6 +215,7 @@ SCHEMA = [
         filename TEXT NOT NULL,
         filesize INTEGER DEFAULT 0,
         pkg TEXT DEFAULT '',
+        tags TEXT DEFAULT '[]',
         created TEXT DEFAULT ''
     )''',
     '''CREATE TABLE IF NOT EXISTS install_logs (
@@ -249,8 +258,11 @@ SCHEMA = [
         steps TEXT DEFAULT '[]',
         etcd_key TEXT DEFAULT '',
         apps_to_install TEXT DEFAULT '[]',
+        app_tags TEXT DEFAULT '[]',
         fp_id TEXT DEFAULT '',
         proxy_id TEXT DEFAULT '',
+        fp_auto INTEGER DEFAULT 0,
+        proxy_auto INTEGER DEFAULT 0,
         created TEXT DEFAULT '',
         updated TEXT DEFAULT ''
     )''',
@@ -273,8 +285,21 @@ def _ensure_columns(conn):
         conn.execute("ALTER TABLE containers ADD COLUMN agent_status TEXT DEFAULT 'unknown'")
     if 'agent_stream_name' not in cols('containers'):
         conn.execute("ALTER TABLE containers ADD COLUMN agent_stream_name TEXT DEFAULT ''")
+    if 'tags' not in cols('app_library'):
+        conn.execute("ALTER TABLE app_library ADD COLUMN tags TEXT DEFAULT '[]'")
     if 'agent_last_seen' not in cols('containers'):
         conn.execute("ALTER TABLE containers ADD COLUMN agent_last_seen TEXT DEFAULT ''")
+    # delivery_workflows 后加列（app_tags / fp_auto / proxy_auto）
+    try:
+        dw_cols = {r[1] for r in conn.execute('PRAGMA table_info(delivery_workflows)').fetchall()}
+    except Exception:
+        dw_cols = set()
+    if 'app_tags' not in dw_cols:
+        conn.execute("ALTER TABLE delivery_workflows ADD COLUMN app_tags TEXT DEFAULT '[]'")
+    if 'fp_auto' not in dw_cols:
+        conn.execute("ALTER TABLE delivery_workflows ADD COLUMN fp_auto INTEGER DEFAULT 0")
+    if 'proxy_auto' not in dw_cols:
+        conn.execute("ALTER TABLE delivery_workflows ADD COLUMN proxy_auto INTEGER DEFAULT 0")
 
 
 def init_db():
@@ -523,19 +548,41 @@ def get_container_configs(device_ip=None, container_name=None):
 
 # ==================== app_library ====================
 def list_apps():
-    return rows('SELECT * FROM app_library ORDER BY created DESC')
+    apps = rows('SELECT * FROM app_library ORDER BY created DESC')
+    for a in apps:
+        try:
+            a['tags'] = json.loads(a.get('tags') or '[]')
+        except Exception:
+            a['tags'] = []
+    return apps
 
 
 def get_app(aid):
-    return row('SELECT * FROM app_library WHERE id=?', (aid,))
+    a = row('SELECT * FROM app_library WHERE id=?', (aid,))
+    if a:
+        try:
+            a['tags'] = json.loads(a.get('tags') or '[]')
+        except Exception:
+            a['tags'] = []
+    return a
 
 
 def add_app(a):
     a.setdefault('id', gen_id())
     a.setdefault('created', now())
-    execute('INSERT OR REPLACE INTO app_library (id,name,filename,filesize,pkg,created) VALUES (?,?,?,?,?,?)',
-            (a['id'], a['name'], a['filename'], a.get('filesize', 0), a.get('pkg', ''), a['created']))
+    tags = a.get('tags', [])
+    if not isinstance(tags, str):
+        tags = json.dumps(tags, ensure_ascii=False)
+    execute('INSERT OR REPLACE INTO app_library (id,name,filename,filesize,pkg,tags,created) VALUES (?,?,?,?,?,?,?)',
+            (a['id'], a['name'], a['filename'], a.get('filesize', 0), a.get('pkg', ''), tags, a['created']))
     return a
+
+
+def update_app_tags(aid, tags):
+    # tags: list[str]
+    if not isinstance(tags, str):
+        tags = json.dumps(tags, ensure_ascii=False)
+    execute('UPDATE app_library SET tags=? WHERE id=?', (tags, aid))
 
 
 def delete_app(aid):

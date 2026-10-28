@@ -1629,6 +1629,18 @@ def api_app_delete(aid):
     return ok(None, '已删除')
 
 
+@app.route('/api/apps/<aid>/tags', methods=['POST'])
+def api_app_update_tags(aid):
+    a = db.get_app(aid)
+    if not a:
+        return err('应用不存在', 404)
+    tags = (request.json or {}).get('tags', [])
+    if not isinstance(tags, list):
+        return err('tags 必须是数组')
+    db.update_app_tags(aid, tags)
+    return ok({'tags': tags}, '标签已更新')
+
+
 @app.route('/api/apps/<aid>/download', methods=['GET'])
 def api_app_download(aid):
     a = db.get_app(aid)
@@ -2386,8 +2398,30 @@ def _run_delivery_workflow(wid):
     fp_id = wf.get('fp_id', '')
     proxy_id = wf.get('proxy_id', '')
     app_ids = wf.get('apps_to_install', [])
+    app_tags = wf.get('app_tags', [])
+    fp_auto = wf.get('fp_auto', 0)
+    proxy_auto = wf.get('proxy_auto', 0)
     container_id = None
     container_name = None
+
+    # 自动随机配置：指纹/代理从未占用中随机选取；应用按标签筛选
+    import random as _random
+    if fp_auto and not fp_id:
+        idle_fps = [f for f in db.list_real_params() if not f.get('in_use')]
+        if idle_fps:
+            fp_id = _random.choice(idle_fps)['id']
+            db.update_delivery_workflow(wid, fp_id=fp_id)
+    if proxy_auto and not proxy_id:
+        idle_proxies = [p for p in db.list_proxies() if not p.get('in_use') and p.get('status') != 'fault']
+        if idle_proxies:
+            proxy_id = _random.choice(idle_proxies)['id']
+            db.update_delivery_workflow(wid, proxy_id=proxy_id)
+    if app_tags and not app_ids:
+        for a in db.list_apps():
+            atags = a.get('tags', [])
+            if any(t in atags for t in app_tags):
+                app_ids.append(a['id'])
+        db.update_delivery_workflow(wid, apps_to_install=app_ids)
 
     # Step 1: 创建容器
     _update_workflow_step(wid, 'create_container', 'running')
@@ -2603,6 +2637,9 @@ def api_delivery_run():
         'fp_id': d.get('fp_id', ''),
         'proxy_id': d.get('proxy_id', ''),
         'apps_to_install': d.get('app_ids', []),
+        'app_tags': d.get('app_tags', []),
+        'fp_auto': 1 if d.get('fp_auto') else 0,
+        'proxy_auto': 1 if d.get('proxy_auto') else 0,
         'status': 'pending',
         'steps': [{'name': n, 'label': l, 'status': 'pending', 'message': '', 'started_at': '', 'finished_at': ''}
                   for n, l in WORKFLOW_STEPS],
@@ -2676,6 +2713,9 @@ def api_delivery_batch():
             'fp_id': dev_config.get('fp_id', ''),
             'proxy_id': dev_config.get('proxy_id', ''),
             'apps_to_install': dev_config.get('app_ids', []),
+            'app_tags': dev_config.get('app_tags', []),
+            'fp_auto': 1 if dev_config.get('fp_auto') else 0,
+            'proxy_auto': 1 if dev_config.get('proxy_auto') else 0,
             'status': 'pending',
             'steps': [{'name': n, 'label': l, 'status': 'pending', 'message': '', 'started_at': '', 'finished_at': ''}
                       for n, l in WORKFLOW_STEPS],
