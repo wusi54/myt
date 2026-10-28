@@ -2155,6 +2155,7 @@ async function loadDeliveries(){
   });
   h+='</tbody></table>';el.innerHTML=h;
 }
+function closeDeliveryModal(btn){const m=btn.closest('.modal-overlay');if(m)m.remove()}
 function viewDelivery(wid){
   api('/api/delivery/status/'+wid).then(d=>{
     const wf=d.data||{};
