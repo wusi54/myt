@@ -2673,10 +2673,28 @@ def api_ext_devices_rebuild():
     if not dev:
         return err('未找到对应本地设备（device_ip=%s）' % device_ip, 404)
 
-    # 3) 删除阶段：清理旧 etcd 记录 + 本地容器记录（释放占用）；不做远程删除（机器已换）
+    # 3) 删除阶段：远程真实删除设备上的旧容器 + 清理旧 etcd 记录 + 本地容器记录（释放占用）
+    cli = client_for(dev)
     deleted_key = None
     if del_key and etcd_delete(del_key):
         deleted_key = del_key
+    # 3.1) 真实调用设备删除接口，移除设备上的旧容器
+    #      （换机场景旧机可能已不可达，远程删除失败仅告警、不阻断后续重建）
+    if container_name:
+        try:
+            rrem = cli.remove(dev['ip'], container_name)
+            if rrem.get('code') == 200:
+                db.add_operation_log({'op_type': 'delivery', 'target': container_name,
+                                      'detail': '外部API换机重建: 已远程删除旧容器', 'status': 'success'})
+            else:
+                db.add_operation_log({'op_type': 'delivery', 'target': container_name,
+                                      'detail': '外部API换机重建: 远程删除旧容器未成功(可能旧机已换): '
+                                                + str(rrem.get('msg') or rrem.get('message') or ''),
+                                      'status': 'warn'})
+        except Exception as e:
+            db.add_operation_log({'op_type': 'delivery', 'target': container_name,
+                                  'detail': '外部API换机重建: 远程删除旧容器异常: ' + str(e), 'status': 'warn'})
+    # 3.2) 清理本地容器记录（释放 fp/proxy 占用）
     if container_id:
         c = db.get_container(container_id)
         if c:
@@ -2745,6 +2763,7 @@ def api_ext_devices_rebuild():
     wf = db.add_delivery_workflow({
         'device_ip': device_ip,
         'device_id': dev['id'],
+        'container_name': new_cname,   # 重建时预置原容器名，创建步骤沿用，保证命名连续
         'fp_id': fp_id,
         'proxy_id': proxy_id,
         'apps_to_install': app_ids,
@@ -2758,7 +2777,7 @@ def api_ext_devices_rebuild():
     db.update_delivery_workflow(wf['id'], etcd_key=del_key or '', env=env)
     threading.Thread(target=_run_delivery_workflow, args=(wf['id'],), daemon=True).start()
     db.add_operation_log({'op_type': 'delivery', 'target': new_cname or device_ip,
-                          'detail': '外部API换机重建(删旧etcd+本地记录, 重跑交付)', 'status': 'success'})
+                          'detail': '外部API换机重建(远程删旧容器+删旧etcd+本地记录, 重跑交付)', 'status': 'success'})
     return ok({'workflow_id': wf['id'], 'device_ip': device_ip, 'container_name': new_cname,
                'deleted_key': deleted_key}, '换机重建已启动')
 
@@ -2770,6 +2789,18 @@ def api_ext_delivery_status(wid):
     if not wf:
         return err('工作流不存在', 404)
     return ok(wf)
+
+
+@app.route('/api/ext/delivery/retry/<wid>', methods=['POST'])
+def api_ext_delivery_retry(wid):
+    """外部接口：重试失败的交付工作流（续跑，已成功的步骤幂等复用）。"""
+    wf = db.get_delivery_workflow(wid)
+    if not wf:
+        return err('工作流不存在', 404)
+    if wf.get('status') == 'running':
+        return err('工作流正在进行中，请稍候', 409)
+    threading.Thread(target=_run_delivery_workflow, args=(wid,), daemon=True).start()
+    return ok({'workflow_id': wid}, '重试已启动')
 
 
 # ==================== 设备交付工作流 ====================
@@ -2878,10 +2909,17 @@ def _allocate_phone_number():
 
 
 def _run_delivery_workflow(wid):
-    """执行设备交付工作流"""
+    """执行设备交付工作流（重试=重跑即可：创建/分配手机号已幂等复用，其余步骤幂等）"""
     wf = db.get_delivery_workflow(wid)
     if not wf:
         return
+    # 重跑前把所有步骤重置为 pending（保留标签），让前端重新显示进度；
+    # 已成功的步骤会在执行时被幂等复用（容器/手机号），无需手动跳过。
+    _steps = wf.get('steps') or []
+    if _steps:
+        _steps = [{'name': s.get('name'), 'label': s.get('label'), 'status': 'pending',
+                   'message': '', 'started_at': '', 'finished_at': ''} for s in _steps]
+        db.update_delivery_workflow(wid, steps=_steps)
     db.update_delivery_workflow(wid, status='running', current_step='create_container')
     device_ip = wf['device_ip']
     device_id = wf['device_id']
@@ -2915,83 +2953,104 @@ def _run_delivery_workflow(wid):
 
     # Step 1: 创建容器
     _update_workflow_step(wid, 'create_container', 'running')
-    try:
-        dev = db.get_device(device_id)
-        if not dev:
-            raise Exception('设备不存在')
-        # 计算 next index
-        containers = db.list_containers()
-        dev_containers = [c for c in containers if c.get('device_id') == device_id]
-        idxs = [c.get('index_num', 0) for c in dev_containers]
-        used = set(idxs)
-        next_idx = 1
-        while next_idx in used and next_idx <= 12:
-            next_idx += 1
-        if next_idx > 12:
-            next_idx = 1
-        cli = client_for(dev)
-        body_opts = {}
-        # 生成唯一容器名：设备码_坑位_时间戳后缀，避免删除重建时同名冲突
-        import time as _t
-        _dev_code = ''
-        try:
-            _si = cli.systeminfo(dev['ip'])
-            if _si.get('code') == 200:
-                _dev_code = (_si.get('data') or {}).get('devCode') or ''
-        except Exception:
-            pass
-        if not _dev_code:
-            _dev_code = dev['ip'].replace('.', '')
-        _suffix = str(int(_t.time() * 1000))[-8:]
-        _cname = f"{_dev_code}_{next_idx}_{_suffix}"
-        def _do_create():
-            r = cli.create(dev['ip'], next_idx, _cname, **body_opts)
-            if r.get('code') != 200:
-                raise Exception(r.get('msg') or r.get('message') or '创建失败')
-            return r
-        _ok, _res = _retry(_do_create, attempts=3, delay=4, desc='创建容器')
-        if not _ok:
-            raise _res
-        # sync
-        _sync_one_device(dev)
-        # find created container
-        containers = db.list_containers()
-        new_c = None
-        for c in containers:
-            if c.get('device_id') == device_id and c.get('index_num') == next_idx:
-                new_c = c
-                break
-        if not new_c:
-            raise Exception('创建成功但未找到容器记录')
-        container_id = new_c['id']
-        container_name = new_c['name']
+    # 续跑幂等：上一轮已成功创建容器（本地有记录）则直接复用，不再新建，避免重复创建/同名冲突
+    _existing_c = db.get_container(wf.get('container_id')) if wf.get('container_id') else None
+    if _existing_c:
+        container_id = _existing_c['id']
+        container_name = _existing_c['name']
         db.update_delivery_workflow(wid, container_id=container_id, container_name=container_name)
-        _update_workflow_step(wid, 'create_container', 'success', f'容器 {container_name} 创建成功', {
-            'container_id': container_id,
-            'container_name': container_name,
-            'adb_addr': new_c.get('adb_addr', ''),
-            'index': new_c.get('index_num', next_idx),
-        })
+        _update_workflow_step(wid, 'create_container', 'success', f'复用已有容器 {container_name}（续跑）', {
+            'container_id': container_id, 'container_name': container_name})
         db.add_operation_log({'op_type': 'delivery', 'target': container_name,
-                              'detail': f'交付流程: 创建容器成功 (index={next_idx})', 'status': 'success'})
-    except Exception as e:
-        _update_workflow_step(wid, 'create_container', 'failed', str(e))
-        for _n, _l in [('start_container', '开机'), ('apply_fp', '导入真机参数'), ('install_apps', '安装应用'), ('apply_proxy', '配置代理'), ('deliver_etcd', '交付到etcd')]:
-            _update_workflow_step(wid, _n, 'skipped', '创建容器失败，跳过')
-        db.update_delivery_workflow(wid, status='failed', current_step='create_container')
-        db.add_operation_log({'op_type': 'delivery', 'target': device_ip,
-                              'detail': f'交付流程: 创建容器失败 - {e}', 'status': 'fail'})
-        return
+                              'detail': '交付流程: 复用已有容器（续跑，跳过创建）', 'status': 'success'})
+    else:
+        try:
+            dev = db.get_device(device_id)
+            if not dev:
+                raise Exception('设备不存在')
+            # 计算 next index
+            containers = db.list_containers()
+            dev_containers = [c for c in containers if c.get('device_id') == device_id]
+            idxs = [c.get('index_num', 0) for c in dev_containers]
+            used = set(idxs)
+            next_idx = 1
+            while next_idx in used and next_idx <= 12:
+                next_idx += 1
+            if next_idx > 12:
+                next_idx = 1
+            cli = client_for(dev)
+            body_opts = {}
+            # 容器名：重建时沿用原容器名（wf.container_name 已在重建接口预置为原容器名），保证命名连续；
+            # 否则生成唯一名：设备码_坑位_时间戳后缀，避免删除重建时同名冲突
+            import time as _t
+            _desired = (wf.get('container_name') or '').strip()
+            if _desired:
+                _cname = _desired
+            else:
+                _dev_code = ''
+                try:
+                    _si = cli.systeminfo(dev['ip'])
+                    if _si.get('code') == 200:
+                        _dev_code = (_si.get('data') or {}).get('devCode') or ''
+                except Exception:
+                    pass
+                if not _dev_code:
+                    _dev_code = dev['ip'].replace('.', '')
+                _suffix = str(int(_t.time() * 1000))[-8:]
+                _cname = f"{_dev_code}_{next_idx}_{_suffix}"
+            def _do_create():
+                r = cli.create(dev['ip'], next_idx, _cname, **body_opts)
+                if r.get('code') != 200:
+                    raise Exception(r.get('msg') or r.get('message') or '创建失败')
+                return r
+            _ok, _res = _retry(_do_create, attempts=3, delay=4, desc='创建容器')
+            if not _ok:
+                raise _res
+            # sync
+            _sync_one_device(dev)
+            # find created container
+            containers = db.list_containers()
+            new_c = None
+            for c in containers:
+                if c.get('device_id') == device_id and c.get('index_num') == next_idx:
+                    new_c = c
+                    break
+            if not new_c:
+                raise Exception('创建成功但未找到容器记录')
+            container_id = new_c['id']
+            container_name = new_c['name']
+            db.update_delivery_workflow(wid, container_id=container_id, container_name=container_name)
+            _update_workflow_step(wid, 'create_container', 'success', f'容器 {container_name} 创建成功', {
+                'container_id': container_id,
+                'container_name': container_name,
+                'adb_addr': new_c.get('adb_addr', ''),
+                'index': new_c.get('index_num', next_idx),
+            })
+            db.add_operation_log({'op_type': 'delivery', 'target': container_name,
+                                  'detail': f'交付流程: 创建容器成功 (index={next_idx})', 'status': 'success'})
+        except Exception as e:
+            _update_workflow_step(wid, 'create_container', 'failed', str(e))
+            for _n, _l in [('start_container', '开机'), ('apply_fp', '导入真机参数'), ('install_apps', '安装应用'), ('apply_proxy', '配置代理'), ('deliver_etcd', '交付到etcd')]:
+                _update_workflow_step(wid, _n, 'skipped', '创建容器失败，跳过')
+            db.update_delivery_workflow(wid, status='failed', current_step='create_container')
+            db.add_operation_log({'op_type': 'delivery', 'target': device_ip,
+                                  'detail': f'交付流程: 创建容器失败 - {e}', 'status': 'fail'})
+            return
 
-    # Step 2: 开机
+    # Step 2: 开机（带重试：刚创建完设备 myt 可能短暂未就绪，或瞬时网络抖动；连接级硬失败仍会失败）
     _update_workflow_step(wid, 'start_container', 'running')
     try:
         c = db.get_container(container_id)
         dev = db.get_device(c['device_id'])
         cli = client_for(dev)
-        res = cli.start(dev['ip'], c['name'])
-        if res.get('code') != 200:
-            raise Exception(res.get('msg') or res.get('message') or '开机失败')
+        def _do_start():
+            res = cli.start(dev['ip'], c['name'])
+            if res.get('code') != 200:
+                raise Exception(res.get('msg') or res.get('message') or '开机失败')
+            return res
+        ok, res = _retry(_do_start, attempts=3, delay=5, desc='开机')
+        if not ok:
+            raise res
         _sync_one_device(dev)
         _update_workflow_step(wid, 'start_container', 'running', '容器启动中，等待开机完成…')
         db.add_operation_log({'op_type': 'delivery', 'target': container_name,
@@ -3066,7 +3125,17 @@ def _run_delivery_workflow(wid):
                     failed.append({'app_id': aid, 'app_name': a.get('name', ''),
                                    'reason': f"APK 文件不存在: {a['filename']}"})
                     continue
-                status, msg = cli.install_apk(dev['ip'], c['name'], apk_path, a['filename'])
+                def _do_install():
+                    st, ms = cli.install_apk(dev['ip'], c['name'], apk_path, a['filename'])
+                    if st != 'success':
+                        raise Exception(ms)
+                    return st, ms
+                # 按应用重试：公网链路抖动（RemoteDisconnected 等）时多试几次，避免一次掉线就中断整条交付
+                ok_inst, res_inst = _retry(_do_install, attempts=3, delay=5, desc=f"安装 {a['name']}")
+                if ok_inst:
+                    status, msg = res_inst
+                else:
+                    status, msg = 'failed', str(res_inst)
                 db.add_operation_log({'op_type': 'delivery', 'target': container_name,
                                       'detail': f"交付流程: 安装应用 {a['name']} - {msg}",
                                       'status': status})
@@ -3129,18 +3198,23 @@ def _run_delivery_workflow(wid):
     else:
         _update_workflow_step(wid, 'apply_proxy', 'success', '未选择代理，跳过')
 
-    # Step 6: 分配手机号（etcd 全局去重）
+    # Step 6: 分配手机号（续跑复用已分配号码；etcd 全局去重）
     _update_workflow_step(wid, 'allocate_phone', 'running')
-    phone_number, phone_err = _allocate_phone_number()
-    if phone_err:
-        _update_workflow_step(wid, 'allocate_phone', 'failed', phone_err)
-        for _n, _l in [('deliver_etcd', '交付到etcd')]:
-            _update_workflow_step(wid, _n, 'skipped', '分配手机号失败，跳过')
-        db.update_delivery_workflow(wid, status='failed', current_step='allocate_phone')
-        db.add_operation_log({'op_type': 'delivery', 'target': container_name,
-                              'detail': f'交付流程: 分配手机号失败 - {phone_err}', 'status': 'fail'})
-        return
-    _update_workflow_step(wid, 'allocate_phone', 'success', f'已分配手机号 {phone_number}', {'phone_number': phone_number})
+    phone_number = wf.get('phone_number') or ''
+    if phone_number:
+        # 续跑：上一轮已分配，直接复用，避免重复占用
+        _update_workflow_step(wid, 'allocate_phone', 'success', f'复用已分配手机号 {phone_number}（续跑）', {'phone_number': phone_number})
+    else:
+        phone_number, phone_err = _allocate_phone_number()
+        if phone_err:
+            _update_workflow_step(wid, 'allocate_phone', 'failed', phone_err)
+            for _n, _l in [('deliver_etcd', '交付到etcd')]:
+                _update_workflow_step(wid, _n, 'skipped', '分配手机号失败，跳过')
+            db.update_delivery_workflow(wid, status='failed', current_step='allocate_phone')
+            db.add_operation_log({'op_type': 'delivery', 'target': container_name,
+                                  'detail': f'交付流程: 分配手机号失败 - {phone_err}', 'status': 'fail'})
+            return
+        _update_workflow_step(wid, 'allocate_phone', 'success', f'已分配手机号 {phone_number}', {'phone_number': phone_number})
     db.add_operation_log({'op_type': 'delivery', 'target': container_name,
                           'detail': f'交付流程: 分配手机号 {phone_number}', 'status': 'success'})
 
@@ -3279,6 +3353,18 @@ def api_delivery_status(wid):
     if not wf:
         return err('工作流不存在', 404)
     return ok(wf)
+
+
+@app.route('/api/delivery/retry/<wid>', methods=['POST'])
+def api_delivery_retry(wid):
+    """重试失败的交付工作流（续跑，已成功的步骤幂等复用）。"""
+    wf = db.get_delivery_workflow(wid)
+    if not wf:
+        return err('工作流不存在', 404)
+    if wf.get('status') == 'running':
+        return err('工作流正在进行中，请稍候', 409)
+    threading.Thread(target=_run_delivery_workflow, args=(wid,), daemon=True).start()
+    return ok({'workflow_id': wid}, '重试已启动')
 
 
 @app.route('/api/delivery/list', methods=['GET'])

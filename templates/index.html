@@ -154,6 +154,13 @@ tr:hover td{background:#1e2e3e}
 .wall-device-body{padding-left:16px}
 .pick-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid #1e2e3e;font-size:13px}
 .pick-item:hover{background:#1e2e3e}
+.dev-group{margin-bottom:14px;border:1px solid #2a3a4a;border-radius:6px;overflow:hidden}
+.dev-group-header{background:#16273a;padding:8px 12px;font-weight:600;color:#cfe6ff;border-bottom:1px solid #2a3a4a;font-size:13px;cursor:pointer;user-select:none}
+.dev-group.expanded .dev-group-header{border-bottom:none}
+.dev-toggle{display:inline-block;width:14px;color:#4fc3f7;text-align:center}
+.dev-group-body{padding:0}
+.dev-group table{width:100%;border-collapse:collapse}
+.dev-group th,.dev-group td{padding:6px 8px;border-bottom:1px solid #1e2e3e;font-size:12px;text-align:left}
 </style>
 </head>
 <body>
@@ -161,12 +168,13 @@ tr:hover td{background:#1e2e3e}
 <h1>云phone管理平台 <small id="navVersion">v2.4.0</small></h1>
 <div class="nav-tab active" onclick="switchPage('pageDevices',this)">设备管理</div>
 <div class="nav-tab" onclick="switchPage('pageContainers',this)">容器管理</div>
-<div class="nav-tab" onclick="switchPage('pageRealParams',this)">真机参数库</div>
+<div class="nav-tab" onclick="switchPage('pageRealParams',this)">设备指纹</div>
 <div class="nav-tab" onclick="switchPage('pageProxies',this)">代理池</div>
 <div class="nav-tab" onclick="switchPage('pageApps',this)">应用管理</div>
 <div class="nav-tab" onclick="switchPage('pageScreenWall',this)">群控窗</div>
 <div class="nav-tab" onclick="switchPage('pageDelivery',this)">设备交付</div>
 <div class="nav-tab" onclick="switchPage('pageLogs',this)">日志查看</div>
+<div class="nav-tab" onclick="switchPage('pageRegistrations',this)">注册管理</div>
 <div class="nav-tab" id="navUsers" style="display:none" onclick="switchPage('pageUsers',this)">用户管理</div>
 <button class="btn btn-sm btn-outline" style="margin:9px 0 0 14px" onclick="refreshCurrentPage()" title="刷新当前页">⟳ 刷新</button>
 <div class="nav-user">
@@ -185,7 +193,7 @@ tr:hover td{background:#1e2e3e}
 <div class="flex mb-8" style="gap:12px">
 <div class="stat-box"><div class="num" id="statDevices">0</div><div class="label">设备总数</div></div>
 <div class="stat-box"><div class="num" id="statContainers">0</div><div class="label">容器总数</div></div>
-<div class="stat-box"><div class="num" id="statReal">0</div><div class="label">真机参数</div></div>
+<div class="stat-box"><div class="num" id="statReal">0</div><div class="label">设备指纹</div></div>
 <div class="stat-box"><div class="num" id="statProxies">0</div><div class="label">代理总数</div></div>
 </div>
 <div class="card">
@@ -205,8 +213,14 @@ tr:hover td{background:#1e2e3e}
 <div class="card">
 <div class="card-header"><h3>容器实例一览</h3>
 <div class="flex">
-<input class="search-box" id="containerSearch" placeholder="搜索容器名称/设备IP/镜像" oninput="renderContainers()">
-<select id="containerDeviceFilter" onchange="renderContainers()" style="width:180px"></select>
+<input class="search-box" id="containerSearch" placeholder="搜索容器名称/设备IP/镜像" oninput="containerPage=0;containerExpanded.clear();renderContainers()">
+<select id="containerDeviceFilter" onchange="containerPage=0;containerExpanded.clear();renderContainers()" style="width:180px"></select>
+<select id="containerPageSize" onchange="containerPage=0;renderContainers()" style="width:110px" title="每页设备组数">
+  <option value="5">每页5设备</option>
+  <option value="10" selected>每页10设备</option>
+  <option value="20">每页20设备</option>
+  <option value="50">每页50设备</option>
+</select>
 <button class="btn btn-sm btn-outline" onclick="syncContainers()">同步容器</button>
 <button class="btn btn-sm btn-outline" onclick="probeScreen()">检测投屏</button>
 <button class="btn btn-sm btn-outline" id="autoSyncBtn" onclick="toggleAutoSync()">自动同步:关</button>
@@ -214,13 +228,14 @@ tr:hover td{background:#1e2e3e}
 <button class="btn btn-sm btn-primary" onclick="showCreateContainerModal()">+ 创建容器</button>
 </div></div>
 <div id="containerList"></div>
+<div id="containerPager"></div>
 </div>
 </div>
 
-<!-- ==================== 真机参数库 ==================== -->
+<!-- ==================== 设备指纹 ==================== -->
 <div id="pageRealParams" class="page">
 <div class="card">
-<div class="card-header"><h3>真机参数库</h3>
+<div class="card-header"><h3>设备指纹</h3>
 <div class="flex">
 <span class="hint">文件内容 MD5 唯一去重</span>
 <button class="btn btn-sm btn-outline" onclick="showRealParamModal()">手动新增</button>
@@ -228,8 +243,16 @@ tr:hover td{background:#1e2e3e}
 <button class="btn btn-sm btn-outline" onclick="reparseParams(this)" title="对机型/型号为空的历史参数重新识别">重新识别机型</button>
 <button class="btn btn-sm btn-warning" onclick="batchApplyParams(this)">批量应用</button>
 <button class="btn btn-sm btn-danger" onclick="batchDeleteParams()">批量删除</button>
+<input class="search-box" id="realParamSearch" placeholder="搜索机型/型号/UUID/名称/实例" oninput="rpPage=0;renderRealParams()">
+<select id="rpPageSize" onchange="rpPage=0;renderRealParams()" style="width:110px" title="每页条数">
+  <option value="20">每页20</option>
+  <option value="50" selected>每页50</option>
+  <option value="100">每页100</option>
+  <option value="200">每页200</option>
+</select>
 </div></div>
 <div id="realParamList"></div>
+<div id="realParamPager"></div>
 </div>
 </div>
 
@@ -251,6 +274,12 @@ tr:hover td{background:#1e2e3e}
 </select>
 <input id="proxySearch" type="text" class="input" placeholder="搜索 名称/IP/实例" oninput="proxyPage=0;renderProxies()" onkeydown="if(event.key==='Enter'){proxyPage=0;renderProxies()}" style="width:150px" />
 <button class="btn btn-sm btn-outline" onclick="clearProxySearch()" title="清除搜索">✕ 清除</button>
+<select id="proxyPageSize" onchange="proxyPage=0;renderProxies()" style="width:110px" title="每页条数">
+  <option value="20" selected>每页20</option>
+  <option value="50">每页50</option>
+  <option value="100">每页100</option>
+  <option value="200">每页200</option>
+</select>
 <button class="btn btn-sm btn-outline" onclick="probeAllProxies()">全部探测</button>
 <button class="btn btn-sm btn-outline" onclick="showModal('importProxyModal')">批量导入</button>
 <button class="btn btn-sm btn-outline" onclick="showProxyModal()">+ 新增代理</button>
@@ -265,8 +294,15 @@ tr:hover td{background:#1e2e3e}
 <!-- ==================== 应用管理 ==================== -->
 <div id="pageApps" class="page">
 <div class="card">
-<div class="card-header"><h3>应用管理 (APK)</h3><button class="btn btn-sm btn-primary" onclick="showModal('uploadAppModal')">+ 上传APK</button></div>
+<div class="card-header"><h3>应用管理 (APK)</h3><button class="btn btn-sm btn-primary" onclick="showModal('uploadAppModal')">+ 上传APK</button>
+<select id="appPageSize" onchange="appPage=0;renderApps()" style="width:110px" title="每页条数">
+  <option value="20" selected>每页20</option>
+  <option value="50">每页50</option>
+  <option value="100">每页100</option>
+  <option value="200">每页200</option>
+</select></div>
 <div id="appList"></div>
+<div id="appPager"></div>
 </div>
 </div>
 
@@ -296,8 +332,15 @@ tr:hover td{background:#1e2e3e}
 <div class="flex">
 <button class="btn btn-sm btn-primary" onclick="showDeliveryModal()">新建交付</button>
 <button class="btn btn-sm btn-outline" onclick="loadDeliveries()">刷新</button>
+<select id="deliveryPageSize" onchange="deliveryPage=0;renderDeliveries()" style="width:110px" title="每页条数">
+  <option value="20" selected>每页20</option>
+  <option value="50">每页50</option>
+  <option value="100">每页100</option>
+  <option value="200">每页200</option>
+</select>
 </div></div>
 <div id="deliveryList"></div>
+<div id="deliveryPager"></div>
 </div>
 </div>
 
@@ -314,9 +357,28 @@ tr:hover td{background:#1e2e3e}
   <option value="adb_probe">adb探测</option>
 </select>
 <input class="search-box" id="logSearch" placeholder="搜索目标/详情" oninput="loadLogs()">
+<select id="logPageSize" onchange="logPage=0;renderLogs()" style="width:110px" title="每页条数">
+  <option value="20">每页20</option>
+  <option value="50" selected>每页50</option>
+  <option value="100">每页100</option>
+  <option value="200">每页200</option>
+</select>
 </div></div>
 <div id="logList"></div>
+<div id="logPager"></div>
 </div></div>
+
+<!-- ==================== 注册管理 (etcd 设备上线/下线) ==================== -->
+<div id="pageRegistrations" class="page">
+<div class="card">
+<div class="card-header"><h3>注册管理 (etcd 设备上线/下线)</h3>
+<div class="flex">
+<button class="btn btn-sm btn-primary" onclick="loadEtcdDevices()">刷新</button>
+</div></div>
+<div id="etcdDevicesWarn" style="display:none;margin:10px 0;padding:10px;border:1px solid #5a3a3a;background:#2a1f1f;color:#ffb4b4;border-radius:6px"></div>
+<div id="etcdDeviceList"></div>
+</div>
+</div>
 
 <!-- ==================== 用户管理 ==================== -->
 <div id="pageUsers" class="page">
@@ -588,7 +650,15 @@ tr:hover td{background:#1e2e3e}
 <h2>上传APK</h2>
 <div class="form-row"><label>应用名称</label><input id="ua_name" placeholder="可选"></div>
 <div class="form-row"><label>选择APK</label><input id="ua_file" type="file" accept=".apk"></div>
-<div class="modal-actions"><button class="btn btn-outline" onclick="closeModal('uploadAppModal')">取消</button><button class="btn btn-primary" onclick="uploadApp()">上传</button></div>
+<div class="form-row"><label>标签（逗号分隔）</label><input id="ua_tags" placeholder="交付组,工具组"></div>
+<div class="modal-actions"><button class="btn btn-outline" onclick="closeModal('uploadAppModal')">取消</button><button class="btn btn-primary" onclick="uploadApp(this)">上传</button></div>
+</div></div>
+
+<!-- ========== Modal: 日志详情（查看完整日志） ========== -->
+<div id="logDetailModal" class="modal-overlay"><div class="modal" style="max-width:640px">
+<h2>日志详情</h2>
+<div id="logDetailBody" style="white-space:pre-wrap;word-break:break-all;font-size:12px;color:#cfe3f5;max-height:60vh;overflow:auto;background:#0e1620;padding:10px;border-radius:6px"></div>
+<div class="modal-actions"><button class="btn btn-outline" onclick="copyText(window._logDetailText)">复制</button><button class="btn btn-primary" onclick="closeModal('logDetailModal')">关闭</button></div>
 </div></div>
 
 <!-- ========== Modal: 选择容器 ========== -->
@@ -613,6 +683,13 @@ tr:hover td{background:#1e2e3e}
 let devices=[], allContainers=[], realParams=[], proxies=[], apps=[], users=[];
 let currentContainer=null, pickCb=null, pickMulti=true, pickSelected=new Set();
 let proxyPage=0; const PROXY_PAGE_SIZE=20;
+let logList=[]; let logPage=0; const LOG_PAGE_SIZE=50;
+let rpPage=0; const RP_PAGE_SIZE=50;
+let containerPage=0; const CONTAINER_PAGE_SIZE=10; // 容器页：每页设备组数（默认值，可被下拉框覆盖）
+let containerExpanded=new Set(); // 容器聚合：已展开的设备组 key 集合（默认全部收起）
+let appPage=0; const APP_PAGE_SIZE=20;
+let deliveryPage=0; const DELIVERY_PAGE_SIZE=20;
+let allDeliveries=[];
 let CURRENT_USER=null;
 
 function toast(msg,type='info'){const t=document.getElementById('toast');t.textContent=msg;t.className='toast '+type;t.style.display='block';setTimeout(()=>{t.style.display='none'},3200)}
@@ -665,6 +742,8 @@ function switchPage(pageId,el){
   localStorage.setItem('myt_last_page', pageId);
   if(currentPage==='pageScreenWall'&&pageId!=='pageScreenWall')destroyWallPlayers();
   if(currentPage==='pageContainers'&&pageId!=='pageContainers')pauseAutoSync();
+  if(pageId==='pageContainers')containerPage=0;
+  if(pageId==='pageRealParams')rpPage=0;
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));
   document.getElementById(pageId).classList.add('active');el.classList.add('active');
@@ -677,14 +756,57 @@ function switchPage(pageId,el){
   if(pageId==='pageScreenWall'){Promise.all([loadContainers(),loadDevices()]).then(()=>{autoFillWall();renderWall();});}
   if(pageId==='pageLogs')loadLogs();
   if(pageId==='pageDelivery')loadDeliveries();
+  if(pageId==='pageRegistrations')loadEtcdDevices();
   if(pageId==='pageUsers')loadUsers();
+}
+// ==================== 注册管理 (etcd 设备) ====================
+let etcdDevices=[];
+async function loadEtcdDevices(){
+  const d=await api('/api/etcd_devices');
+  etcdDevices=(d.data&&d.data.items)||[];
+  const warn=document.getElementById('etcdDevicesWarn');
+  if(d.data&&d.data.etcd_status==='unreachable'){warn.style.display='block';warn.textContent='⚠ etcd 不可达或未配置，无法读取设备注册信息。';}
+  else{warn.style.display='none';}
+  renderEtcdDevices();
+}
+function renderEtcdDevices(){
+  const el=document.getElementById('etcdDeviceList');
+  if(!etcdDevices.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无注册设备</div>';return;}
+  let h='<table><thead><tr><th>环境</th><th>外网IP</th><th>内网IP</th><th>容器名</th><th>ADB地址</th><th>手机号</th><th>代理</th><th>状态</th><th>交付时间</th><th>操作</th></tr></thead><tbody>';
+  etcdDevices.forEach((r,i)=>{
+    const offline=(r.status==='offline');
+    const st=offline?'<span class="badge badge-red">离线</span>':'<span class="badge badge-green">在线</span>';
+    h+=`<tr><td>${esc(r.env||'-')}</td><td>${esc(r.wan_ip||'-')}</td><td>${esc(r.lan_ip||'-')}</td>`
+      +`<td>${esc(r.container_name||'-')}</td><td style="font-size:11px;color:#8899aa">${esc(r.adb_addr||'-')}</td>`
+      +`<td>${esc(r.phone_number||'-')}</td><td style="font-size:11px;color:#8899aa">${esc(r.proxy||'-')}</td>`
+      +`<td>${st}</td><td style="font-size:11px;color:#8899aa">${esc(r.delivered_at||'-')}</td>`
+      +`<td><button class="btn btn-sm btn-outline" onclick="etcdSetStatus(${i},'${offline?'online':'offline'}')">${offline?'上线':'下线'}</button> `
+      +`<button class="btn btn-sm btn-danger" onclick="etcdDelete(${i})">删除</button></td></tr>`;
+  });
+  h+='</tbody></table>';el.innerHTML=h;
+}
+async function etcdSetStatus(i,status){
+  const key=etcdDevices[i]&&etcdDevices[i].key;if(!key)return;
+  if(status==='offline'){if(!(await confirmDlg('确定将该设备下线（etcd 记录标记为离线）？','下线确认')))return;}
+  else{if(!(await confirmDlg('确定将该设备上（恢复 etcd 记录为在线）？','上线确认')))return;}
+  const d=await api('/api/etcd_devices/set_status','POST',{key,status});
+  toast(d.msg,d.code===200?'success':'error');
+  if(d.code===200)loadEtcdDevices();
+}
+async function etcdDelete(i){
+  const key=etcdDevices[i]&&etcdDevices[i].key;if(!key)return;
+  if(!(await confirmDlg('确定删除该 etcd 设备注册记录（清理残留/已下线设备）？','删除确认')))return;
+  const d=await api('/api/etcd_devices/delete','POST',{key});
+  toast(d.msg,d.code===200?'success':'error');
+  if(d.code===200)loadEtcdDevices();
 }
 function refreshCurrentPage(){
   const loaders={
     pageDevices:loadDevices, pageContainers:loadContainers, pageRealParams:loadRealParams,
     pageProxies:loadProxies, pageApps:loadApps, pageLogs:loadLogs, pageUsers:loadUsers,
     pageScreenWall:()=>{Promise.all([loadContainers(),loadDevices()]).then(()=>{autoFillWall();renderWall();})},
-    pageDelivery:loadDeliveries
+    pageDelivery:loadDeliveries,
+    pageRegistrations:loadEtcdDevices
   };
   const f=loaders[currentPage]; if(f)f();
   toast('已刷新当前页','info');
@@ -802,25 +924,59 @@ function filteredContainers(){
     return (c.name||'').toLowerCase().includes(kw)||(c.device_ip||'').includes(kw)||(c.image||'').toLowerCase().includes(kw);
   });
 }
-function renderContainers(){
-  const list=filteredContainers(),el=document.getElementById('containerList');
-  if(!allContainers.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无容器，请先同步容器</div>';return}
-  if(!list.length){el.innerHTML='<div style="text-align:center;padding:30px;color:#8899aa">无匹配容器</div>';return}
-  let h='<table><thead><tr><th>设备IP</th><th>容器名称</th><th>容器ID</th><th>状态</th><th>Agent</th><th>ADB地址</th><th>代理</th><th>真机参数</th><th>镜像</th><th>操作</th></tr></thead><tbody>';
-  list.forEach(c=>{
-    const fp=realParams.find(f=>f.id===c.fp_id), px=proxies.find(p=>p.id===c.proxy_id);
-    const img=c.image||'',shortimg=img.length>34?img.substring(0,34)+'...':img;
-    h+=`<tr><td>${esc(c.device_ip)}</td>
-    <td><span class="link" onclick="openDetail('${c.id}')" title="${esc(c.name)}">${esc(c.name.length>34?c.name.substring(0,34)+'...':c.name)}</span></td>
+function containerRowHTML(c){
+  const fp=realParams.find(f=>f.id===c.fp_id), px=proxies.find(p=>p.id===c.proxy_id);
+  const img=c.image||'',shortimg=img.length>34?img.substring(0,34)+'...':img;
+  return `<tr><td>${esc(c.device_ip)}</td>
+    <td><span class="link" onclick="openDetail('${c.id}')" title="${esc(c.name)}">${esc(c.name.length>34?c.name.substring(0,34)+'...':c.name)}</span> <span class="copy-ico" title="复制容器名" data-name="${esc(c.name)}" onclick="copyText(this.dataset.name)" style="cursor:pointer;color:#00d4ff;margin-left:4px">⧉</span></td>
     <td style="font-size:11px;color:#8899aa">${esc(c.short_id||c.id.substring(0,12))}</td>
     <td>${badge(c.state)}</td><td>${agentBadge(c)}</td><td style="font-size:12px">${esc(c.adb_addr||'-')}</td>
     <td style="font-size:11px" title="${esc(c.s5_addr)}">${px?(px.status==='fault'?'<span class="badge badge-red" title="线路故障">'+esc(px.name)+'·故障</span>':'<span class="badge badge-green">'+esc(px.name)+'</span>'):(c.s5_addr?'<span class="badge badge-gray" title="'+esc(c.s5_addr)+'">已配置</span>':'-')}</td>
     <td style="font-size:11px">${fp?('<span class="badge badge-blue">'+esc(fp.name)+'</span>'):'-'}</td>
     <td class="text-truncate" title="${esc(img)}" style="font-size:11px;color:#8899aa">${esc(shortimg)}</td>
     <td><button class="btn btn-sm btn-outline" onclick="openDetail('${c.id}')">管理</button>
-    <button class="btn btn-sm btn-primary" data-sadb="${esc(c.adb_addr)}" data-sname="${esc(c.name||c.adb_addr)}" onclick="openScreenModal(this.dataset.sadb,this.dataset.sname)">投屏</button></td></tr>`;
+    <button class="btn btn-sm btn-primary" data-sadb="${esc(c.adb_addr)}" data-sname="${esc(c.name||c.adb_addr)}" onclick="openScreenModal(this.dataset.sadb,this.dataset.sname)">投屏</button>
+    <button class="btn btn-sm btn-danger" onclick="deleteContainerRecord('${c.id}')">删除记录</button></td></tr>`;
+}
+function renderContainers(){
+  const list=filteredContainers(),el=document.getElementById('containerList'),pager=document.getElementById('containerPager');
+  if(!allContainers.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无容器，请先同步容器</div>';pager.innerHTML='';return}
+  if(!list.length){el.innerHTML='<div style="text-align:center;padding:30px;color:#8899aa">无匹配容器</div>';pager.innerHTML='';return}
+  // 每页设备组数（下拉框可选，默认 CONTAINER_PAGE_SIZE）
+  const ps=parseInt((document.getElementById('containerPageSize')||{}).value)||CONTAINER_PAGE_SIZE;
+  // 按设备聚合（device_id；缺失时回退 device_ip）
+  const groups={};
+  list.forEach(c=>{const key=(c.device_id!=null&&c.device_id!=='')?String(c.device_id):('ip:'+(c.device_ip||'未知设备')); (groups[key]=groups[key]||[]).push(c);});
+  const devList=Object.keys(groups).map(k=>{
+    const dev=devices.find(d=>String(d.id)===k);
+    const sample=groups[k][0];
+    return {key:k, name:dev?(dev.name||dev.ip):(sample.device_ip||'未知设备'), ip:dev?dev.ip:(sample.device_ip||''), items:groups[k]};
+  }).sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+  const pages=Math.max(1,Math.ceil(devList.length/ps));
+  if(containerPage>=pages)containerPage=pages-1; if(containerPage<0)containerPage=0;
+  const start=containerPage*ps;
+  const pageGroups=devList.slice(start,start+ps);
+  let h='';
+  pageGroups.forEach(g=>{
+    const expanded=containerExpanded.has(g.key);
+    h+='<div class="dev-group'+(expanded?' expanded':'')+'">'
+      +'<div class="dev-group-header" onclick="toggleDeviceGroup(\''+g.key+'\')"><span class="dev-toggle">'+(expanded?'▾':'▸')+'</span>'+esc(g.name)+' <span class="hint">('+esc(g.ip)+' · '+g.items.length+' 个容器)</span></div>'
+      +'<div class="dev-group-body"'+(expanded?'':' style="display:none"')+'>'
+      +'<table><thead><tr><th>设备IP</th><th>容器名称</th><th>容器ID</th><th>状态</th><th>Agent</th><th>ADB地址</th><th>代理</th><th>真机参数</th><th>镜像</th><th>操作</th></tr></thead><tbody>';
+    g.items.forEach(c=>{h+=containerRowHTML(c);});
+    h+='</tbody></table></div></div>';
   });
-  h+='</tbody></table>';el.innerHTML=h;
+  el.innerHTML=h;
+  pager.innerHTML=buildPagerHTML(containerPage,pages,devList.length,'containerPrev()','containerNext()');
+}
+function toggleDeviceGroup(key){if(containerExpanded.has(key))containerExpanded.delete(key);else containerExpanded.add(key);renderContainers();}
+function containerPrev(){if(containerPage>0){containerPage--;renderContainers()}}
+function containerNext(){containerPage++;renderContainers()}
+async function deleteContainerRecord(cid){
+  if(!(await confirmDlg('确定删除该本地容器记录（不调用实际删除接口，仅清理本地库）？','删除确认')))return;
+  const d=await api('/api/containers/'+cid+'/delete_record','POST',{});
+  toast(d.msg,d.code===200?'success':'error');
+  if(d.code===200)loadContainers();
 }
 async function syncContainers(){await withBusy(null,'同步容器中…',async()=>{const d=await api('/api/containers/sync','POST',{});toast(d.code===200?'同步完成':(d.msg||'同步失败'),d.code===200?'success':'error');loadContainers();loadDevices();})}
 function screenBadge(s){
@@ -877,15 +1033,46 @@ function updateAutoSyncUI(){
 async function loadLogs(){
   const t=document.getElementById('logType').value,kw=document.getElementById('logSearch').value;
   const d=await api('/api/logs?type='+encodeURIComponent(t)+'&kw='+encodeURIComponent(kw));
-  const list=d.data||[];const el=document.getElementById('logList');
-  if(!list.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无日志</div>';return}
+  logList=d.data||[];logPage=0;renderLogs();
+}
+function renderLogs(){
+  const el=document.getElementById('logList');
+  if(!logList.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无日志</div>';document.getElementById('logPager').innerHTML='';return}
   const tm={install:'安装应用',proxy:'代理配置',realparam:'真机参数',adb_probe:'adb探测'};
-  let h='<table><thead><tr><th>时间</th><th>类型</th><th>目标</th><th>详情</th><th>状态</th></tr></thead><tbody>';
-  list.forEach(r=>{
+  const ps=pageSizeOf('logPageSize',LOG_PAGE_SIZE);
+  const pages=Math.max(1,Math.ceil(logList.length/ps));
+  if(logPage>=pages)logPage=pages-1; if(logPage<0)logPage=0;
+  const start=logPage*ps;
+  const pageItems=logList.slice(start,start+ps);
+  currentLogDetails=pageItems.map(r=>r.detail||'');
+  let h='<table><thead><tr><th>时间</th><th>类型</th><th>目标</th><th>状态</th><th>详情</th></tr></thead><tbody>';
+  pageItems.forEach((r,i)=>{
     const st=r.status==='success'?'<span class="badge badge-green">成功</span>':(r.status==='fail'?'<span class="badge badge-red">失败</span>':(r.status?('<span class="badge badge-gray">'+esc(r.status)+'</span>'):'-'));
-    h+='<tr><td style="font-size:11px;color:#8899aa">'+esc(r.created)+'</td><td>'+esc(tm[r.op_type]||r.op_type)+'</td><td>'+esc(r.target)+'</td><td class="text-truncate" title="'+esc(r.detail)+'" style="font-size:12px">'+esc(r.detail)+'</td><td>'+st+'</td></tr>';
+    const dt=r.detail||'-';
+    const short=dt.length>60?dt.substring(0,60)+'…':dt;
+    h+='<tr><td style="font-size:11px;color:#8899aa">'+esc(r.created)+'</td><td>'+esc(tm[r.op_type]||r.op_type)+'</td><td>'+esc(r.target)+'</td><td>'+st+'</td><td style="font-size:12px">'+esc(short)+' <span class="link" onclick="showLogDetail('+i+')">查看</span></td></tr>';
   });
   h+='</tbody></table>';el.innerHTML=h;
+  document.getElementById('logPager').innerHTML=buildPagerHTML(logPage,pages,logList.length,'logPrev()','logNext()');
+}
+function logPrev(){if(logPage>0){logPage--;renderLogs()}}
+function logNext(){logPage++;renderLogs()}
+let currentLogDetails=[];
+function showLogDetail(i){
+  const t=currentLogDetails[i]||'';
+  document.getElementById('logDetailBody').textContent=t;
+  window._logDetailText=t;
+  showModal('logDetailModal');
+}
+function copyText(t){
+  if(!t)return;
+  const done=()=>toast('已复制','success');
+  const fail=()=>toast('复制失败','error');
+  if(navigator.clipboard&&window.isSecureContext){ navigator.clipboard.writeText(t).then(done).catch(()=>fallbackCopy(t,done,fail)); }
+  else { fallbackCopy(t,done,fail); }
+}
+function fallbackCopy(t,done,fail){
+  try{ const ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);done(); }catch(e){ fail(); }
 }
 async function toggleCcNameMode(){
   const mode=document.getElementById('cc_name_mode').value;
@@ -1085,22 +1272,33 @@ async function detailShell(){
 }
 async function reloadCurrent(){const d=await api('/api/containers/'+currentContainer.id);if(d.code===200){currentContainer=d.data;renderDetailInfo();populateDetailSelects()}}
 
-// ==================== 真机参数库 ====================
+// ==================== 设备指纹 ====================
 async function loadRealParams(){
-  const d=await api('/api/real_params');realParams=d.data||[];renderRealParams();loadStats();return realParams;
+  const d=await api('/api/real_params');realParams=d.data||[];rpPage=0;renderRealParams();loadStats();return realParams;
 }
 function renderRealParams(){
   const el=document.getElementById('realParamList');
-  if(!realParams.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无真机参数，请上传</div>';return}
+  if(!realParams.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无真机参数，请上传</div>';document.getElementById('realParamPager').innerHTML='';return}
+  const kw=((document.getElementById('realParamSearch')||{}).value||'').trim().toLowerCase();
+  const filtered=realParams.filter(p=>{
+    if(!kw)return true;
+    const hay=(p.name+' '+(p.brand||'')+' '+(p.model||'')+' '+(p.uuid||p.md5||'')+' '+(p.instance_name||'')).toLowerCase();
+    return hay.includes(kw);
+  });
+  const ps=pageSizeOf('rpPageSize',RP_PAGE_SIZE);
+  const pages=Math.max(1,Math.ceil(filtered.length/ps));
+  if(rpPage>=pages)rpPage=pages-1; if(rpPage<0)rpPage=0;
+  const start=rpPage*ps;
+  const pageItems=filtered.slice(start,start+ps);
   let h='<table><thead><tr><th class="checkcol"><input type="checkbox" onchange="toggleAll(\'rp-cb\',this.checked)"></th>'
-    +'<th>机型</th><th>型号</th><th>UUID(MD5)</th><th>状态</th><th>绑定实例</th><th>last_login_time</th><th>last_offline_time</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
-  realParams.forEach(p=>{
+    +'<th>机型</th><th>型号</th><th>OAID</th><th>UUID(MD5)</th><th>状态</th><th>绑定实例</th><th>last_login_time</th><th>last_offline_time</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
+  pageItems.forEach(p=>{
     const st=p.in_use?'online':p.status;
     h+=`<tr><td class="checkcol"><input type="checkbox" class="rp-cb" value="${p.id}"></td>
-    <td>${esc(p.brand||'-')}</td><td>${esc(p.model||'-')}</td>
+    <td>${esc(p.brand||'-')}</td><td>${esc(p.model||'-')}</td><td style="font-size:11px;color:#8899aa">${esc(p.oaid||'-')}</td>
     <td><span class="link" title="${esc(p.uuid||p.md5)}" onclick="viewParam('${p.id}')">${esc((p.uuid||p.md5||'').substring(0,12))}</span></td>
     <td>${st==='online'?badge('online'):badge('idle')}</td>
-    <td style="font-size:11px">${esc(p.instance_name||'-')}</td>
+    <td style="font-size:11px">${p.in_use?esc(p.instance_name||'-'):'-'}</td>
     <td style="font-size:11px;color:#8899aa">${esc(p.last_login_time||'-')}</td>
     <td style="font-size:11px;color:#8899aa">${esc(p.last_offline_time||'-')}</td>
     <td style="font-size:11px;color:#8899aa">${esc(p.created||'-')}</td>
@@ -1110,7 +1308,10 @@ function renderRealParams(){
     <button class="btn btn-sm btn-danger" onclick="deleteParam('${p.id}')">删除</button></td></tr>`;
   });
   h+='</tbody></table>';el.innerHTML=h;
+  document.getElementById('realParamPager').innerHTML=buildPagerHTML(rpPage,pages,filtered.length,'rpPrev()','rpNext()');
 }
+function rpPrev(){if(rpPage>0){rpPage--;renderRealParams()}}
+function rpNext(){rpPage++;renderRealParams()}
 function toggleAll(cls,checked){document.querySelectorAll('.'+cls).forEach(cb=>cb.checked=checked)}
 async function uploadParams(btn){
   const files=document.getElementById('rp_files').files;
@@ -1196,11 +1397,12 @@ function renderProxies(){
     }
     return true;
   });
-  const pages=Math.max(1,Math.ceil(filtered.length/PROXY_PAGE_SIZE));
+  const ps=pageSizeOf('proxyPageSize',PROXY_PAGE_SIZE);
+  const pages=Math.max(1,Math.ceil(filtered.length/ps));
   if(proxyPage>=pages)proxyPage=pages-1; if(proxyPage<0)proxyPage=0;
-  const start=proxyPage*PROXY_PAGE_SIZE;
-  const pageItems=filtered.slice(start,start+PROXY_PAGE_SIZE);
-  if(!filtered.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">'+(sf||of||kw?'当前筛选条件下暂无代理':'暂无代理，请添加')+'</div>';renderProxyPager(pages);return}
+  const start=proxyPage*ps;
+  const pageItems=filtered.slice(start,start+ps);
+  if(!filtered.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">'+(sf||of||kw?'当前筛选条件下暂无代理':'暂无代理，请添加')+'</div>';renderProxyPager(pages, filtered.length);return}
   let h='<table><thead><tr><th class="checkcol"><input type="checkbox" onchange="toggleAll(\'px-cb\',this.checked)"></th>'
     +'<th>名称</th><th>地址</th><th>用户名</th><th>类型</th><th>状态</th><th>占用实例</th><th>延迟</th><th>地区</th><th>ISP</th><th>last_login_time</th><th>last_offline_time</th><th>操作</th></tr></thead><tbody>';
   pageItems.forEach(p=>{
@@ -1222,19 +1424,29 @@ function renderProxies(){
     <button class="btn btn-sm btn-danger" onclick="deleteProxy('${p.id}')">删除</button></td></tr>`;
   });
   h+='</tbody></table>';el.innerHTML=h;
-  renderProxyPager(pages);
+  renderProxyPager(pages, filtered.length);
 }
-function renderProxyPager(pages){
+function renderProxyPager(pages,total){
   const el=document.getElementById('proxyPager');if(!el)return;
-  if(pages<=1){el.innerHTML='';return;}
-  let h='<div class="wall-pager">';
-  h+='<button class="btn btn-sm btn-outline" '+(proxyPage<=0?'disabled':'')+' onclick="proxyPrev()">‹ 上一页</button>';
-  h+='<span class="hint" style="margin:0 10px">第 '+(proxyPage+1)+' / '+pages+' 页（共 '+proxies.length+' 条）</span>';
-  h+='<button class="btn btn-sm btn-outline" '+(proxyPage>=pages-1?'disabled':'')+' onclick="proxyNext()">下一页 ›</button>';
-  h+='</div>';el.innerHTML=h;
+  el.innerHTML=buildPagerHTML(proxyPage,pages,total,'proxyPrev()','proxyNext()');
 }
 function proxyPrev(){if(proxyPage>0){proxyPage--;renderProxies()}}
 function proxyNext(){proxyPage++;renderProxies()}
+// 通用分页器（复用 wall-pager 样式）
+function buildPagerHTML(page,pages,total,prevFn,nextFn){
+  if(pages<=1)return '';
+  return '<div class="wall-pager">'
+    +'<button class="btn btn-sm btn-outline" '+(page<=0?'disabled':'')+' onclick="'+prevFn+'">‹ 上一页</button>'
+    +'<span class="hint" style="margin:0 10px">第 '+(page+1)+' / '+pages+' 页（共 '+total+' 条）</span>'
+    +'<button class="btn btn-sm btn-outline" '+(page>=pages-1?'disabled':'')+' onclick="'+nextFn+'">下一页 ›</button>'
+    +'</div>';
+}
+// 读取某页的「每页条数」下拉框（元素不存在或值非法时回退默认值）
+function pageSizeOf(selId, fallback){
+  const e=document.getElementById(selId);
+  const v=parseInt(e&&e.value);
+  return (v>0)?v:(fallback||20);
+}
 async function probeAllProxies(){
   toast('已触发全部线路探测，稍候自动刷新...','info');
   const d=await api('/api/proxies/probe_all','POST',{});
@@ -1322,12 +1534,17 @@ function pickSelectAll(v){document.querySelectorAll('#pickList input').forEach(i
 function confirmPick(){const ids=Array.from(pickSelected);if(!ids.length){toast('请选择容器','error');return}closeModal('pickContainerModal');pickCb&&pickCb(ids)}
 
 // ==================== 应用管理 ====================
-async function loadApps(){const d=await api('/api/apps');apps=d.data||[];renderApps()}
+async function loadApps(){const d=await api('/api/apps');apps=d.data||[];appPage=0;renderApps()}
 function renderApps(){
-  const el=document.getElementById('appList');
-  if(!apps.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无应用，请上传APK</div>';return}
+  const el=document.getElementById('appList'),pager=document.getElementById('appPager');
+  if(!apps.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无应用，请上传APK</div>';pager.innerHTML='';return}
+  const ps=pageSizeOf('appPageSize',APP_PAGE_SIZE);
+  const pages=Math.max(1,Math.ceil(apps.length/ps));
+  if(appPage>=pages)appPage=pages-1; if(appPage<0)appPage=0;
+  const start=appPage*ps;
+  const pageItems=apps.slice(start,start+ps);
   let h='<table><thead><tr><th>名称</th><th>文件名</th><th>大小</th><th>标签</th><th>上传时间</th><th>操作</th></tr></thead><tbody>';
-  apps.forEach(a=>{
+  pageItems.forEach(a=>{
     const sz=a.filesize>1048576?(a.filesize/1048576).toFixed(1)+' MB':(a.filesize/1024).toFixed(1)+' KB';
     const tags=(a.tags||[]).map(t=>`<span class="badge badge-green" style="margin-right:3px">${esc(t)}</span>`).join('')||'-';
     h+=`<tr><td>${esc(a.name)}</td><td style="font-size:11px;color:#8899aa">${esc(a.filename)}</td><td>${sz}</td>
@@ -1339,7 +1556,10 @@ function renderApps(){
     <button class="btn btn-sm btn-danger" onclick="deleteApp('${a.id}')">删除</button></td></tr>`;
   });
   h+='</tbody></table>';el.innerHTML=h;
+  pager.innerHTML=buildPagerHTML(appPage,pages,apps.length,'appPrev()','appNext()');
 }
+function appPrev(){if(appPage>0){appPage--;renderApps()}}
+function appNext(){appPage++;renderApps()}
 function editAppTags(aid){
   const a=apps.find(x=>x.id===aid);
   if(!a)return;
@@ -1362,11 +1582,13 @@ async function saveAppTags(aid,btn){
     if(d.code===200){btn.closest('.modal-overlay').remove();loadApps()}
   });
 }
-async function uploadApp(){
+async function uploadApp(btn){
   const fileInput=document.getElementById('ua_file');
   if(!fileInput.files.length){toast('请选择APK','error');return}
-  const fd=new FormData();fd.append('file',fileInput.files[0]);fd.append('name',document.getElementById('ua_name').value.trim()||fileInput.files[0].name);
-  const d=await api('/api/apps/upload','POST',fd,true);toast(d.msg,d.code===200?'success':'error');if(d.code===200){closeModal('uploadAppModal');loadApps()}
+  const fd=new FormData();fd.append('file',fileInput.files[0]);fd.append('name',document.getElementById('ua_name').value.trim()||fileInput.files[0].name);fd.append('tags',document.getElementById('ua_tags').value.trim());
+  await withBusy(btn,'上传中…',async()=>{
+    const d=await api('/api/apps/upload','POST',fd,true);toast(d.msg,d.code===200?'success':'error');if(d.code===200){document.getElementById('ua_tags').value='';closeModal('uploadAppModal');loadApps()}
+  });
 }
 async function deleteApp(id){if(!(await confirmDlg('确定删除该应用?','删除确认')))return;const d=await api('/api/apps/'+id,'DELETE');toast(d.msg,d.code===200?'success':'error');loadApps()}
 function installApp(id){
@@ -2189,16 +2411,26 @@ async function deleteUser(id){
 // ==================== 设备交付工作流 ====================
 async function loadDeliveries(){
   const d=await api('/api/delivery/list');
-  const list=d.data||[];
-  const el=document.getElementById('deliveryList');
-  if(!list.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无交付记录</div>';return}
+  allDeliveries=d.data||[];deliveryPage=0;renderDeliveries();
+}
+function renderDeliveries(){
+  const el=document.getElementById('deliveryList'),pager=document.getElementById('deliveryPager');
+  if(!allDeliveries.length){el.innerHTML='<div style="text-align:center;padding:40px;color:#8899aa">暂无交付记录</div>';pager.innerHTML='';return}
+  const ps=pageSizeOf('deliveryPageSize',DELIVERY_PAGE_SIZE);
+  const pages=Math.max(1,Math.ceil(allDeliveries.length/ps));
+  if(deliveryPage>=pages)deliveryPage=pages-1; if(deliveryPage<0)deliveryPage=0;
+  const start=deliveryPage*ps;
+  const pageItems=allDeliveries.slice(start,start+ps);
   let h='<table><thead><tr><th>设备IP</th><th>状态</th><th>当前步骤</th><th>容器</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
-  list.forEach(w=>{
+  pageItems.forEach(w=>{
     const st=w.status==='completed'?'<span class="badge badge-green">完成</span>':(w.status==='failed'?'<span class="badge badge-red">失败</span>':(w.status==='running'?'<span class="badge badge-yellow">进行中</span>':'<span class="badge badge-gray">等待</span>'));
-    h+=`<tr><td>${esc(w.device_ip)}</td><td>${st}</td><td>${esc(w.current_step)}</td><td>${esc(w.container_name||'-')}</td><td style="font-size:11px;color:#8899aa">${esc(w.created||'-')}</td><td><button class="btn btn-sm btn-outline" onclick="viewDelivery('${w.id}')">详情</button> <button class="btn btn-sm btn-danger" onclick="deleteDelivery('${w.id}')">删除</button></td></tr>`;
+    h+=`<tr><td>${esc(w.device_ip)}</td><td>${st}</td><td>${esc(w.current_step)}</td><td>${esc(w.container_name||'-')}</td><td style="font-size:11px;color:#8899aa">${esc(w.created||'-')}</td><td><button class="btn btn-sm btn-outline" onclick="viewDelivery('${w.id}')">详情</button>${w.status==='failed'?' <button class="btn btn-sm btn-primary" onclick="retryDelivery(\''+w.id+'\',this)">重试</button>':''} <button class="btn btn-sm btn-danger" onclick="deleteDelivery('${w.id}')">删除</button></td></tr>`;
   });
   h+='</tbody></table>';el.innerHTML=h;
+  pager.innerHTML=buildPagerHTML(deliveryPage,pages,allDeliveries.length,'deliveryPrev()','deliveryNext()');
 }
+function deliveryPrev(){if(deliveryPage>0){deliveryPage--;renderDeliveries()}}
+function deliveryNext(){deliveryPage++;renderDeliveries()}
 function closeDeliveryModal(btn){const m=btn.closest('.modal-overlay');if(m)m.remove()}
 function viewDelivery(wid){
   api('/api/delivery/status/'+wid).then(d=>{
@@ -2251,11 +2483,31 @@ function viewDelivery(wid){
       }
     });
     h+='</div>';
+    let _acts='<div class="modal-actions">';
+    if((wf.status||'')==='running'){ _acts+='<button class="btn btn-outline" onclick="reopenDelivery(\''+wid+'\',this)">刷新</button> '; }
+    if((wf.status||'')==='failed'){ _acts+='<button class="btn btn-primary" onclick="retryDelivery(\''+wid+'\',this)">重试</button> '; }
+    _acts+='<button class="btn btn-outline" onclick="closeDeliveryModal(this)">关闭</button></div>';
     const modal=document.createElement('div');
     modal.className='modal-overlay active';
-    modal.innerHTML='<div class="modal" style="max-width:620px;max-height:80vh;overflow-y:auto"><h2>交付工作流</h2>'+h+'<div class="modal-actions"><button class="btn btn-outline" onclick="closeDeliveryModal(this)">关闭</button></div></div>';
+    modal.innerHTML='<div class="modal" style="max-width:620px;max-height:80vh;overflow-y:auto"><h2>交付工作流</h2>'+h+_acts+'</div>';
     document.body.appendChild(modal);
   });
+}
+async function retryDelivery(wid, btn){
+  btn.disabled=true; btn.textContent='重试中…';
+  const d=await api('/api/delivery/retry/'+wid,'POST',{});
+  if(d.code===200){
+    toast('重试已启动','success');
+    const m=btn.closest('.modal-overlay'); if(m)m.remove();
+    viewDelivery(wid);   // 重新打开，显示 running 进度
+  }else{
+    toast(d.msg||'重试失败','error');
+    btn.disabled=false; btn.textContent='重试';
+  }
+}
+function reopenDelivery(wid, btn){
+  const m=btn.closest('.modal-overlay'); if(m)m.remove();
+  viewDelivery(wid);
 }
 async function deleteDelivery(wid){
   if(!(await confirmDlg('确定删除该交付记录？','删除确认')))return;

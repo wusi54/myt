@@ -57,6 +57,10 @@ services:
       ETCD_URL: ${ETCD_URL:-http://113.105.100.58:2379}
       ETCD_USER: ${ETCD_USER:-root}
       ETCD_PASSWORD: ${ETCD_PASSWORD:-zkts@2026test}
+    # 直接把宿主 .env 注入容器环境（容器内 /app/.env 是构建期快照，不会含后续新增的 token）；
+    # 这样 .env 里任何变量（如 EXTERNAL_API_TOKEN）都会随 `docker compose up -d web` 重建生效。
+    env_file:
+      - .env
     volumes:
       - ./data:/app/data:z                 # 数据库持久化（含 WAL）；:z 兼容宿主机 SELinux(CentOS)
       - ./uploads:/app/uploads:z           # 真机参数文件

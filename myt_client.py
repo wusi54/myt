@@ -93,14 +93,16 @@ class MytClient:
 
     # ---------- 容器 ----------
     def list_containers(self, ip):
-        # 主用 /dc_api/v1/list/{ip}：返回完整字段（adb 端口/id/image/各端口/s5/分辨率 + 正确实例名）。
-        # 投屏/群控/触控都依赖 adb 端口，必须从这里取（/get 只返回 Names/State/index，没有 adb，
-        # 用 /get 同步会把 adb_addr 覆盖成空，导致投屏按钮失效）。
-        # 个别固件若无 /dc_api/v1/list，再退化 /get/{ip}（仅名字/状态）。
+        # 仅用 /dc_api/v1/list/{ip}：返回完整字段（adb 端口/id/image/各端口/s5/分辨率 + 正确实例名）。
+        # 投屏/群控/触控依赖 adb 端口，必须从这里取；不再回退 /get（/get 仅返回 Names/State/index，
+        # 没有 adb/image/id，会把容器记录洗成「id=ip:index、adb 空、镜像空」）。
+        # 拿不到完整字段就视为拉取失败（返回非 200 标记），让调用方走「离线/不覆盖」逻辑，
+        # 避免残缺数据覆盖或清空已有容器记录。
         r = self.get(f'/dc_api/v1/list/{ip}', headers={'accept': 'application/json'})
         if r.get('code') == 200 and ('data' in r or 'msg' in r):
             return r
-        return self.get(f'/get/{ip}', headers={'accept': 'application/json'})
+        return {'code': 500, 'msg': 'list_containers: /dc_api/v1/list 未返回容器列表',
+                'status': r.get('status')}
 
     def android_detail(self, ip, name):
         return self.get(f'/dc_api/v1/get_android_detail/{ip}/{name}')
